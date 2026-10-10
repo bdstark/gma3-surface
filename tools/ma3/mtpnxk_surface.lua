@@ -856,8 +856,10 @@ local function watchItems()
   -- KB-17: the control-context items (data pool, page, encoder bank and slots of the configured display,
   -- one target per configured executor) are watched alongside, so the loop keeps them observed and the
   -- context message is built from the cache without any read of its own.
-  if type(FB.contextItems) == "function" then
-    for _, it in ipairs(FB.contextItems(contextSpec(), nil)) do items[#items + 1] = it end
+  -- Review (PR #6): through the INSTANCE, so its configured bound (96 executors) applies, not the module default (32).
+  local f = fb()
+  if f and type(f.contextItems) == "function" then
+    for _, it in ipairs(f:contextItems(contextSpec())) do items[#items + 1] = it end
   end
   return items
 end
@@ -1304,7 +1306,8 @@ local function loadModules()
         end
         -- KB-21: a surface binds every bank window at once (M-Touch 30, M-Play 60 executors), above the module's default bound.
         local cfg = { maxReadsPerService = DEFAULTS.readsPerService }
-        if entry.key == "feedback" then cfg.maxExecutors = MAX_BOUND_EXECUTORS end
+        -- Review (PR #6): the watch list holds the state items, execs= readers and up to 96 targets: above the module's 64.
+        if entry.key == "feedback" then cfg.maxExecutors = MAX_BOUND_EXECUTORS; cfg.maxItems = MAX_BOUND_EXECUTORS + 32 end
         return mod.new({ owner = pluginName, deps = deps, config = cfg }):init()
       end)
       if okI then rec.instance = inst else rec.loaded, rec.error = false, "instance: " .. tostring(inst) end

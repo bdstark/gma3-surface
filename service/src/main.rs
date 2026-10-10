@@ -269,9 +269,14 @@ impl Loop {
         let strip_events = match surface.poll_strips() {
             Ok(ev) => ev,
             Err(e) => {
-                eprintln!("strips: {e:#}; ending every touch");
+                eprintln!("strips: {e:#}; ending every touch and releasing the M-Touch's playback buttons");
                 let outs = self.strips.disconnect();
                 self.emit_strip_outs(outs, now);
+                // Review (PR #6): the M-Touch's held playback buttons are released against their frozen targets too
+                // (the M-Play's holds are untouched).
+                for o in self.banks.disconnect("mtouch") {
+                    self.emit_bank_out(Some(o), now);
+                }
                 Vec::new()
             }
         };
@@ -483,6 +488,9 @@ mod keypad_loss_tests {
         empty_polls: usize,
         pending_loss: bool,
         strips: VecDeque<mtouch::Event>,
+        /// KB-21 (review): the M-Touch is found gone on the poll after its last report.
+        lose_mtouch: bool,
+        mplay: VecDeque<mtouch::Event>,
     }
     impl Surface for Script {
         /// One key per poll; strips are played one report per poll once the keys are done.
@@ -506,7 +514,18 @@ mod keypad_loss_tests {
             std::mem::take(&mut self.pending_loss)
         }
         fn poll_strips(&mut self) -> Result<Vec<mtouch::Event>> {
-            if self.keys.is_empty() { Ok(self.strips.pop_front().into_iter().collect()) } else { Ok(Vec::new()) }
+            if !self.keys.is_empty() { return Ok(Vec::new()); }
+            match self.strips.pop_front() {
+                Some(ev) => Ok(vec![ev]),
+                None if self.lose_mtouch => { self.lose_mtouch = false; Err(anyhow!("M-Touch unplugged")) }
+                None => Ok(Vec::new()),
+            }
+        }
+        fn poll_mplay(&mut self) -> Result<Vec<mtouch::Event>> {
+            Ok(self.mplay.pop_front().into_iter().collect())
+        }
+        fn device_present(&self, _model: mtouch::Model) -> bool {
+            true
         }
     }
 
@@ -528,6 +547,8 @@ mod keypad_loss_tests {
             pending_loss: false,
             // Strip reports from the fourth step on: a touch and a move with Bank still held, then (after the loss) a move.
             strips: VecDeque::from([strip1(0, true), strip1(20, true), strip1(51, true), strip1(80, true)]),
+            lose_mtouch: false,
+            mplay: VecDeque::new(),
         };
         for _ in 0..3 { lp.step(&mut s).unwrap(); }
         assert!(lp.link.held().contains("Clear") && lp.link.held().contains("Bank"), "{:?}", lp.link.held());
@@ -550,9 +571,33 @@ mod keypad_loss_tests {
         assert_eq!(lp.strips.stats.forced_lifts, 0, "the strip was not released by the keypad's loss");
         // A loss with nothing held releases nothing and changes nothing.
         let mut lp2 = test_loop();
-        let mut s2 = Script { keys: VecDeque::new(), lose_on_empty_poll: Some(1), empty_polls: 0, pending_loss: false, strips: VecDeque::new() };
+        let mut s2 = Script { keys: VecDeque::new(), lose_on_empty_poll: Some(1), empty_polls: 0, pending_loss: false, strips: VecDeque::new(), lose_mtouch: false, mplay: VecDeque::new() };
         lp2.step(&mut s2).unwrap();
         assert!(lp2.link.held().is_empty() && !lp2.bank_held && lp2.link.stats.dropped_unpaired == 0);
+    }
+
+    /// Review (PR #6): losing the M-Touch releases its held playback buttons against their frozen targets; an M-Play's hold stays.
+    #[test]
+    fn losing_the_mtouch_releases_its_playback_buttons_but_not_the_mplays() {
+        let mut lp = test_loop();
+        let pfa1 = |down: bool| if down { mtouch::Event::KeyDown { id: 0x4201, name: "PFA 1" } } else { mtouch::Event::KeyUp { id: 0x4201, name: "PFA 1" } };
+        let mut s = Script {
+            keys: VecDeque::new(), lose_on_empty_poll: None, empty_polls: 0, pending_loss: false,
+            strips: VecDeque::from([mtouch::Event::KeyDown { id: 0x4111, name: "PLAYBACK BANK Up (+)" }, pfa1(true), strip1(10, true)]),
+            lose_mtouch: true,
+            mplay: VecDeque::from([mtouch::Event::KeyDown { id: 0x9205, name: "FADER PFD 1" }]),
+        };
+        lp.step(&mut s).unwrap();  // bank +: the M-Touch section on bank 2; the M-Play's top button 1 down
+        lp.step(&mut s).unwrap();  // PFA 1 down on bank 2: executor 111 key
+        lp.step(&mut s).unwrap();  // a parameter strip touch
+        assert_eq!(lp.banks.held_count(), 2, "one M-Touch and one M-Play button held");
+        assert!(lp.strips.touching(1));
+        lp.banks.key(0x4111, false);
+        lp.step(&mut s).unwrap();  // the M-Touch is found gone
+        assert!(!lp.strips.touching(1), "the strip touch is ended");
+        assert_eq!(lp.banks.held_count(), 1, "the M-Touch's playback button is released, the M-Play's stays held");
+        assert!(lp.banks.log.iter().any(|l| l.contains("mtouch/PFA1") && l.contains("lost while held") && l.contains("executor 111 key")), "{:?}", lp.banks.log);
+        assert_eq!(lp.link.stats.dropped_unpaired, 5, "bank-less: PFA1 down, MPA1 down, touch, the strip's forced lift and the frozen release all reached the link (unpaired, counted)");
     }
 }
 

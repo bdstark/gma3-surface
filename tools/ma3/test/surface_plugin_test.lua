@@ -719,10 +719,20 @@ do
   send({ t = "bind", ev = 4, ex = big }); tick()
   a = ofType(drain(), "ack")[1]
   check("kb21: more than 96 executors are refused bad-bind, the binding unchanged", a and a.ok == 0 and a.code == "bad-bind" and #state.execs == 1, J(a))
+  -- Review (PR #6): an M-Play alone (60 executors) and both surfaces on different banks (84) are watched in full and known.
+  for _, n in ipairs({ 60, 84 }) do
+    local many = {}
+    for i = 1, n do many[i] = 100 + i end
+    send({ t = "bind", ev = 20 + n, ex = many }); tick()
+    local ab = ofType(drain(), "ack")[1]
+    for _ = 1, 16 do tickAlive(0.11); drain() end
+    local cm = state._collectContext(clock.t)
+    check(string.format("review: a bind of %d executors is watched in full (%d items) and the context becomes known with every executor listed", n, 14 + n), ab and ab.ok == 1 and state.modules.feedback.instance:status().watched == 14 + n and cm.known == 1 and #cm.ex == n, J({ ab, state.modules.feedback.instance:status().watched, cm.known, #cm.ex, cm.why }))
+  end
   -- Back to a following binding: no page.
   send({ t = "bind", ev = 5, ex = { 201, 202 } }); tick()
   a = ofType(drain(), "ack")[1]
-  check("kb21: a bind without pg follows the console's page again (mode current)", a and a.ok == 1 and a.br == 4 and state.execPage == nil and findLog("following the console's page"), J(a))
+  check("kb21: a bind without pg follows the console's page again (mode current)", a and a.ok == 1 and a.br == 6 and state.execPage == nil and findLog("following the console's page"), J(a))
   -- Page-bound targets and frozen holds on the fake backend, over a staged binding with executors on two pages.
   local inst = state.modules.feedback.instance
   local real = inst.contextSnapshot
@@ -765,7 +775,7 @@ do
   for _ = 1, 4 do tickAlive(0.05); drain() end
   st = state.modules.control.instance:status(clock.t)
   for _, sv in pairs(st.sessions) do g = sv.gestureList and sv.gestureList[1] end
-  check("kb21: the rebind moved the revision and marked the hold rebound; its frozen target is unchanged", a and a.ok == 1 and a.br == 5 and g and g.rebound == true and g.frozen.page == 3 and g.frozen.assigned == "Sequence 1", J({ a, g }))
+  check("kb21: the rebind moved the revision and marked the hold rebound; its frozen target is unchanged", a and a.ok == 1 and a.br == 7 and g and g.rebound == true and g.frozen.page == 3 and g.frozen.assigned == "Sequence 1", J({ a, g }))
   send(btn(12, 2, "PFA1", 201, 0, { cg = nil, br = nil })); tick()
   a = ofType(drain(), "ack")[1]; tick()
   local la = state.modules.control.instance:status(clock.t).lastApplied
@@ -773,7 +783,7 @@ do
   send(btn(13, 3, "PFA1", 201, 1, { br = 1 })); tick()
   a = ofType(drain(), "ack")[1]
   check("kb21: a down carrying an old revision is refused stale-binding with the current one", a and a.ok == 0 and a.code == "stale-binding", J(a))
-  send(btn(14, 4, "PFA1", 201, 1, { br = 5 })); tick()
+  send(btn(14, 4, "PFA1", 201, 1, { br = 7 })); tick()
   a = ofType(drain(), "ack")[1]; tick()
   la = state.modules.control.instance:status(clock.t).lastApplied
   check("kb21: a fresh down with the current revision resolves the new mapping (page 4, Sequence 9)", a and a.ok == 1 and la.down == true and la.target:find("^execDefault#1/4%.201%.key|Sequence 9"), J({ a, la }))
@@ -795,7 +805,7 @@ do
   check("kb21: a bad pg or br is rejected before the module", state.counters.rejected == rej2 + 2, state.counters.rejected - rej2)
   send(btn(20, 8, "PFA1", 201, 0)); tick(); drain()
   Main(nil, "status"); Cleanup()
-  check("kb21: status names the binding, its page, revision and generation", findLog("binding: 1 executor%(s%) %[201%] on page 2 %(independent%) revision=6 generation=4") ~= nil, lastLog())
+  check("kb21: status names the binding, its page, revision and generation", findLog("binding: 1 executor%(s%) %[201%] on page 2 %(independent%) revision=8 generation=4") ~= nil, lastLog())
   inst.contextSnapshot = real
   pool.pages[2] = nil
 end

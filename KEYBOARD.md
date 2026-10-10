@@ -438,7 +438,7 @@ executor / element / mode, read on the user's page or on an explicit page throug
 page is `pageMissing` and never created, a wider neighbour of the same row covers the following numbers; `gma3_mcp_control`
 0.4.0: targets resolve by (page, executor), a hold's release goes to the target its down resolved, frozen; bridge 0.17.0;
 branch `feat/kb21-playback-banks`, live record `docs/probes/kb-21-executors-macos-2.5.1.md` there). This repository
-vendors the 0.10.0 / 0.5.0 / 0.4.0 set unchanged from `ea5bc0d` ([tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns
+vendors the 0.10.0 / 0.5.0 / 0.4.0 set unchanged from `d60bb06` ([tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns
 the banks (`service/src/banks.rs`): which physical control means which executor number is a profile decision made in
 the service, never inferred from the console.
 
@@ -485,24 +485,28 @@ the service, never inferred from the console.
 - **Layouts are the console's:** an expanded assignment (width > 1) covering its neighbours, an empty, reserved or
   Quickey executor and a missing page are reported by the plugin and refused per target with the reason
   (`target-unavailable`); nothing here assumes adjacent numbers are separate playbacks.
+- **Review of PR #6:** the watch list is built through the feedback instance (its bound of 96 executors, `maxItems` 128), so an
+  M-Play alone (60) and both surfaces on different banks (84) are watched in full and the context becomes known; losing the
+  M-Touch releases its held playback buttons against their frozen targets (the M-Play's holds stay); the vendored control
+  module carries the frozen record through the gesture-bound force-end, a raised release, `recover()` and adoption.
 - **`mtpnxk_surface.lua` 0.7.0:** the `bind` handler (validation, the bound list, `rewatch`, the revision in the ack), `pg`
   on executor targets and `br` on events, `bind`/`pg`/`pgno`/`w`/`cov`/`pm` in the context, the binding line in `status`;
   the KB-06 per-executor state items (`x<n>`, `f<n>`) follow the `execs=` argument only; the feedback instance is configured
   for 96 executors and 8 reads per tick.
-- **Rust service** (`cargo test` 72, twelve new): `banks.rs` (ids, the default profile and its banks, row edges, the
+- **Rust service** (`cargo test` 73, thirteen new): `banks.rs` (ids, the default profile and its banks, row edges, the
   M-Play sections, independent page, frozen holds across a bank change, a lost device, present devices only, displays and
   the summary, unmapped keys), `link.rs` (the bind after pairing and re-pairing, retransmission, its ack and refusal, `br`
   on motion and downs, the revision reported once, page-bound targets on the wire, supersession by (page, executor)),
   `sim` steps `pfa<n>|pfb<n>|mpa<n>|mpb<n>|mpe<n>:down|up|tap`, `pbank|lbank|rbank:up|down`, `pb<n>:t<v>|m<v>|lift`, the
   `--pb-page/--pb-rows/--pb-ext-row/--mplay/--banks` flags, `device_present`/`poll_mplay`/`output` on the surface trait.
 
-Harness: `lua tools/ma3/test/surface_plugin_test.lua` 221 checks (16 new: `execs=` following the page, a bind
+Harness: `lua tools/ma3/test/surface_plugin_test.lua` 223 checks (18 new: a bind of 60 and of 84 executors watched in full and known, `execs=` following the page, a bind
 acknowledged with its revision (sorted, deduplicated, the page kept), the watch list, the context's `bind` and per-executor
 page, a missing page accepted and reported `pm`, malformed and oversized binds refused, a following bind again, a down frozen
 to page 3's object, the rebind moving the revision and marking the hold rebound with the frozen target unchanged, the release
 applied to the frozen target while the number means another object on another page, an old revision refused
 `stale-binding`, a fresh down reaching the new mapping, a page-bound down admitted and one without `pg` refused, bad `pg`/`br`
-rejected, the status line); `cargo test` 72; `sh tools/ma3/test/e2e.sh` adds the bank scenario (a simulated M-Touch alone
+rejected, the status line); `cargo test` 73 (a lost M-Touch releases its playback buttons, not the M-Play's); `sh tools/ma3/test/e2e.sh` adds the bank scenario (a simulated M-Touch alone
 binds 30 executors; `PLAYBACK BANK +` moves to bank 2 and the display shows `12`; a `PFA 1` press on bank 2 is refused
 `executor 111 is empty` by the stub console, its release after `PLAYBACK BANK -` goes to the frozen 111 (`frozen=1`), the
 display is back at `11`; two playback fader reports are counted, not sent).
