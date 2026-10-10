@@ -7,6 +7,10 @@ Evidence for [KEYBOARD.md](../../KEYBOARD.md) "KB-20". Run on 2026-10-10 with `m
 the release service at this commit. The bridge was used only to select the fixture, set the starting value and read
 the programmer back (`cmd` and `lua` ops); its own control instance stayed idle. Input stayed on the fake backend; only
 the control path was exercised. The show as loaded had none of the earlier sessions' macros, so no Macro 121/123.
+Re-run unchanged after the PR #5 / MCP PR #24 review round 1 (vendored set from `597ba47`, the context's `vc` required
+for pickup, the NX-K and M-Touch opened independently in `run`): the plugin re-imported and restarted the same way,
+same scripts, same values (40.900003910065 relative; `waiting_pickup=1`, two positions, 54.901999235153 absolute; the
+one-fixture selection is a complete read, `vc: 1`, so the pickup engaged as before).
 
 ## Procedure
 
