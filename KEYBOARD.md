@@ -405,9 +405,12 @@ Harness: `lua tools/ma3/test/surface_plugin_test.lua` 202 checks (7 new: a strip
 `cargo test` 55; `sh tools/ma3/test/e2e.sh` adds the strip scenario (touch, drag and lift refused honestly by the stub
 console without an encoder bar, the lift a noop).
 
-**Verified live in this repository:** pending: [docs/probes/kb-20-surface-macos-2.5.1.md](docs/probes/kb-20-surface-macos-2.5.1.md)
-records the planned `sim` strip run against onPC with `control=console` (the same path as KB-19) once the console is up.
+**Verified live in this repository:** [docs/probes/kb-20-surface-macos-2.5.1.md](docs/probes/kb-20-surface-macos-2.5.1.md)
+(the surface plugin on onPC with `control=console`, driven by the real service's `sim` strip scripts: relative
+touch-drag, re-anchoring retouch and the strip key as fine read 40 -> 49 -> 40 -> 40.9 on the console's programmer;
+absolute mode waited for pickup against the context's 40.9 and placed `At 43.1373` and `At 54.902`).
 
 **Not verified live:** the physical M-Touch strips through `run` (the `sim` path enters the service after the decoder;
-the hardware qualification with the operator at the surface is KB-24's), absolute-mode pickup against a live programmer
-value, two surfaces on one slot, Windows/Linux hosts.
+the hardware qualification with the operator at the surface is KB-24's), an explicit takeover on a mixed selection
+through this plugin (the MCP repository's probe covers it through the bridge), two surfaces on one slot,
+Windows/Linux hosts.
