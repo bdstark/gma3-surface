@@ -24,6 +24,11 @@ pub trait Surface {
     fn done(&self) -> bool {
         false
     }
+    /// KB-20: true once after the keypad was (re)opened, so the loop repaints every LED; never for a surface
+    /// that cannot lose its keypad.
+    fn reconnected(&mut self) -> bool {
+        false
+    }
     /// KB-20: reports of an attached M-Touch (the parameter strips and their keys), decoded; none by default.
     /// `Err` means the M-Touch went away (the keypad may still be fine).
     fn poll_strips(&mut self) -> Result<Vec<crate::mtouch::Event>> {

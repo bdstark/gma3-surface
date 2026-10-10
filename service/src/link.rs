@@ -423,8 +423,11 @@ impl Link {
         let slots = ctx.body.get("slots")?.as_array()?;
         let s = slots.iter().find(|x| x.get("n").and_then(|n| n.as_u64()) == Some(slot as u64))?;
         let state = s.get("val").and_then(|v| v.as_str()).unwrap_or("");
+        // Review of PR #5: "value" from a bounded scan or a failed read is the agreement of the readable fixtures
+        // only; `vc` 1 (feedback valueComplete) is required before a value is a pickup target.
+        let complete = s.get("vc").and_then(|v| v.as_u64()) == Some(1);
         let abs = s.get("abs").and_then(|v| v.as_f64()).map(|a| (a / 100.0).clamp(0.0, 1.0));
-        Some(crate::strips::SlotHint { single: state == "value" && abs.is_some(), value: abs })
+        Some(crate::strips::SlotHint { single: state == "value" && complete && abs.is_some(), value: abs })
     }
 
     /// Whether a newer position may replace a queued one for this target (review 7): an encoder slot or an
@@ -1253,6 +1256,27 @@ mod tests {
         let unknown = plugin.context(1, 0, None, json!({"why":"not observed"}));
         link.receive(&unknown, 7.4);
         assert!(link.context.is_some() && link.context_view(7.4).is_none());
+    }
+
+    // ---- KB-20: the strips' pickup hint ----
+
+    #[test]
+    fn slot_hint_is_single_only_for_a_complete_agreed_value() {
+        let (mut link, mut plugin) = pair(5.0);
+        let mut v = json!({"t":"context","gen":plugin.generation,"epoch":1,"known":1,"cg":1,"enc":{},"page":1,"pool":"Default","display":1,"ex":[],
+                           "slots":[{"n":1,"kind":"attribute","val":"value","abs":40.9,"vc":1},{"n":2,"kind":"attribute","val":"value","abs":50.0,"vc":0},
+                                    {"n":3,"kind":"attribute","val":"value","abs":50.0},{"n":4,"kind":"attribute","val":"mixed","abs":20.0,"vc":1},{"n":5,"kind":"empty"}]});
+        v["sid"] = json!(plugin.sid);
+        let f = plugin.frame(v);
+        link.receive(&f, 5.0);
+        let h = |n| link.slot_hint(n, 5.1);
+        assert_eq!(h(1), Some(crate::strips::SlotHint { single: true, value: Some(0.409) }));
+        assert_eq!(h(2).map(|h| h.single), Some(false), "a bounded or failed read (vc 0) is no pickup target");
+        assert_eq!(h(3).map(|h| h.single), Some(false), "an older plugin without vc is never assumed complete");
+        assert_eq!(h(4).map(|h| h.single), Some(false), "mixed values are no pickup target");
+        assert_eq!(h(5).map(|h| h.single), Some(false));
+        assert!(h(6).is_none());
+        assert!(link.slot_hint(1, 7.0).is_none(), "a stale context gives no hint");
     }
 
     // ---- KB-18: continuous-control transport ----

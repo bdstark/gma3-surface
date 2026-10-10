@@ -172,6 +172,9 @@ impl Loop {
     /// One iteration: surface events, datagrams, link timers, sends, LEDs.
     fn step(&mut self, surface: &mut dyn Surface) -> Result<()> {
         let now = self.now();
+        if surface.reconnected() {
+            self.leds.invalidate();
+        }
         for ev in surface.poll()? {
             match ev {
                 Event::KeyDown { name, .. } => {
@@ -363,19 +366,14 @@ fn main() -> Result<()> {
                 "off" | "none" => false,
                 other => return Err(anyhow!("--mtouch {other}: expected auto or off")),
             };
+            // KB-20 (review of PR #5): the NX-K and the M-Touch are opened and reopened independently; the loop runs
+            // with whichever is present (an M-Touch alone polls its strips; losing the NX-K does not interrupt it).
+            let open_mtouch: Option<Box<dyn FnMut() -> Result<mtouch::usb::UsbSurface>>> =
+                if with_mtouch && cli.strips != strips::Mode::Off { Some(Box::new(|| mtouch::usb::UsbSurface::open_model(mtouch::Model::MTouch))) } else { None };
+            let mut surface = usb_surfaces::Combined::new(Box::new(nxk::usb::UsbKeypad::open), open_mtouch);
             loop {
-                let keypad = match nxk::usb::UsbKeypad::open() {
-                    Ok(k) => k,
-                    Err(e) => {
-                        eprintln!("{e:#}; retrying in 2 s");
-                        std::thread::sleep(Duration::from_secs(2));
-                        continue;
-                    }
-                };
-                let mut surface = usb_surfaces::Combined::new(keypad, with_mtouch && cli.strips != strips::Mode::Off);
-                lp.leds.invalidate();
                 let r = lp.run(&mut surface, |_, _| false);
-                eprintln!("keypad loop ended: {r:?}; reopening in 1 s");
+                eprintln!("surface loop ended: {r:?}; continuing in 1 s");
                 std::thread::sleep(Duration::from_secs(1));
             }
         }

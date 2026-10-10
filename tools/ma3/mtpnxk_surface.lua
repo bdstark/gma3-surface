@@ -897,6 +897,9 @@ local function collectContext(now)
         r.name, r.label, r.unit, r.readout, r.res, r.layer, r.cf = x.name, x.label or "", x.unit or "?", x.readout or "?", x.resolution or "?", x.layer or "?", x.channelFunction or ""
         r.avail, r.val = x.availability, x.valueState
         if x.absolute ~= nil then r.abs = x.absolute end
+        -- KB-20 review: vc 1 only when every selected fixture was scanned and read (feedback valueComplete); a
+        -- surface picks up a position against the value only then.
+        if x.valueComplete ~= nil then r.vc = x.valueComplete and 1 or 0 end
       elseif x.kind == "other" then r.ref = x.ref end
       msg.slots[#msg.slots + 1] = r
     end

@@ -507,8 +507,8 @@ do
       snap.generation, snap.generationUnknown, snap.generationNote, snap.stale, snap.notObserved = gen, nil, nil, nil, 0
       snap.encoder = { available = true, value = { display = 1, bank = { index = 1, name = "Dimmer", pages = 1 }, page = { index = 1, name = "Dimmer", slots = 2 }, context = "Default", attributeEditing = true } }
       snap.slots = { available = true, value = { bank = { index = 1, name = "Dimmer" }, page = { index = 1, name = "Dimmer" }, context = "Default", selection = { count = 1, fixtures = { 401 }, identityComplete = true }, slots = {
-        { slot = 1, kind = "attribute", ref = "Attribute 1 'Dimmer'", name = "Dimmer", layer = "Absolute", resolution = "Coarse", readout = "Percent", channelFunction = "Dimmer", availability = "available", physicalRange = 1 },
-        { slot = 2, kind = "attribute", ref = "Attribute 2 'Pan'", name = "Pan", layer = "Absolute", resolution = "Coarse", readout = "Physical", channelFunction = "", availability = "available", physicalRange = 450, physicalFrom = -225, physicalTo = 225 },
+        { slot = 1, kind = "attribute", ref = "Attribute 1 'Dimmer'", name = "Dimmer", layer = "Absolute", resolution = "Coarse", readout = "Percent", channelFunction = "Dimmer", availability = "available", physicalRange = 1, valueState = "value", absolute = 40, valueComplete = true },
+        { slot = 2, kind = "attribute", ref = "Attribute 2 'Pan'", name = "Pan", layer = "Absolute", resolution = "Coarse", readout = "Physical", channelFunction = "", availability = "available", physicalRange = 450, physicalFrom = -225, physicalTo = 225, valueState = "empty", valueComplete = true },
         { slot = 3, kind = "empty" } } } }
       snap.executors = { { available = true, value = { executor = 201, page = 3, empty = false, playbackTarget = true, assigned = { addr = "Sequence 1" }, functions = { keyPress = "Go+", fader = "Master" }, level = { token = "FaderMaster", value = 0 } } } }
       return snap
@@ -650,6 +650,19 @@ do
   send(strip(67, "touch", { es = 11, d = 0 })); tick()
   a = ackOf(); tick()
   check("kb20: the lift is a boundary; the hold is gone and nothing else was issued", a and a.ok == 1 and a.boundary == 1 and state.modules.control.instance:admission(clock.t + 1) == nil and #pool.cmds == cmdsBefore + 4, J(a))
+  -- Review (PR #5): the context carries the value's completeness (vc) so the service picks up only on a complete value.
+  local ctxMsg = state._collectContext(clock.t)
+  check("kb20 review: the context message carries val, abs and vc per attribute slot (slot 1 a complete value, slot 2 complete and empty, no abs)", ctxMsg and ctxMsg.slots[1].val == "value" and ctxMsg.slots[1].abs == 40 and ctxMsg.slots[1].vc == 1 and ctxMsg.slots[2].vc == 1 and ctxMsg.slots[2].abs == nil, J(ctxMsg and ctxMsg.slots))
+  -- A value the feedback could not read completely is refused a position by the vendored module (review).
+  inst.contextSnapshot = function(self, spec, t, opts) local snap = real(self, spec, t, opts); snap.generation, snap.notObserved = gen, 0
+    snap.encoder = { available = true, value = { display = 1, bank = { index = 1 }, page = { index = 1 }, context = "Default", attributeEditing = true } }
+    snap.slots = { available = true, value = { bank = { index = 1 }, page = { index = 1 }, selection = { count = 9, scanned = 8, identityComplete = true }, slots = { { slot = 1, kind = "attribute", ref = "Attribute 1 'Dimmer'", name = "Dimmer", layer = "Absolute", resolution = "Coarse", readout = "Percent", channelFunction = "Dimmer", availability = "available", valueState = "value", absolute = 50, valueComplete = false, valueIncomplete = "the selection scan is bounded (8 of 9 fixtures); the values of the fixtures outside the scan are unknown" } } } }
+    snap.executors = {}; return snap end
+  for _ = 1, 3 do tickAlive(0.05); drain() end
+  send(strip(70, "abs", { es = 12, v = 0.5, gs = 9 })); tick()
+  a = ackOf()
+  check("kb20 review: a position on a slot whose values were not completely read (bounded scan) is acknowledged values-incomplete with the reason; relative motion is still served", a and a.ok == 0 and a.code == "values-incomplete" and a.why:find("8 of 9 fixtures") and (function() send(strip(71, "rel", { es = 13, dx = 1, gs = 9 })); tick(); local b = ackOf(); return b and b.ok == 1 end)(), J(a))
+  check("kb20 review: the context says vc 0 for it, so the service never picks up on it", state._collectContext(clock.t).slots[1].vc == 0, J(state._collectContext(clock.t).slots))
   pool.cmds = {}  -- the later input=mixed checks expect no recorded console command
   reset("key=" .. KEYHEX .. " input=fake control=fake")
   push({ t = "hello", v = 1, id = "nxk-c6", gen = 12, nonce = "c6c6c6c6c6c6c6c6", surface = "nxk", fw = "0.1.0" }); tick()
