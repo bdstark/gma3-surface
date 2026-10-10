@@ -15,10 +15,12 @@ use crate::nxk::Event;
 use anyhow::Result;
 use std::time::{Duration, Instant};
 
-/// A raw M-Touch packet source (the USB device, or a fake in tests).
+/// A raw M-Touch or M-Play packet source (the USB device, or a fake in tests).
 pub trait StripDevice {
     fn poll(&mut self) -> Result<Vec<Vec<u8>>>;
     fn name(&self) -> String;
+    /// KB-21: one output write (page display, LED, bar); nothing by default.
+    fn send(&mut self, _out: mtouch::Output) {}
 }
 
 impl StripDevice for mtouch::usb::UsbSurface {
@@ -27,6 +29,9 @@ impl StripDevice for mtouch::usb::UsbSurface {
     }
     fn name(&self) -> String {
         mtouch::usb::UsbSurface::name(self).to_string()
+    }
+    fn send(&mut self, out: mtouch::Output) {
+        mtouch::usb::UsbSurface::send(self, out)
     }
 }
 
@@ -44,13 +49,45 @@ pub struct Combined<K: Surface, M: StripDevice> {
     keypad_reconnected: bool,
     keypad_lost: bool,
     announced_absent: bool,
+    /// KB-21: the M-Play, opened and reopened like the M-Touch.
+    open_mplay: Option<Box<dyn FnMut() -> Result<M>>>,
+    mplay: Option<M>,
+    next_mplay: Instant,
+    discard_mplay_until: Instant,
 }
 
 impl<K: Surface, M: StripDevice> Combined<K, M> {
     /// `open_mtouch` None: the M-Touch is not wanted (`--mtouch off` or `--strips off`).
     pub fn new(open_keypad: Box<dyn FnMut() -> Result<K>>, open_mtouch: Option<Box<dyn FnMut() -> Result<M>>>) -> Self {
         let now = Instant::now();
-        Combined { open_keypad, open_mtouch, keypad: None, mtouch: None, next_keypad: now, next_mtouch: now, discard_until: now, keypad_reconnected: false, keypad_lost: false, announced_absent: false }
+        Combined { open_keypad, open_mtouch, keypad: None, mtouch: None, next_keypad: now, next_mtouch: now, discard_until: now, keypad_reconnected: false, keypad_lost: false, announced_absent: false,
+                   open_mplay: None, mplay: None, next_mplay: now, discard_mplay_until: now }
+    }
+
+    /// KB-21: also open an M-Play (`--mplay auto`), retried while absent like the other devices.
+    pub fn with_mplay(mut self, open_mplay: Option<Box<dyn FnMut() -> Result<M>>>) -> Self {
+        self.open_mplay = open_mplay;
+        self
+    }
+
+    fn try_open_mplay(&mut self) {
+        if self.mplay.is_some() || Instant::now() < self.next_mplay {
+            return;
+        }
+        self.next_mplay = Instant::now() + RETRY;
+        let Some(open) = self.open_mplay.as_mut() else { return };
+        match open() {
+            Ok(m) => {
+                eprintln!("mplay: {} opened; its playback buttons and bank keys are live (faders: KB-22)", m.name());
+                self.discard_mplay_until = Instant::now() + DISCARD_AFTER_OPEN;
+                self.mplay = Some(m);
+            }
+            Err(e) => {
+                if self.mplay.is_none() && !self.announced_absent {
+                    eprintln!("mplay: not open ({e:#}); retrying every {} s", RETRY.as_secs());
+                }
+            }
+        }
     }
 
     fn try_open_keypad(&mut self) {
@@ -135,6 +172,46 @@ impl<K: Surface, M: StripDevice> Surface for Combined<K, M> {
 
     fn disconnected(&mut self) -> bool {
         std::mem::take(&mut self.keypad_lost)
+    }
+
+    fn poll_mplay(&mut self) -> Result<Vec<MtEvent>> {
+        self.try_open_mplay();
+        let Some(dev) = self.mplay.as_mut() else { return Ok(Vec::new()) };
+        let packets = match dev.poll() {
+            Ok(p) => p,
+            Err(e) => {
+                self.mplay = None;
+                self.next_mplay = Instant::now() + RETRY;
+                return Err(e);
+            }
+        };
+        if Instant::now() < self.discard_mplay_until {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for p in packets {
+            if p.is_empty() {
+                continue;
+            }
+            for r in mtouch::decode(&p) {
+                out.extend(mtouch::events(mtouch::Model::MPlay, &r));
+            }
+        }
+        Ok(out)
+    }
+
+    fn device_present(&self, model: mtouch::Model) -> bool {
+        match model {
+            mtouch::Model::MTouch => self.mtouch.is_some(),
+            mtouch::Model::MPlay => self.mplay.is_some(),
+        }
+    }
+
+    fn output(&mut self, model: mtouch::Model, out: mtouch::Output) {
+        match model {
+            mtouch::Model::MTouch => { if let Some(d) = self.mtouch.as_mut() { d.send(out); } }
+            mtouch::Model::MPlay => { if let Some(d) = self.mplay.as_mut() { d.send(out); } }
+        }
     }
 
     fn poll_strips(&mut self) -> Result<Vec<MtEvent>> {

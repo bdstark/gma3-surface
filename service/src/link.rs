@@ -99,6 +99,9 @@ pub struct Stats {
     /// KB-19: the largest |delta| of one rotary event seen (a device that accelerates reports more than one
     /// detent per report; the service adds nothing to it, so this is what reaches the console per event).
     pub ctl_max_detent: i32,
+    /// KB-21: `bind` packets sent (one per spec change and per pairing) and binding revisions seen.
+    pub binds: u64,
+    pub binding_revisions: u64,
 }
 
 /// Fader functions whose value path matters (the same set as the console module's STATEFUL_FUNCTIONS):
@@ -131,6 +134,8 @@ struct CtlBoundary {
     gs: u64,
     tgt: CtlTarget,
     d: u8,
+    /// KB-21: the binding revision a down was produced against.
+    br: Option<u64>,
 }
 
 /// Motion waiting to be sent: deltas of one control, generation and gesture merge into it.
@@ -140,6 +145,8 @@ struct Motion {
     c: String,
     tgt: CtlTarget,
     cg: u64,
+    /// KB-21: the binding revision the motion was produced against (absent before the first known context).
+    br: Option<u64>,
     gs: u64,
     fine: bool,
     dx: i32,
@@ -160,6 +167,15 @@ struct Gesture {
 enum PendingKind {
     Key { k: &'static str, d: u8 },
     Ctl(CtlBoundary),
+    /// KB-21: the executor binding (the bank windows' executor list and page).
+    Bind(BindSpec),
+}
+
+/// KB-21: what the surface asks the plugin to bind (see `Link::set_binding`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BindSpec {
+    pub ex: Vec<u32>,
+    pub pg: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -262,6 +278,12 @@ pub struct Link {
     gs_next: u64,
     motion: Vec<Motion>,
     last_flush: BTreeMap<(String, String), f64>,
+    /// KB-21: the executor binding this surface wants (sent after every pairing), whether it went out for
+    /// the current pairing, the last binding revision seen in a context and the change flag for the caller.
+    desired_bind: Option<BindSpec>,
+    bind_sent: bool,
+    last_br: Option<u64>,
+    binding_changed: bool,
 }
 
 fn nonce() -> String {
@@ -295,6 +317,10 @@ impl Link {
             gs_next: 1,
             motion: Vec::new(),
             last_flush: BTreeMap::new(),
+            desired_bind: None,
+            bind_sent: false,
+            last_br: None,
+            binding_changed: false,
         }
     }
 
@@ -397,8 +423,12 @@ impl Link {
             PendingKind::Ctl(b) => {
                 let b = b.clone();
                 self.send_session(|sid, seq| {
-                    serde_json::to_string(&ToPlugin::Ctl { sid, seq, ev, k: b.k, dev: &b.dev, c: &b.c, es: b.es, cg: b.cg, gs: Some(b.gs), tgt: b.tgt, dx: None, v: None, d: Some(b.d), fine: None, tk: None }).expect("ctl serialises")
+                    serde_json::to_string(&ToPlugin::Ctl { sid, seq, ev, k: b.k, dev: &b.dev, c: &b.c, es: b.es, cg: b.cg, gs: Some(b.gs), tgt: b.tgt, dx: None, v: None, d: Some(b.d), fine: None, tk: None, br: b.br }).expect("ctl serialises")
                 })
+            }
+            PendingKind::Bind(spec) => {
+                let spec = spec.clone();
+                self.send_session(|sid, seq| serde_json::to_string(&ToPlugin::Bind { sid, seq, ev, ex: spec.ex.clone(), pg: spec.pg }).expect("bind serialises"))
             }
         }
     }
@@ -412,6 +442,61 @@ impl Link {
 
     pub fn current_generation(&self, now: f64) -> Option<u64> {
         self.context_view(now).and_then(|c| c.generation)
+    }
+
+    /// KB-21: the plugin's binding revision as the last context reported it (`bind.br`); motion and downs
+    /// carry it so a replaced binding refuses what was produced against the old one.
+    pub fn current_binding(&self, now: f64) -> Option<u64> {
+        self.context_view(now).and_then(|c| c.body.get("bind")).and_then(|b| b.get("br")).and_then(|v| v.as_u64())
+    }
+
+    /// KB-21: the plugin's binding as the last context reported it: the executor list, the page (None =
+    /// following the user's page) and the revision. What the plugin binds, not what the service asked.
+    pub fn plugin_binding(&self, now: f64) -> Option<BindSpec> {
+        let ctx = self.context_view(now)?;
+        let b = ctx.body.get("bind")?;
+        let ex = b.get("ex")?.as_array()?.iter().filter_map(|v| v.as_u64()).map(|v| v as u32).collect();
+        Some(BindSpec { ex, pg: b.get("pg").and_then(|v| v.as_u64()).map(|v| v as u32) })
+    }
+
+    /// KB-21: the user's current executor page as the last context reported it.
+    pub fn console_page(&self, now: f64) -> Option<u32> {
+        self.context_view(now).and_then(|c| c.body.get("page")).and_then(|v| v.as_u64()).map(|v| v as u32)
+    }
+
+    /// KB-21: true once after the plugin's binding revision changed (a `bind` of ours applied, or the plugin
+    /// rebound on its own): held strip gestures are then rebound by the plugin, so the caller cancels them locally.
+    pub fn take_binding_changed(&mut self) -> bool {
+        std::mem::take(&mut self.binding_changed)
+    }
+
+    /// KB-21: the executor binding this surface wants. Sent as a `bind` packet (retransmitted until acknowledged)
+    /// now if paired, and again after every new pairing; an unchanged spec is not re-sent.
+    pub fn set_binding(&mut self, spec: BindSpec, now: f64) {
+        if self.desired_bind.as_ref() == Some(&spec) {
+            return;
+        }
+        self.desired_bind = Some(spec);
+        self.bind_sent = false;
+        self.send_bind(now);
+    }
+
+    fn send_bind(&mut self, now: f64) {
+        if self.bind_sent || self.session().is_none() {
+            return;
+        }
+        let Some(spec) = self.desired_bind.clone() else { return };
+        // Drop a bind still in flight: the newer spec replaces it.
+        self.pending.retain(|p| !matches!(p.kind, PendingKind::Bind(_)));
+        let ev = self.ev_next;
+        self.ev_next += 1;
+        let p = Pending { ev, kind: PendingKind::Bind(spec.clone()), first_sent: now, next_at: now + self.cfg.retransmit_spacing, attempts: 1 };
+        self.stats.events += 1;
+        self.stats.binds += 1;
+        self.send_pending(&p);
+        self.pending.push(p);
+        self.bind_sent = true;
+        self.note(format!("bind: {} executor(s) {}", spec.ex.len(), spec.pg.map(|p| format!("on page {p} (independent)")).unwrap_or_else(|| "following the console's page".into())));
     }
 
     /// KB-20: what the last context said about an encoder slot's programmer value, for the strips' absolute-mode
@@ -436,13 +521,14 @@ impl Link {
     fn position_supersedes(&self, tgt: &CtlTarget, now: f64) -> bool {
         match tgt {
             CtlTarget::Slot { .. } => true,
-            CtlTarget::Executor { ex, el } => {
+            CtlTarget::Executor { ex, el, pg } => {
                 if *el != "fader" {
                     return false;
                 }
                 let Some(ctx) = self.context_view(now) else { return false };
                 let Some(exs) = ctx.body.get("ex").and_then(|v| v.as_array()) else { return false };
-                let Some(x) = exs.iter().find(|x| x.get("n").and_then(|n| n.as_u64()) == Some(*ex as u64)) else { return false };
+                // KB-21: the context lists each executor with the page it is bound to (`pg` absent = following).
+                let Some(x) = exs.iter().find(|x| x.get("n").and_then(|n| n.as_u64()) == Some(*ex as u64) && x.get("pg").and_then(|p| p.as_u64()).map(|p| p as u32) == *pg) else { return false };
                 let tok = x.get("tok").and_then(|t| t.as_str()).or_else(|| x.get("fd").and_then(|t| t.as_str()));
                 match tok {
                     Some(t) => {
@@ -503,7 +589,8 @@ impl Link {
                         return;
                     }
                 }
-                self.motion.push(Motion { dev: dev.into(), c: c.into(), tgt, cg, gs, fine, dx, v: None, takeover: false, first_at: now, events: 1 });
+                let br = self.current_binding(now);
+                self.motion.push(Motion { dev: dev.into(), c: c.into(), tgt, cg, br, gs, fine, dx, v: None, takeover: false, first_at: now, events: 1 });
             }
             CtlKind::Abs { v, takeover } => {
                 let Some(cg) = cg else {
@@ -535,7 +622,8 @@ impl Link {
                         self.stats.ctl_overflow += 1;
                     }
                 }
-                self.motion.push(Motion { dev: dev.into(), c: c.into(), tgt, cg, gs, fine: false, dx: 0, v: Some(v.clamp(0.0, 1.0)), takeover, first_at: now, events: 1 });
+                let br = self.current_binding(now);
+                self.motion.push(Motion { dev: dev.into(), c: c.into(), tgt, cg, br, gs, fine: false, dx: 0, v: Some(v.clamp(0.0, 1.0)), takeover, first_at: now, events: 1 });
             }
             CtlKind::Touch { down } | CtlKind::Btn { down } => {
                 let k: &'static str = if matches!(kind, CtlKind::Touch { .. }) { "touch" } else { "btn" };
@@ -572,7 +660,8 @@ impl Link {
                 let es = self.next_es(dev);
                 let ev = self.ev_next;
                 self.ev_next += 1;
-                let b = CtlBoundary { k, dev: dev.into(), c: c.into(), es, cg: if down { cg } else { None }, gs, tgt, d: if down { 1 } else { 0 } };
+                let br = if down { self.current_binding(now) } else { None };
+                let b = CtlBoundary { k, dev: dev.into(), c: c.into(), es, cg: if down { cg } else { None }, gs, tgt, d: if down { 1 } else { 0 }, br };
                 let p = Pending { ev, kind: PendingKind::Ctl(b), first_sent: now, next_at: now + self.cfg.retransmit_spacing, attempts: 1 };
                 self.stats.events += 1;
                 self.stats.ctl_sent += 1;
@@ -592,7 +681,7 @@ impl Link {
         let (k, dx, v): (&'static str, Option<i32>, Option<f64>) = if m.v.is_some() { ("abs", None, m.v) } else { ("rel", Some(m.dx.clamp(-4096, 4096)), None) };
         let fine = if m.fine { Some(1) } else { None };
         let tk = if m.takeover && m.v.is_some() { Some(1) } else { None };
-        self.send_session(|sid, seq| serde_json::to_string(&ToPlugin::Ctl { sid, seq, ev, k, dev: &m.dev, c: &m.c, es, cg: Some(m.cg), gs: Some(m.gs), tgt: m.tgt, dx, v, d: None, fine, tk }).expect("ctl serialises"));
+        self.send_session(|sid, seq| serde_json::to_string(&ToPlugin::Ctl { sid, seq, ev, k, dev: &m.dev, c: &m.c, es, cg: Some(m.cg), gs: Some(m.gs), tgt: m.tgt, dx, v, d: None, fine, tk, br: m.br }).expect("ctl serialises"));
         self.last_flush.insert((m.dev.clone(), m.c.clone()), now);
     }
 
@@ -787,6 +876,10 @@ impl Link {
                 self.context = None;
                 self.last_rx = now;
                 self.link_up = true;
+                // KB-21: the plugin's binding after a (re)pairing is its own default; ours goes out again.
+                self.bind_sent = false;
+                self.last_br = None;
+                self.send_bind(now);
             }
             FromPlugin::Err { sid, e, .. } => {
                 if e == "no-session" {
@@ -804,15 +897,24 @@ impl Link {
                     self.note(format!("plugin error: {e}"));
                 }
             }
-            FromPlugin::Ack { sid, seq, ev, ok, code, why, lost, coalesced, cg, .. } => {
+            FromPlugin::Ack { sid, seq, ev, ok, code, why, lost, coalesced, cg, br, .. } => {
                 if !self.admit(&sid, seq, now) {
                     return;
                 }
                 let mut was_ctl = false;
+                let mut was_bind = false;
                 if let Some(i) = self.pending.iter().position(|p| p.ev == ev) {
                     let p = self.pending.remove(i);
                     was_ctl = matches!(p.kind, PendingKind::Ctl(_));
+                    was_bind = matches!(p.kind, PendingKind::Bind(_));
                     self.rtt_ms.push((now - p.first_sent) * 1000.0);
+                }
+                if was_bind {
+                    if ok == 1 {
+                        self.note(format!("bind acknowledged: binding revision {}", br.map(|b| b.to_string()).unwrap_or_else(|| "?".into())));
+                    } else {
+                        self.note(format!("bind refused [{}] {}: the plugin keeps its previous binding", code.clone().unwrap_or_default(), why.clone().unwrap_or_default()));
+                    }
                 }
                 if let Some(n) = lost {
                     // KB-18: the plugin saw a gap in our per-device sequence: packets were lost on the way.
@@ -899,6 +1001,16 @@ impl Link {
                     } else {
                         self.note(format!("context unknown (epoch {}): the plugin has not observed every part yet", epoch));
                     }
+                }
+                // KB-21: a new binding revision (our bind applied, or the plugin rebound) is reported once to the caller.
+                let br = rest.get("bind").and_then(|b| b.get("br")).and_then(|v| v.as_u64());
+                if br.is_some() && br != self.last_br {
+                    if self.last_br.is_some() {
+                        self.binding_changed = true;
+                        self.stats.binding_revisions += 1;
+                        self.note(format!("binding revision {} (was {}): held strip gestures are rebound", br.unwrap_or(0), self.last_br.unwrap_or(0)));
+                    }
+                    self.last_br = br;
                 }
                 self.context = Some(ConsoleContext { plugin_generation: pgen, epoch, known, generation: cg, body: rest, received_at: now });
             }
@@ -1376,7 +1488,7 @@ mod tests {
     fn touch_and_button_boundaries_are_retransmitted_and_a_release_supersedes_the_press_after_flushing_motion() {
         let (mut link, mut plugin) = pair(40.0);
         link.receive(&plugin.context(1, 1, Some(1), json!({})), 40.0);
-        let exec = CtlTarget::Executor { ex: 201, el: "fader" };
+        let exec = CtlTarget::Executor { ex: 201, el: "fader", pg: None };
         // The context says executor 201's fader is a Master: a newer position may replace a queued one.
         let mut v = json!({"t":"context","gen":plugin.generation,"epoch":1,"known":1,"cg":1,"enc":{},"slots":[],"page":1,"pool":"Default","display":1,
                            "ex":[{"n":201,"empty":0,"tgt":1,"fd":"Master","tok":"FaderMaster"},{"n":202,"empty":0,"tgt":1,"fd":"X","tok":"FaderX"}]});
@@ -1475,7 +1587,7 @@ mod tests {
         let f = plugin.frame(v);
         link.receive(&f, 80.0);
         // Review 7: a crossfade's 1.0 -> 0.0 pair must reach the plugin as two positions.
-        let x = CtlTarget::Executor { ex: 202, el: "fader" };
+        let x = CtlTarget::Executor { ex: 202, el: "fader", pg: None };
         link.control_event("mtouch", "Strip2", x, CtlKind::Touch { down: true }, 80.0);
         link.control_event("mtouch", "Strip2", x, CtlKind::Abs { v: 1.0, takeover: false }, 80.001);
         link.control_event("mtouch", "Strip2", x, CtlKind::Abs { v: 0.0, takeover: false }, 80.002);
@@ -1492,13 +1604,13 @@ mod tests {
         assert_eq!(c2.len(), 1);
         assert_eq!(c2[0]["v"], 0.0);
         // Temp keeps its positions too; a Master merges; an executor the context does not list is kept whole.
-        let t = CtlTarget::Executor { ex: 203, el: "fader" };
+        let t = CtlTarget::Executor { ex: 203, el: "fader", pg: None };
         link.control_event("mtouch", "Strip3", t, CtlKind::Abs { v: 0.0, takeover: false }, 80.1);
         link.control_event("mtouch", "Strip3", t, CtlKind::Abs { v: 0.3, takeover: false }, 80.101);
-        let m = CtlTarget::Executor { ex: 201, el: "fader" };
+        let m = CtlTarget::Executor { ex: 201, el: "fader", pg: None };
         link.control_event("mtouch", "Strip1", m, CtlKind::Abs { v: 0.1, takeover: false }, 80.1);
         link.control_event("mtouch", "Strip1", m, CtlKind::Abs { v: 0.2, takeover: false }, 80.101);
-        let u = CtlTarget::Executor { ex: 299, el: "fader" };
+        let u = CtlTarget::Executor { ex: 299, el: "fader", pg: None };
         link.control_event("mtouch", "Strip9", u, CtlKind::Abs { v: 0.1, takeover: false }, 80.1);
         link.control_event("mtouch", "Strip9", u, CtlKind::Abs { v: 0.2, takeover: false }, 80.101);
         assert_eq!(link.queued_motion(), 5);
@@ -1525,4 +1637,92 @@ mod tests {
         assert_eq!(link2.queued_motion(), 3);
         assert_eq!(link2.stats.ctl_overflow, 2);
     }
+
+    // ---- KB-21: executor binding, revisions, page-bound targets ----
+    #[test]
+    fn a_bind_goes_out_after_pairing_and_again_after_a_repairing_and_its_ack_names_the_revision() {
+        let key = Key::from_hex(&"0123456789abcdef".repeat(4)).unwrap();
+        let mut link = Link::new(Config { id: "nxk-test".into(), ..Config::default() }, key.clone(), 0.0);
+        let mut plugin = FakePlugin::new(key);
+        link.set_binding(BindSpec { ex: vec![101, 201, 301], pg: None }, 0.0);
+        link.tick(0.0);
+        let hello = plugin.decode(link.take_outgoing());
+        assert_eq!(hello.len(), 1, "unpaired: nothing but the hello goes out");
+        let nonce = hello[0]["nonce"].as_str().unwrap().to_string();
+        link.receive(&plugin.welcome(&nonce), 0.01);
+        let out = plugin.decode(link.take_outgoing());
+        let bind = out.iter().find(|v| v["t"] == "bind").expect("the bind follows the welcome");
+        assert_eq!(bind["ex"], json!([101, 201, 301]));
+        assert!(bind.get("pg").is_none(), "follow mode binds without a page");
+        let ev = bind["ev"].as_u64().unwrap();
+        assert_eq!(link.stats.binds, 1);
+        // Retransmitted like a key until acknowledged.
+        link.tick(0.5);
+        assert!(plugin.decode(link.take_outgoing()).iter().any(|v| v["t"] == "bind" && v["ev"] == ev), "retransmitted");
+        link.receive(&plugin.ctl_ack(ev, true, json!({"br": 2})), 0.6);
+        assert_eq!(link.pending_count(), 0);
+        assert!(link.log.iter().any(|l| l.contains("bind acknowledged: binding revision 2")), "{:?}", link.log);
+        // The same spec is not re-sent; a new one is.
+        link.set_binding(BindSpec { ex: vec![101, 201, 301], pg: None }, 0.7);
+        link.tick(0.7);
+        assert!(plugin.decode(link.take_outgoing()).iter().all(|v| v["t"] != "bind"));
+        link.set_binding(BindSpec { ex: vec![111, 211, 311], pg: Some(2) }, 0.8);
+        link.tick(0.8);
+        let out = plugin.decode(link.take_outgoing());
+        let bind = out.iter().find(|v| v["t"] == "bind").expect("a changed spec goes out");
+        assert_eq!(bind["pg"], json!(2));
+        assert_eq!(link.stats.binds, 2);
+        let ev2 = bind["ev"].as_u64().unwrap();
+        link.receive(&plugin.ctl_ack(ev2, false, json!({"code": "bad-bind", "why": "too many"})), 0.9);
+        assert!(link.log.iter().any(|l| l.contains("bind refused [bad-bind]")));
+        // A new pairing (the plugin forgot us) sends the current spec again.
+        link.receive(&plugin.frame(json!({"t":"err","e":"no-session"})), 1.0);
+        link.tick(1.0);
+        let hello = plugin.decode(link.take_outgoing());
+        let nonce = hello.iter().find(|v| v["t"] == "hello").unwrap()["nonce"].as_str().unwrap().to_string();
+        link.receive(&plugin.welcome(&nonce), 1.1);
+        let out = plugin.decode(link.take_outgoing());
+        assert!(out.iter().any(|v| v["t"] == "bind" && v["pg"] == json!(2)), "re-sent after the re-pairing");
+        assert_eq!(link.stats.binds, 3);
+    }
+
+    #[test]
+    fn motion_and_downs_carry_the_binding_revision_and_a_new_revision_is_reported_once() {
+        let (mut link, mut plugin) = pair(10.0);
+        let ctx = |p: &mut FakePlugin, cg: u64, br: u64| {
+            let mut v = json!({"t":"context","gen":p.generation,"epoch":1,"known":1,"cg":cg,"enc":{},"slots":[],"ex":[{"n":201,"pg":2,"tgt":1,"fd":"Master","tok":"FaderMaster"},{"n":201,"tgt":1,"fd":"X","tok":"FaderX"}],"page":1,"pool":"Default","display":1,"bind":{"ex":[201],"pg":2,"br":br,"mode":"page"}});
+            v["cg"] = json!(cg);
+            p.frame(v)
+        };
+        link.receive(&ctx(&mut plugin, 3, 1), 10.02);
+        assert_eq!(link.current_binding(10.03), Some(1));
+        assert_eq!(link.console_page(10.03), Some(1));
+        assert_eq!(link.plugin_binding(10.03), Some(BindSpec { ex: vec![201], pg: Some(2) }));
+        assert!(!link.take_binding_changed(), "the first revision is not a change");
+        let pg2 = CtlTarget::Executor { ex: 201, el: "key", pg: Some(2) };
+        link.control_event("mtouch", "PFA1", pg2, CtlKind::Btn { down: true }, 10.05);
+        link.control_event("nxk", "Rotary1", CtlTarget::Slot { slot: 1 }, CtlKind::Rel { dx: 1, fine: false }, 10.05);
+        link.tick(10.06);
+        let out = plugin.decode(link.take_outgoing());
+        let down = out.iter().find(|v| v["t"] == "ctl" && v["k"] == "btn").unwrap();
+        assert_eq!(down["br"], json!(1));
+        assert_eq!(down["tgt"], json!({"ex": 201, "el": "key", "pg": 2}), "a page-bound target carries its page");
+        let rel = out.iter().find(|v| v["t"] == "ctl" && v["k"] == "rel").unwrap();
+        assert_eq!(rel["br"], json!(1));
+        // The plugin's revision moves (our bank change applied): reported once, then the next events carry it.
+        link.receive(&ctx(&mut plugin, 1, 2), 10.1);
+        assert!(link.take_binding_changed());
+        assert!(!link.take_binding_changed());
+        assert_eq!(link.stats.binding_revisions, 1);
+        link.control_event("mtouch", "PFA1", pg2, CtlKind::Btn { down: false }, 10.2);
+        link.tick(10.21);
+        let out = plugin.decode(link.take_outgoing());
+        let up = out.iter().find(|v| v["t"] == "ctl" && v["k"] == "btn").unwrap();
+        assert!(up.get("br").is_none() && up.get("cg").is_none(), "a release carries neither");
+        // position_supersedes matches the executor by (page, number): page 2's 201 is Master (stateless), the following 201 is X (stateful).
+        assert!(link.position_supersedes(&CtlTarget::Executor { ex: 201, el: "fader", pg: Some(2) }, 10.3));
+        assert!(!link.position_supersedes(&CtlTarget::Executor { ex: 201, el: "fader", pg: None }, 10.3));
+        assert!(!link.position_supersedes(&CtlTarget::Executor { ex: 201, el: "fader", pg: Some(3) }, 10.3), "an unbound page is unknown: no");
+    }
+
 }

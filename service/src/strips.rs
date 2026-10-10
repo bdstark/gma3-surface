@@ -111,6 +111,8 @@ pub struct Stats {
     pub takeovers: u64,
     /// Reports for faders that are not parameter strips (playback strips, pressure keys).
     pub ignored: u64,
+    /// KB-21: touches rebound by a replaced binding (a bank change), as the generation would.
+    pub rebinds: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -269,6 +271,19 @@ impl Strips {
             }
         }
         outs
+    }
+
+    /// KB-21: the plugin's binding was replaced (a surface bank change, or the plugin rebound): every touched strip
+    /// is rebound exactly as for a moved generation (its motion is dropped until the lift; absolute mode picks up
+    /// again on the next touch). Nothing goes out: the plugin refuses the motion `gesture-rebound` anyway.
+    pub fn rebind_all(&mut self) {
+        for (i, s) in self.strips.iter_mut().enumerate() {
+            if s.touching && !s.rebound {
+                s.rebound = true;
+                self.stats.rebinds += 1;
+                self.log.push(format!("{}: the binding was replaced while touched; lift and touch again", CONTROLS[i]));
+            }
+        }
     }
 
     /// Housekeeping: a moved generation marks touched strips rebound; a touch past `max_touch` is ended.

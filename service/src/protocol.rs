@@ -55,6 +55,23 @@ pub enum ToPlugin<'a> {
         /// KB-20: 1 on a position the surface marks as a deliberate takeover (strip key held at touch-down).
         #[serde(skip_serializing_if = "Option::is_none")]
         tk: Option<u8>,
+        /// KB-21: the plugin's binding revision the event was produced against (the context's `bind.br`); the
+        /// plugin refuses an event carrying an older revision `stale-binding`. Absent only for a release.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        br: Option<u64>,
+    },
+    /// KB-21: the surface's executor binding: the executor numbers its playback controls currently map to
+    /// (every bank window of every section) and the page they are bound to (`pg` absent: the plugin's
+    /// executors follow the user's current page; present: an independent page, read whatever page the
+    /// console shows). Retransmitted like a key until acknowledged; the ack carries the new binding
+    /// revision `br`. The plugin binds exactly this list (bounded) and never changes the console's page.
+    Bind {
+        sid: &'a str,
+        seq: u64,
+        ev: u64,
+        ex: Vec<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pg: Option<u32>,
     },
     Hb {
         sid: &'a str,
@@ -68,12 +85,19 @@ pub enum ToPlugin<'a> {
 }
 
 /// What a control event means on the console: an encoder slot of the bound display, or an element of
-/// a bound executor. Serialised as `{"slot":n}` or `{"ex":n,"el":"fader"}`.
+/// a bound executor. Serialised as `{"slot":n}` or `{"ex":n,"el":"fader"}`; KB-21: an executor bound to an
+/// explicit page carries it (`"pg":P`), one that follows the user's page does not. The plugin resolves the
+/// target by (page, executor) against its binding, never silently against the current page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(untagged)]
 pub enum CtlTarget {
     Slot { slot: u8 },
-    Executor { ex: u32, el: &'static str },
+    Executor {
+        ex: u32,
+        el: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pg: Option<u32>,
+    },
 }
 
 /// A welcome's key report: sorted lists of surface key names.
@@ -142,6 +166,9 @@ pub enum FromPlugin {
         coalesced: Option<u8>,
         #[serde(default)]
         cg: Option<u64>,
+        /// KB-21: the binding revision after a `bind` was applied (on its ack).
+        #[serde(default)]
+        br: Option<u64>,
     },
     Hb {
         sid: String,
@@ -296,10 +323,10 @@ mod tests {
         let k = ToPlugin::Key { sid: "s", seq: 2, ev: 7, k: "Record", d: 1 };
         let text = serde_json::to_string(&k).unwrap();
         assert!(text.contains(r#""t":"key""#) && text.contains(r#""ev":7"#));
-        let c = ToPlugin::Ctl { sid: "s", seq: 3, ev: 8, k: "rel", dev: "nxk", c: "Rotary1", es: 1, cg: Some(4), gs: Some(2), tgt: CtlTarget::Slot { slot: 1 }, dx: Some(-3), v: None, d: None, fine: Some(1), tk: None };
+        let c = ToPlugin::Ctl { sid: "s", seq: 3, ev: 8, k: "rel", dev: "nxk", c: "Rotary1", es: 1, cg: Some(4), gs: Some(2), tgt: CtlTarget::Slot { slot: 1 }, dx: Some(-3), v: None, d: None, fine: Some(1), tk: None, br: None };
         let text = serde_json::to_string(&c).unwrap();
         assert!(text.contains(r#""t":"ctl""#) && text.contains(r#""tgt":{"slot":1}"#) && text.contains(r#""dx":-3"#) && !text.contains(r#""v""#), "{text}");
-        let t = ToPlugin::Ctl { sid: "s", seq: 4, ev: 9, k: "touch", dev: "mtouch", c: "Strip1", es: 2, cg: None, gs: Some(3), tgt: CtlTarget::Executor { ex: 201, el: "fader" }, dx: None, v: None, d: Some(0), fine: None, tk: None };
+        let t = ToPlugin::Ctl { sid: "s", seq: 4, ev: 9, k: "touch", dev: "mtouch", c: "Strip1", es: 2, cg: None, gs: Some(3), tgt: CtlTarget::Executor { ex: 201, el: "fader", pg: None }, dx: None, v: None, d: Some(0), fine: None, tk: None, br: None };
         let text = serde_json::to_string(&t).unwrap();
         assert!(text.contains(r#""tgt":{"ex":201,"el":"fader"}"#) && text.contains(r#""d":0"#) && !text.contains(r#""cg""#), "{text}");
         let a: FromPlugin = serde_json::from_str(r#"{"t":"ack","sid":"s","seq":5,"ev":8,"ok":1,"lost":2,"coalesced":1}"#).unwrap();

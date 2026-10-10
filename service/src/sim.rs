@@ -8,7 +8,11 @@
 //! M-Touch parameter strips as the decoder would report them: `strip<n>:t<v>` a report with the finger down
 //! at position v (0..255; the first one after a lift is the touch-down), `strip<n>:m<v>` a further report
 //! while touched (a move), `strip<n>:lift` or `strip<n>:l<v>` the lift report (resting value v, default the
-//! last one), and `skey<n>:<down|up|tap>` the strip's own capacitive key (fine / takeover).
+//! last one), and `skey<n>:<down|up|tap>` the strip's own capacitive key (fine / takeover). KB-21 adds the
+//! playback banks: `pfa<n>` / `pfb<n>` (n 1..10, `down|up|tap`) the M-Touch playback strip's upper / lower
+//! button, `pbank:up|down` its PLAYBACK BANK +/- key (a tap; `Bank` alone is the NX-K's own key), `pb<n>:t<v>|m<v>|lift` its playback fader (a report
+//! the service counts and does not operate: KB-22), `mpa<n>` / `mpb<n>` (1..12) the M-Play left block's top /
+//! bottom button, `mpe<n>` (1..24) its right block, `lbank:up|down` / `rbank:up|down` the M-Play's bank keys.
 
 use crate::mtouch;
 use crate::nxk::usb::Surface;
@@ -26,6 +30,10 @@ pub enum Action {
     Strip { n: u8, value: u8, touch: bool },
     /// KB-20: the strip's own key.
     StripKey { n: u8, down: bool },
+    /// KB-21: an M-Touch or M-Play key by id (playback buttons, bank keys).
+    PbKey { id: u16, down: bool },
+    /// KB-21: an M-Touch playback fader report (counted, not operated).
+    PbFader { id: u16, value: u8, touch: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +82,44 @@ pub fn parse_script(script: &str) -> Result<Vec<Step>> {
                 steps.push(Step { at_ms: t, action: Action::Strip { n, value: value(v)?, touch: false } });
             } else {
                 return Err(anyhow!("strip{n}: expected t<v>, m<v>, lift or l<v> in '{part}'"));
+            }
+            continue;
+        }
+        // KB-21: playback buttons and bank keys by id (docs/mtouch-protocol-reuse.md).
+        let pb_key = |prefix: &str, max: u16, base: u16| -> Option<u16> {
+            lower.strip_prefix(prefix).and_then(|n| n.parse::<u16>().ok()).filter(|n| (1..=max).contains(n)).map(|n| base + 0x10 * (n - 1))
+        };
+        let pb_id = pb_key("pfa", 10, 0x4201).or_else(|| pb_key("pfb", 10, 0x4202)).or_else(|| pb_key("mpa", 12, 0x9205)).or_else(|| pb_key("mpb", 12, 0x92C5))
+            .or_else(|| lower.strip_prefix("mpe").and_then(|n| n.parse::<u16>().ok()).filter(|n| (1..=24).contains(n)).map(|n| if n <= 12 { 0x9805 + 0x10 * (n - 1) } else { 0x98C5 + 0x10 * (n - 13) }));
+        if let Some(id) = pb_id {
+            match action.trim() {
+                "down" => steps.push(Step { at_ms: t, action: Action::PbKey { id, down: true } }),
+                "up" => steps.push(Step { at_ms: t, action: Action::PbKey { id, down: false } }),
+                "tap" => {
+                    steps.push(Step { at_ms: t, action: Action::PbKey { id, down: true } });
+                    steps.push(Step { at_ms: t + 60, action: Action::PbKey { id, down: false } });
+                }
+                other => return Err(anyhow!("unknown action '{other}' in '{part}'")),
+            }
+            continue;
+        }
+        if lower == "pbank" || lower == "lbank" || lower == "rbank" {
+            let (up, down) = match lower.as_str() { "pbank" => (0x4111, 0x4113), "lbank" => (0x9F12, 0x9F13), _ => (0x9E12, 0x9E13) };
+            let id = match action.trim() { "up" | "+" => up, "down" | "-" => down, other => return Err(anyhow!("{lower}: expected up or down, got '{other}' in '{part}'")) };
+            steps.push(Step { at_ms: t, action: Action::PbKey { id, down: true } });
+            steps.push(Step { at_ms: t + 60, action: Action::PbKey { id, down: false } });
+            continue;
+        }
+        if let Some(n) = lower.strip_prefix("pb").and_then(|n| n.parse::<u16>().ok()).filter(|n| (1..=10).contains(n)) {
+            let id = 0x4203 + 0x10 * (n - 1);
+            let a = action.trim().to_ascii_lowercase();
+            let value = |rest: &str| rest.parse::<u8>().map_err(|_| anyhow!("pb{n}: a position 0..255 is needed in '{part}'"));
+            if a == "lift" {
+                steps.push(Step { at_ms: t, action: Action::PbFader { id, value: 0, touch: false } });
+            } else if let Some(v) = a.strip_prefix('t').or_else(|| a.strip_prefix('m')) {
+                steps.push(Step { at_ms: t, action: Action::PbFader { id, value: value(v)?, touch: true } });
+            } else {
+                return Err(anyhow!("pb{n}: expected t<v>, m<v> or lift in '{part}'"));
             }
             continue;
         }
@@ -130,6 +176,11 @@ fn strip_key_id(n: u8) -> u16 { 0x6101 + 0x10 * n as u16 }
 pub struct SimKeypad {
     queue: VecDeque<Step>,
     strip_out: Vec<mtouch::Event>,
+    /// KB-21: simulated M-Play reports and the output writes (page displays) the loop sent; a simulated M-Touch is
+    /// always "attached", an M-Play only when the script uses it.
+    mplay_out: Vec<mtouch::Event>,
+    pub outputs: Vec<(mtouch::Model, mtouch::Output)>,
+    has_mplay: bool,
     started: Instant,
     loop_script: Option<Vec<Step>>,
     loop_len_ms: u64,
@@ -142,9 +193,13 @@ pub struct SimKeypad {
 impl SimKeypad {
     pub fn new(steps: Vec<Step>, repeat: bool, echo_leds: bool) -> SimKeypad {
         let loop_len_ms = steps.last().map(|s| s.at_ms + 200).unwrap_or(0);
+        let has_mplay = steps.iter().any(|s| matches!(s.action, Action::PbKey { id, .. } if id >= 0x9000));
         SimKeypad {
             queue: steps.iter().cloned().collect(),
             strip_out: Vec::new(),
+            mplay_out: Vec::new(),
+            outputs: Vec::new(),
+            has_mplay,
             started: Instant::now(),
             loop_script: if repeat { Some(steps) } else { None },
             loop_len_ms,
@@ -181,6 +236,16 @@ impl Surface for SimKeypad {
                     let id = strip_key_id(n);
                     let name = mtouch::name_of(mtouch::Model::MTouch, id).unwrap_or("?");
                     self.strip_out.push(if down { mtouch::Event::KeyDown { id, name } } else { mtouch::Event::KeyUp { id, name } });
+                    continue;
+                }
+                Action::PbKey { id, down } => {
+                    let (model, out) = if id >= 0x9000 { (mtouch::Model::MPlay, &mut self.mplay_out) } else { (mtouch::Model::MTouch, &mut self.strip_out) };
+                    let name = mtouch::name_of(model, id).unwrap_or("?");
+                    out.push(if down { mtouch::Event::KeyDown { id, name } } else { mtouch::Event::KeyUp { id, name } });
+                    continue;
+                }
+                Action::PbFader { id, value, touch } => {
+                    self.strip_out.push(mtouch::Event::Fader { id, name: mtouch::name_of(mtouch::Model::MTouch, id).unwrap_or("?"), value, touch });
                     continue;
                 }
             });
@@ -220,6 +285,29 @@ impl Surface for SimKeypad {
 
     fn poll_strips(&mut self) -> Result<Vec<mtouch::Event>> {
         Ok(std::mem::take(&mut self.strip_out))
+    }
+
+    fn poll_mplay(&mut self) -> Result<Vec<mtouch::Event>> {
+        Ok(std::mem::take(&mut self.mplay_out))
+    }
+
+    fn device_present(&self, model: mtouch::Model) -> bool {
+        match model {
+            mtouch::Model::MTouch => true,
+            mtouch::Model::MPlay => self.has_mplay,
+        }
+    }
+
+    /// KB-21: output writes are printed like LED writes (`out ...`) and kept for tests.
+    fn output(&mut self, model: mtouch::Model, out: mtouch::Output) {
+        if self.echo_leds {
+            match &out {
+                mtouch::Output::PageDisplay { id, data } => println!("out {model:?} display {id:04x} <- {}", mtouch::page_display_text(data)),
+                mtouch::Output::LedKey { id, value } => println!("out {model:?} led {id:04x} <- {value:04x}"),
+                mtouch::Output::FaderBar { id, .. } => println!("out {model:?} bar {id:04x}"),
+            }
+        }
+        self.outputs.push((model, out));
     }
 }
 

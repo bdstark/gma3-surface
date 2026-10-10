@@ -2,6 +2,7 @@
 //! onPC over an authenticated UDP link. Protocol and design: docs/surface-protocol.md.
 
 mod auth;
+mod banks;
 mod leds;
 mod link;
 mod mtouch;
@@ -15,7 +16,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use nxk::usb::Surface;
 use nxk::Event;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::net::UdpSocket;
 use std::time::{Duration, Instant};
@@ -57,6 +58,24 @@ struct Cli {
     /// KB-20: `auto` opens an attached M-Touch next to the NX-K in `run` (retrying while it is absent); `off` ignores it.
     #[arg(long, default_value = "auto", global = true)]
     mtouch: String,
+    /// KB-21: `auto` opens an attached M-Play too (its playback buttons and bank keys); `off` ignores it.
+    #[arg(long, default_value = "auto", global = true)]
+    mplay: String,
+    /// KB-21: which executor page the playback banks mean: `follow` (default: the console's current page; a page
+    /// change on the console moves the targets) or a page number (independent: that page whatever the console
+    /// shows; it is never created or selected by the service).
+    #[arg(long, default_value = "follow", global = true)]
+    pb_page: banks::PageMode,
+    /// KB-21: the executor rows a playback strip maps to, `<keyA>,<fader>,<keyB>` row bases (default 101,201,301:
+    /// the button above, the fader's own executor, the button below). A bank of n strips moves by n within a row.
+    #[arg(long, default_value = "101,201,301", global = true)]
+    pb_rows: banks::Rows,
+    /// KB-21: the executor row of the M-Play's right block (24 buttons, banks of 24).
+    #[arg(long, default_value_t = 401, global = true, value_parser = clap::value_parser!(u32).range(1..=901))]
+    pb_ext_row: u32,
+    /// KB-21: `on` binds the playback banks (the plugin reads their executors); `off` leaves playback controls unmapped.
+    #[arg(long, default_value = "on", global = true)]
+    banks: String,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -146,6 +165,11 @@ struct Loop {
     strips_log_seen: usize,
     /// Rotary pushes currently down (released for the keypad when it is lost).
     pushed_wheels: BTreeSet<u8>,
+    /// KB-21: the playback banks (control -> executor mapping, frozen holds, displays).
+    banks: banks::Banks,
+    banks_log_seen: usize,
+    /// What each page display last showed (written only on change).
+    displays: BTreeMap<u16, Option<u16>>,
     /// The fine flag handed to the strips converter by the last strip report (what a stale Bank would corrupt).
     #[cfg(test)]
     last_strip_fine: Option<bool>,
@@ -166,8 +190,25 @@ impl Loop {
         if cli.strips != strips::Mode::Off {
             eprintln!("strips: {:?} on slots {}-{}, {} detents per travel (--strips/--strip-slots/--strip-travel)", cli.strips, cli.strip_slots, cli.strip_slots + 3, cli.strip_travel);
         }
-        Ok(Loop { link: link::Link::new(cfg, key, 0.0), leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots,
+        let banks_on = match cli.banks.to_ascii_lowercase().as_str() {
+            "on" | "yes" => true,
+            "off" | "no" => false,
+            other => return Err(anyhow!("--banks {other}: expected on or off")),
+        };
+        let mplay_on = match cli.mplay.to_ascii_lowercase().as_str() {
+            "auto" => true,
+            "off" | "none" => false,
+            other => return Err(anyhow!("--mplay {other}: expected auto or off")),
+        };
+        let bank_cfg = banks::Config { enabled: banks_on, mode: cli.pb_page, rows: cli.pb_rows, ext_row: cli.pb_ext_row, mplay: mplay_on };
+        let banks = banks::Banks::new(bank_cfg);
+        if banks_on {
+            eprintln!("{} (--pb-page/--pb-rows/--pb-ext-row/--banks; the playback faders are KB-22)", banks.summary(None));
+        }
+        let link = link::Link::new(cfg, key, 0.0);
+        Ok(Loop { link, leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots,
                   strips: strips::Strips::new(strip_cfg), strips_log_seen: 0, pushed_wheels: BTreeSet::new(),
+                  banks, banks_log_seen: 0, displays: BTreeMap::new(),
                   #[cfg(test)]
                   last_strip_fine: None })
     }
@@ -247,22 +288,60 @@ impl Loop {
                         }
                         let outs = self.strips.fader(n, value, touch, self.bank_held, cg, hint, now);
                         self.emit_strip_outs(outs, now);
+                    } else if banks::playback_fader_of(id).is_some() {
+                        self.banks.fader();  // playback faders are KB-22 (pickup against the executor's level)
                     } else {
-                        self.strips.stats.ignored += 1;  // playback strips are not parameters (KB-21/22)
+                        self.strips.stats.ignored += 1;
                     }
                 }
                 mtouch::Event::KeyDown { id, .. } | mtouch::Event::KeyUp { id, .. } => {
+                    let down = matches!(ev, mtouch::Event::KeyDown { .. });
                     if let Some(n) = strips::strip_of_key(id) {
-                        self.strips.key(n, matches!(ev, mtouch::Event::KeyDown { .. }));
+                        self.strips.key(n, down);
+                    } else {
+                        // KB-21: playback buttons and the bank keys.
+                        let out = self.banks.key(id, down);
+                        self.emit_bank_out(out, now);
                     }
                 }
                 mtouch::Event::Pressure { .. } => self.strips.stats.ignored += 1,  // never an input (KB-20)
             }
         }
+        // KB-21: the M-Play's playback buttons, bank keys and (counted) faders.
+        let mplay_events = match surface.poll_mplay() {
+            Ok(ev) => ev,
+            Err(e) => {
+                eprintln!("mplay: {e:#}; releasing what it held");
+                let outs = self.banks.disconnect("mplay");
+                for o in outs {
+                    self.emit_bank_out(Some(o), now);
+                }
+                Vec::new()
+            }
+        };
+        for ev in mplay_events {
+            match ev {
+                mtouch::Event::Fader { .. } => self.banks.fader(),
+                mtouch::Event::KeyDown { id, .. } => { let o = self.banks.key(id, true); self.emit_bank_out(o, now); }
+                mtouch::Event::KeyUp { id, .. } => { let o = self.banks.key(id, false); self.emit_bank_out(o, now); }
+                mtouch::Event::Pressure { .. } => self.banks.stats.unmapped_keys += 1,
+            }
+        }
+        // KB-21: only attached devices' bank windows are bound (an absent M-Play's 60 executors are not watched).
+        self.banks.set_present(mtouch::Model::MTouch, surface.device_present(mtouch::Model::MTouch));
+        self.banks.set_present(mtouch::Model::MPlay, surface.device_present(mtouch::Model::MPlay));
+        if self.banks.take_rebind() && self.banks.cfg.enabled {
+            self.link.set_binding(self.banks.targets(), now);
+        }
+        // KB-21: the plugin replaced its binding (our bank change applied, or its own rebind): a touched parameter
+        // strip is rebound here as it is there; absolute mode picks up again on the next touch.
+        if self.link.take_binding_changed() {
+            self.strips.rebind_all();
+        }
         let cg = self.link.current_generation(now);
         let outs = self.strips.tick(cg, now);
         self.emit_strip_outs(outs, now);
-        let mut buf = [0u8; 2048];
+        let mut buf = [0u8; 16384];
         loop {
             match self.sock.recv(&mut buf) {
                 Ok(n) => self.link.receive(&buf[..n], self.now()),
@@ -285,6 +364,21 @@ impl Loop {
         for (id, v) in self.leds.render(&view, &held, now) {
             surface.led(id, v);
         }
+        // KB-21: the page displays show "page then bank" (blank while the page is unknown); written on change only.
+        if self.banks.cfg.enabled {
+            let page = self.link.console_page(now);
+            for i in 0..self.banks.sections.len() {
+                let s = &self.banks.sections[i];
+                if !s.enabled {
+                    continue;
+                }
+                let v = self.banks.display_value(i, page);
+                if self.displays.get(&s.display) != Some(&v) {
+                    self.displays.insert(s.display, v);
+                    surface.output(s.model, mtouch::Output::PageDisplay { id: s.display, data: mtouch::page_display(v) });
+                }
+            }
+        }
         if self.verbose {
             while self.log_seen < self.link.log.len() {
                 eprintln!("link: {}", self.link.log[self.log_seen]);
@@ -293,6 +387,10 @@ impl Loop {
             while self.strips_log_seen < self.strips.log.len() {
                 eprintln!("strips: {}", self.strips.log[self.strips_log_seen]);
                 self.strips_log_seen += 1;
+            }
+            while self.banks_log_seen < self.banks.log.len() {
+                eprintln!("banks: {}", self.banks.log[self.banks_log_seen]);
+                self.banks_log_seen += 1;
             }
         }
         Ok(())
@@ -324,6 +422,15 @@ impl Loop {
         }
     }
 
+    /// KB-21: a playback button goes to the link as a `btn` event with its (frozen) executor target; a bank change
+    /// is logged (the rebind goes out from `step`).
+    fn emit_bank_out(&mut self, out: Option<banks::Out>, now: f64) {
+        match out {
+            Some(banks::Out::Button { dev, control, target, kind }) => self.link.control_event(dev, control, target, kind, now),
+            Some(banks::Out::Bank { .. }) | None => {}
+        }
+    }
+
     fn run(&mut self, surface: &mut dyn Surface, until: impl Fn(&Loop, &dyn Surface) -> bool) -> Result<()> {
         eprintln!("mtpnxk {}: {} -> plugin at {}", env!("CARGO_PKG_VERSION"), surface.name(), self.sock.peer_addr().map(|a| a.to_string()).unwrap_or_default());
         loop {
@@ -332,6 +439,9 @@ impl Loop {
                 let now = self.now();
                 let outs = self.strips.disconnect();
                 self.emit_strip_outs(outs, now);
+                for o in self.banks.disconnect("mtouch") {
+                    self.emit_bank_out(Some(o), now);
+                }
                 self.link.tick(now);
                 for d in self.link.take_outgoing() {
                     let _ = self.sock.send(&d);
@@ -498,7 +608,10 @@ fn main() -> Result<()> {
             // with whichever is present (an M-Touch alone polls its strips; losing the NX-K does not interrupt it).
             let open_mtouch: Option<Box<dyn FnMut() -> Result<mtouch::usb::UsbSurface>>> =
                 if with_mtouch && cli.strips != strips::Mode::Off { Some(Box::new(|| mtouch::usb::UsbSurface::open_model(mtouch::Model::MTouch))) } else { None };
-            let mut surface = usb_surfaces::Combined::new(Box::new(nxk::usb::UsbKeypad::open), open_mtouch);
+            // KB-21: the M-Play is a third independently reopened device (its playback buttons and bank keys).
+            let open_mplay: Option<Box<dyn FnMut() -> Result<mtouch::usb::UsbSurface>>> =
+                if lp.banks.cfg.mplay && lp.banks.cfg.enabled { Some(Box::new(|| mtouch::usb::UsbSurface::open_model(mtouch::Model::MPlay))) } else { None };
+            let mut surface = usb_surfaces::Combined::new(Box::new(nxk::usb::UsbKeypad::open), open_mtouch).with_mplay(open_mplay);
             loop {
                 let r = lp.run(&mut surface, |_, _| false);
                 eprintln!("surface loop ended: {r:?}; continuing in 1 s");
@@ -518,6 +631,7 @@ fn main() -> Result<()> {
                 timed_out || finished
             })?;
             print_summary(&lp.link, &lp.strips);
+            println!("{}", lp.banks.summary(lp.link.console_page(lp.now())));
             Ok(())
         }
         Cmd::Bench { taps, rate } => {

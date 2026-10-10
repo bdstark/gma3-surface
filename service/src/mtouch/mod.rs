@@ -479,6 +479,13 @@ pub fn page_display(n: Option<u16>) -> [u8; 6] {
     out
 }
 
+/// The digits a `page_display` payload shows, as text (`"-"` for a blank display), for logs and tests.
+pub fn page_display_text(data: &[u8; 6]) -> String {
+    let digit = |b: u8| SEG.iter().position(|s| *s == b).map(|d| char::from(b'0' + d as u8));
+    let s: String = [data[4], data[3], data[2]].iter().filter_map(|b| if *b == 0 { None } else { digit(*b) }).collect();
+    if s.is_empty() { "-".into() } else { s }
+}
+
 /// One vendor control OUT request (`bmRequestType 0x40`, wIndex = control id, wValue as given).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Output {

@@ -1,6 +1,6 @@
-# KB-07, KB-08 and KB-15 to KB-18 in mtpnxk: the surface consumer and its qualification
+# KB-07, KB-08 and KB-15 to KB-21 in mtpnxk: the surface consumer and its qualification
 
-Updated: 2026-10-10 (KB-18 surface half added, see the last section). The feature series KB-01 to KB-09 is defined and tracked in
+Updated: 2026-10-10 (KB-21 surface half added, see the last section). The feature series KB-01 to KB-09 is defined and tracked in
 [bdstark/GrandMA3MCP `KEYBOARD.md`](https://github.com/bdstark/GrandMA3MCP/blob/main/KEYBOARD.md).
 KB-01 to KB-06 are complete there (macOS, onPC 2.5.1.0) and provide the reusable
 console modules this repository vendors. KB-07 (the surface consumer) and KB-08
@@ -430,3 +430,85 @@ absolute mode waited for pickup against the context's 40.9 and placed `At 43.137
 the hardware qualification with the operator at the surface is KB-24's), an explicit takeover on a mixed selection
 through this plugin (the MCP repository's probe covers it through the bridge), two surfaces on one slot,
 Windows/Linux hosts.
+
+## KB-21 — Playback banks and stable executor bindings (surface half, 2026-10-10)
+
+The console half is in the MCP repository (`gma3_mcp_feedback` 0.5.0: an executor target is explicit, pool / page /
+executor / element / mode, read on the user's page or on an explicit page through `ObjectList("Page P.E")`, a missing
+page is `pageMissing` and never created, a wider neighbour of the same row covers the following numbers; `gma3_mcp_control`
+0.4.0: targets resolve by (page, executor), a hold's release goes to the target its down resolved, frozen; bridge 0.17.0;
+branch `feat/kb21-playback-banks`, live record `docs/probes/kb-21-executors-macos-2.5.1.md` there). This repository
+vendors the 0.10.0 / 0.5.0 / 0.4.0 set unchanged from `14464ed` ([tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns
+the banks (`service/src/banks.rs`): which physical control means which executor number is a profile decision made in
+the service, never inferred from the console.
+
+- **Executor page vs surface bank:** the page is the console's; a bank is a window of this surface's controls on it.
+  Bank `k` (0-based) of a section of `size` strips maps strip `i` to executor `row + k x size + (i - 1)` on each of the
+  section's rows (`--pb-rows <keyA>,<fader>,<keyB>`, default `101,201,301`: the console's default layout of a button
+  above, the fader's own executor and a button below; the M-Play's right block is one row, `--pb-ext-row`, default 401).
+  A bank never leaves its row's hundred block (the M-Touch's ten strips: banks 1-9 = 101-190; the M-Play's twelve: 1-7;
+  its 24-button block: 1-3); the bank keys stop at the edge, counted (`edge`) and logged.
+- **Sections and keys:** the M-Touch's ten playback strips (`PFA n` 0x42n1 and `PFB n` 0x42n2 are the keyA / keyB rows'
+  buttons; its `PLAYBACK BANK +/-` 0x4111 / 0x4113 move its bank) and the M-Play's two sections (left: twelve strips with
+  a top and a bottom button, `FADER BANK` 0x9F12 / 0x9F13; right: 24 `FADER EXT PF` buttons, `FADER EXT BANK` 0x9E12 /
+  0x9E13), each banked on its own. The service opens the M-Play next to the M-Touch (`--mplay auto|off`, reopened every
+  2 s like the others); only an **attached** device's windows are bound. Command keys, MF keys and the pressure keys stay
+  unmapped (counted). The playback **faders** are not operated here (KB-22: pickup against the executor's level and the
+  configured fader function); their reports are counted `ignored_faders`.
+- **Follow or independent:** `--pb-page follow` (default) binds the window's executors without a page: the plugin reads
+  them on the console's current page, a `Page n` on the console moves the binding generation and the targets are the new
+  page's. `--pb-page <n>` binds them to that page: read whatever page the console shows, the generation ignores the
+  console's page changes, a page that does not exist is `pageMissing` per target (`pm: 1`) and nothing creates it. Local
+  banking only replaces the bound list; the service never issues a page command.
+- **The binding goes over the wire:** a `bind { ex[], pg? }` packet (retransmitted until acknowledged, sent again after
+  every pairing, on every bank change and when a device appears or goes away); the plugin re-watches exactly that list
+  (bounded, 96: the M-Touch's 30 and the M-Play's 60 fit together on any bank; more is refused `bad-bind` and the previous
+  binding kept), the vendored control module turns the replaced spec into a new **binding revision** and the ack carries
+  it (`br`). The context message carries `bind { ex, pg, br, mode }` and each executor's `pg` (bound page), `pgno` (the
+  page read), `w` (width), `cov` (a covering neighbour), `pm`; motion and downs carry `br`, so an event produced against
+  the old window is refused `stale-binding`, never resolved against the new one.
+- **Frozen holds:** a pressed button's target is recorded at the down and the release carries it, whatever bank the
+  section is on by then (`frozen` counted and logged: "released executor 101 key (pressed before the bank moved; now
+  111)"); the plugin freezes the resolved target on its side as well (status shows `frozen=`). A bank change while a
+  button is held therefore neither releases nor activates the newly mapped executor; a fresh press reaches it. A device
+  that goes away releases what it held against the frozen targets.
+- **Strip gestures on rebinding:** a new binding revision (our bank change applied, or the plugin rebound on its own) marks
+  every touched parameter strip rebound exactly as a moved generation does (`rebinds` counted; "lift and touch again"),
+  so absolute mode picks up or takes over again on the next touch.
+- **Indicators and status:** the M-Touch page display (0x4401) and the M-Play's displays (0x9F01 left, 0x9E01 right) show
+  "page then bank" as `page x 10 + bank` (page 1 bank 2 = `12`; the console's page in follow mode, the fixed one
+  otherwise) while both fit, the bank alone otherwise, blank while the page is unknown; written on change only. The
+  service prints the profile at start and a `banks:` summary line after `sim`/`bench` (mode, page, each section's bank
+  and window or `absent`, held, changes, edge, downs, ups, frozen, ignored_faders, unmapped); `--verbose` logs every bank
+  change, frozen release, bind and revision. The plugin's `status` prints `binding: N executor(s) [...] following the
+  console's page | on page P (independent) revision=R generation=G` and each held gesture's frozen target.
+- **Layouts are the console's:** an expanded assignment (width > 1) covering its neighbours, an empty, reserved or
+  Quickey executor and a missing page are reported by the plugin and refused per target with the reason
+  (`target-unavailable`); nothing here assumes adjacent numbers are separate playbacks.
+- **`mtpnxk_surface.lua` 0.7.0:** the `bind` handler (validation, the bound list, `rewatch`, the revision in the ack), `pg`
+  on executor targets and `br` on events, `bind`/`pg`/`pgno`/`w`/`cov`/`pm` in the context, the binding line in `status`;
+  the KB-06 per-executor state items (`x<n>`, `f<n>`) follow the `execs=` argument only; the feedback instance is configured
+  for 96 executors and 8 reads per tick.
+- **Rust service** (`cargo test` 72, twelve new): `banks.rs` (ids, the default profile and its banks, row edges, the
+  M-Play sections, independent page, frozen holds across a bank change, a lost device, present devices only, displays and
+  the summary, unmapped keys), `link.rs` (the bind after pairing and re-pairing, retransmission, its ack and refusal, `br`
+  on motion and downs, the revision reported once, page-bound targets on the wire, supersession by (page, executor)),
+  `sim` steps `pfa<n>|pfb<n>|mpa<n>|mpb<n>|mpe<n>:down|up|tap`, `pbank|lbank|rbank:up|down`, `pb<n>:t<v>|m<v>|lift`, the
+  `--pb-page/--pb-rows/--pb-ext-row/--mplay/--banks` flags, `device_present`/`poll_mplay`/`output` on the surface trait.
+
+Harness: `lua tools/ma3/test/surface_plugin_test.lua` 221 checks (16 new: `execs=` following the page, a bind
+acknowledged with its revision (sorted, deduplicated, the page kept), the watch list, the context's `bind` and per-executor
+page, a missing page accepted and reported `pm`, malformed and oversized binds refused, a following bind again, a down frozen
+to page 3's object, the rebind moving the revision and marking the hold rebound with the frozen target unchanged, the release
+applied to the frozen target while the number means another object on another page, an old revision refused
+`stale-binding`, a fresh down reaching the new mapping, a page-bound down admitted and one without `pg` refused, bad `pg`/`br`
+rejected, the status line); `cargo test` 72; `sh tools/ma3/test/e2e.sh` adds the bank scenario (a simulated M-Touch alone
+binds 30 executors; `PLAYBACK BANK +` moves to bank 2 and the display shows `12`; a `PFA 1` press on bank 2 is refused
+`executor 111 is empty` by the stub console, its release after `PLAYBACK BANK -` goes to the frozen 111 (`frozen=1`), the
+display is back at `11`; two playback fader reports are counted, not sent).
+
+**Verified live in this repository:** [docs/probes/kb-21-surface-macos-2.5.1.md](docs/probes/kb-21-surface-macos-2.5.1.md).
+
+**Not verified live:** the physical M-Touch and M-Play through `run` (the `sim` path enters the service after the decoder;
+the hardware qualification with the operator at the surfaces is KB-24's), the executor operations themselves (KB-22), an
+expanded assignment on the console (the MCP record says what the console answered), Windows/Linux hosts.
