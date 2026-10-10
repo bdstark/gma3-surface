@@ -329,7 +329,10 @@ page changes; a page that does not exist is `pm: 1` per target and is never crea
 like a key until acknowledged and sent again after every pairing; a bank change or a device appearing / going away
 sends a new one. The plugin validates it (`bad-bind`: not a list, a number outside 1..999, a page outside 1..9999;
 more than 96 executors is acknowledged `bad-bind` with the binding unchanged; a vendored feedback module without
-explicit pages acknowledges a `pg` bind `unsupported`), replaces its bound list, re-watches the context items, and
+explicit pages acknowledges a `pg` bind `unsupported`), replaces its bound list, re-watches the context items (the watch
+list is budgeted for the state readers, two readers per `execs=` entry, the context items and 96 targets; a list the
+feedback could not watch in full is refused `bad-bind` and the previous binding re-watched, since an unobserved item would
+keep the context unknown), and
 the vendored control module makes the replaced spec a new **binding revision** (queued motion dropped, held touches
 rebound); the ack carries that revision (`br`), the generation (`cg`) and the count (`n`). A held button is unaffected:
 its release goes to the target its down resolved (the plugin's frozen record and the service's own), whatever the new

@@ -75,6 +75,14 @@ local json   = require("json")
 -- the MCP repository's (docs/modules.md there, "Console adjustment backend"); this plugin only chooses
 -- the backend.
 local VERSION   = "0.7.0"
+-- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
+local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
+-- Review (PR #6, round 2): the watch list budget covers every supported configuration at once: the ordinary state
+-- readers (9), two readers per execs= entry (x<n>, f<n>; the argument is bounded to MAX_BOUND_EXECUTORS), the context's
+-- own items (data pool, page is shared, encoder bank, slots) and one target per bound executor.
+local STATE_READERS = 9
+local CONTEXT_ITEMS = 4
+local MAX_WATCH_ITEMS = STATE_READERS + 2 * MAX_BOUND_EXECUTORS + CONTEXT_ITEMS + MAX_BOUND_EXECUTORS
 local PROTOCOL  = 1
 local MAGIC     = "MTX1"
 local DEFAULTS = {
@@ -297,7 +305,14 @@ local function parseArgument(argument)
         if m ~= "fake" and m ~= "console" and m ~= "off" then return nil, "control must be fake, console or off" end
         opts.control = m
       elseif k == "display" then opts.display = tonumber(v); if not opts.display then return nil, "display must be a number" end
-      elseif k == "execs" then opts.execs = {}; for n in v:gmatch("[^,]+") do opts.execs[#opts.execs + 1] = tonumber(n) end
+      elseif k == "execs" then
+        opts.execs = {}
+        for n in v:gmatch("[^,]+") do
+          local x = tonumber(n)
+          if not x or x ~= math.floor(x) or x < 1 or x > 999 then return nil, "execs must be executor numbers 1..999" end
+          opts.execs[#opts.execs + 1] = x
+        end
+        if #opts.execs > MAX_BOUND_EXECUTORS then return nil, string.format("execs: at most %d executors (got %d)", MAX_BOUND_EXECUTORS, #opts.execs) end
       else return nil, "unknown option '" .. tok .. "'" end
     else return nil, "unknown token '" .. tok .. "'" end
   end
@@ -744,7 +759,6 @@ end
 -- shows). The watch list is rebuilt around the new spec, the vendored control module turns the replaced binding
 -- key into a new revision (queued motion dropped, holds rebound) and the ack carries that revision (br). Nothing
 -- here changes the console's page or creates one; a page that does not exist is reported pageMissing per target.
-local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
 local function feedbackHasPages()
   local FB = state.modules.feedback and state.modules.feedback.module
   if not FB or type(FB.contextItems) ~= "function" then return false end
@@ -773,9 +787,17 @@ local function handleBind(s, obj, now)
     return nil
   end
   table.sort(list)
+  local prevExecs, prevPage = state.execs, state.execPage
   state.execs, state.execPage = list, obj.pg
+  local w, werr = rewatch(now)
+  if not w then
+    -- The new list cannot be watched in full: the previous binding is restored and watched again.
+    state.execs, state.execPage = prevExecs, prevPage
+    rewatch(now)
+    ackEvent(s, ev, false, { code = "bad-bind", why = "the binding cannot be watched in full (" .. tostring(werr) .. "); the previous binding is kept" })
+    return nil
+  end
   state.counters.binds = (state.counters.binds or 0) + 1
-  rewatch(now)
   local c = ctl()
   local info = c and type(c.bindingInfo) == "function" and c:bindingInfo(now) or nil
   log("bind: %d executor(s) %s (revision %s)", #list, obj.pg and ("on page " .. tostring(obj.pg) .. " (independent)") or "following the console's page", tostring(info and info.revision))
@@ -921,11 +943,20 @@ contextSpec = function()
 end
 
 -- KB-21: the watch list follows the bound executors (replaced on every bind).
+-- Returns the watch result; a truncated list (the module's bound was smaller than the list) is an error the caller
+-- must act on: an unobserved item means the context never becomes known.
 rewatch = function(now)
   local f = fb()
-  if not f then return end
-  local okW, w = pcall(f.watch, f, watchItems(), now)
-  if okW then log("feedback: watching %d item(s)", w.watched) else logerr("feedback watch failed: %s", tostring(w)) end
+  if not f then return nil, "no feedback instance" end
+  local items = watchItems()
+  local okW, w = pcall(f.watch, f, items, now)
+  if not okW then logerr("feedback watch failed: %s", tostring(w)); return nil, tostring(w) end
+  if (w.truncated or 0) > 0 then
+    logerr("feedback: watch list of %d item(s) truncated by %d: the context would never be known", #items, w.truncated)
+    return nil, string.format("watch list of %d items exceeds the feedback bound by %d", #items, w.truncated)
+  end
+  log("feedback: watching %d item(s)", w.watched)
+  return w
 end
 
 -- The context message: a compact copy of the cached contextSnapshot. nil while the module is missing or
@@ -1307,7 +1338,7 @@ local function loadModules()
         -- KB-21: a surface binds every bank window at once (M-Touch 30, M-Play 60 executors), above the module's default bound.
         local cfg = { maxReadsPerService = DEFAULTS.readsPerService }
         -- Review (PR #6): the watch list holds the state items, execs= readers and up to 96 targets: above the module's 64.
-        if entry.key == "feedback" then cfg.maxExecutors = MAX_BOUND_EXECUTORS; cfg.maxItems = MAX_BOUND_EXECUTORS + 32 end
+        if entry.key == "feedback" then cfg.maxExecutors = MAX_BOUND_EXECUTORS; cfg.maxItems = MAX_WATCH_ITEMS end
         return mod.new({ owner = pluginName, deps = deps, config = cfg }):init()
       end)
       if okI then rec.instance = inst else rec.loaded, rec.error = false, "instance: " .. tostring(inst) end

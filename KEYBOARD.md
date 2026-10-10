@@ -485,8 +485,11 @@ the service, never inferred from the console.
 - **Layouts are the console's:** an expanded assignment (width > 1) covering its neighbours, an empty, reserved or
   Quickey executor and a missing page are reported by the plugin and refused per target with the reason
   (`target-unavailable`); nothing here assumes adjacent numbers are separate playbacks.
-- **Review of PR #6:** the watch list is built through the feedback instance (its bound of 96 executors, `maxItems` 128), so an
-  M-Play alone (60) and both surfaces on different banks (84) are watched in full and the context becomes known; losing the
+- **Review of PR #6:** the watch list is built through the feedback instance (its bound of 96 executors) with `maxItems`
+  budgeted for every supported configuration at once (9 state readers + two per `execs=` entry, itself bounded at 96, + 4
+  context items + 96 targets = 301), so an M-Play alone (60), both surfaces on different banks (84) and `execs=201..220` with
+  a bind of 90 are watched in full and the context becomes known; a bind whose list the feedback could not watch in full is
+  refused `bad-bind` and the previous binding re-watched (round 2); losing the
   M-Touch releases its held playback buttons against their frozen targets (the M-Play's holds stay); the vendored control
   module carries the frozen record through the gesture-bound force-end, a raised release, `recover()` and adoption.
 - **`mtpnxk_surface.lua` 0.7.0:** the `bind` handler (validation, the bound list, `rewatch`, the revision in the ack), `pg`
@@ -500,7 +503,7 @@ the service, never inferred from the console.
   `sim` steps `pfa<n>|pfb<n>|mpa<n>|mpb<n>|mpe<n>:down|up|tap`, `pbank|lbank|rbank:up|down`, `pb<n>:t<v>|m<v>|lift`, the
   `--pb-page/--pb-rows/--pb-ext-row/--mplay/--banks` flags, `device_present`/`poll_mplay`/`output` on the surface trait.
 
-Harness: `lua tools/ma3/test/surface_plugin_test.lua` 223 checks (18 new: a bind of 60 and of 84 executors watched in full and known, `execs=` following the page, a bind
+Harness: `lua tools/ma3/test/surface_plugin_test.lua` 226 checks (21 new: a bind of 60 and of 84 executors watched in full and known, `execs=201..220` plus a bind of 90 (142 items) known, a truncated watch list refused with the previous binding kept, `execs=` bounded and validated, `execs=` following the page, a bind
 acknowledged with its revision (sorted, deduplicated, the page kept), the watch list, the context's `bind` and per-executor
 page, a missing page accepted and reported `pm`, malformed and oversized binds refused, a following bind again, a down frozen
 to page 3's object, the rebind moving the revision and marking the hold rebound with the frozen target unchanged, the release
