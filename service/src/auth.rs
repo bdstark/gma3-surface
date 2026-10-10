@@ -14,7 +14,9 @@ pub const KEY_LEN: usize = 32;
 /// Largest datagram the plugin accepts from a service.
 pub const MAX_TO_PLUGIN: usize = 512;
 /// Largest datagram a service accepts from the plugin (the welcome carries key lists).
-pub const MAX_FROM_PLUGIN: usize = 1024;
+/// KB-21: a context message lists every bound executor (up to 96, about 120 bytes each), so the plugin may send
+/// datagrams of up to 16 KiB; the link is loopback UDP (or one LAN hop) where that is one datagram.
+pub const MAX_FROM_PLUGIN: usize = 16384;
 
 #[derive(Clone)]
 pub struct Key(pub [u8; KEY_LEN]);

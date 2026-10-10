@@ -74,7 +74,15 @@ local json   = require("json")
 -- `unsupported` by that backend at admission (nothing pressed; KB-20/21/22). The console semantics are
 -- the MCP repository's (docs/modules.md there, "Console adjustment backend"); this plugin only chooses
 -- the backend.
-local VERSION   = "0.6.0"
+local VERSION   = "0.7.0"
+-- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
+local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
+-- Review (PR #6, round 2): the watch list budget covers every supported configuration at once: the ordinary state
+-- readers (9), two readers per execs= entry (x<n>, f<n>; the argument is bounded to MAX_BOUND_EXECUTORS), the context's
+-- own items (data pool, page is shared, encoder bank, slots) and one target per bound executor.
+local STATE_READERS = 9
+local CONTEXT_ITEMS = 4
+local MAX_WATCH_ITEMS = STATE_READERS + 2 * MAX_BOUND_EXECUTORS + CONTEXT_ITEMS + MAX_BOUND_EXECUTORS
 local PROTOCOL  = 1
 local MAGIC     = "MTX1"
 local DEFAULTS = {
@@ -95,7 +103,7 @@ local DEFAULTS = {
   controlWorkPerTick = 4,  -- KB-18: continuous-control intents applied per loop iteration
   maxCtlDelta = 4096,
   benchMs = 500,         -- how long bench mode waits for a NUM tap to show on the command line
-  readsPerService = 4,
+  readsPerService = 8,     -- KB-21: a bound bank window is up to 96 targets; 8 reads per tick keeps it fresh
 }
 
 -- State survives repeated Plugin calls (file-level locals are re-created on ReloadAllPlugins only).
@@ -297,7 +305,14 @@ local function parseArgument(argument)
         if m ~= "fake" and m ~= "console" and m ~= "off" then return nil, "control must be fake, console or off" end
         opts.control = m
       elseif k == "display" then opts.display = tonumber(v); if not opts.display then return nil, "display must be a number" end
-      elseif k == "execs" then opts.execs = {}; for n in v:gmatch("[^,]+") do opts.execs[#opts.execs + 1] = tonumber(n) end
+      elseif k == "execs" then
+        opts.execs = {}
+        for n in v:gmatch("[^,]+") do
+          local x = tonumber(n)
+          if not x or x ~= math.floor(x) or x < 1 or x > 999 then return nil, "execs must be executor numbers 1..999" end
+          opts.execs[#opts.execs + 1] = x
+        end
+        if #opts.execs > MAX_BOUND_EXECUTORS then return nil, string.format("execs: at most %d executors (got %d)", MAX_BOUND_EXECUTORS, #opts.execs) end
       else return nil, "unknown option '" .. tok .. "'" end
     else return nil, "unknown token '" .. tok .. "'" end
   end
@@ -659,9 +674,13 @@ local function handleCtl(s, obj, now)
     target = { slot = t.slot }
   elseif t.ex ~= nil then
     if type(t.ex) ~= "number" or t.ex ~= math.floor(t.ex) or t.ex < 1 or not CTL_ELEMENTS[t.el] then return "bad-target" end
-    target = { executor = t.ex, element = t.el }
+    -- KB-21: an executor bound to an explicit page carries it; the module resolves by (page, executor).
+    if t.pg ~= nil and (type(t.pg) ~= "number" or t.pg ~= math.floor(t.pg) or t.pg < 1) then return "bad-target" end
+    target = { executor = t.ex, element = t.el, page = t.pg }
   else return "bad-target" end
-  local event = { type = kind, device = obj.dev, control = obj.c, seq = obj.es, generation = obj.cg, gesture = obj.gs, target = target, fine = obj.fine == 1 or nil }
+  -- KB-21: the binding revision the event was produced against (the context's bind.br); the module refuses an older one stale-binding.
+  if obj.br ~= nil and (type(obj.br) ~= "number" or obj.br ~= math.floor(obj.br) or obj.br < 0) then return "bad-br" end
+  local event = { type = kind, device = obj.dev, control = obj.c, seq = obj.es, generation = obj.cg, gesture = obj.gs, target = target, fine = obj.fine == 1 or nil, binding = obj.br }
   if kind == "relative" then
     if type(obj.dx) ~= "number" or obj.dx ~= math.floor(obj.dx) or obj.dx == 0 or math.abs(obj.dx) > DEFAULTS.maxCtlDelta then return "bad-dx" end
     event.delta = obj.dx
@@ -735,8 +754,59 @@ local function handleHeartbeat(s, obj, now, revived)
   return nil
 end
 
+-- KB-21: the service's executor binding: the numbers its playback banks currently map to and the page they are
+-- bound to (pg absent: the executors follow the user's current page; present: that page whatever the console
+-- shows). The watch list is rebuilt around the new spec, the vendored control module turns the replaced binding
+-- key into a new revision (queued motion dropped, holds rebound) and the ack carries that revision (br). Nothing
+-- here changes the console's page or creates one; a page that does not exist is reported pageMissing per target.
+local function feedbackHasPages()
+  local FB = state.modules.feedback and state.modules.feedback.module
+  if not FB or type(FB.contextItems) ~= "function" then return false end
+  local ok, items = pcall(FB.contextItems, { executors = { 1 }, executorPage = 1 })
+  return ok and type(items) == "table" and items[5] ~= nil and type(items[5].params) == "table" and items[5].params.page == 1
+end
+local rewatch
+local function handleBind(s, obj, now)
+  local ev = obj.ev
+  if type(ev) ~= "number" or ev ~= math.floor(ev) or ev < 0 then return "bad-ev" end
+  if type(obj.ex) ~= "table" then return "bad-bind" end
+  local list, seen = {}, {}
+  for i, n in ipairs(obj.ex) do
+    if type(n) ~= "number" or n ~= math.floor(n) or n < 1 or n > 999 then return "bad-bind" end
+    if not seen[n] then seen[n] = true; list[#list + 1] = n end
+    if i > MAX_BOUND_EXECUTORS then break end
+  end
+  if obj.pg ~= nil and (type(obj.pg) ~= "number" or obj.pg ~= math.floor(obj.pg) or obj.pg < 1 or obj.pg > 9999) then return "bad-bind" end
+  if seenEvent(s, ev) then replayAck(s, ev); return nil end
+  if #obj.ex > MAX_BOUND_EXECUTORS then
+    ackEvent(s, ev, false, { code = "bad-bind", why = string.format("%d executors exceed the bound of %d; the binding is unchanged", #obj.ex, MAX_BOUND_EXECUTORS) })
+    return nil
+  end
+  if obj.pg ~= nil and not feedbackHasPages() then
+    ackEvent(s, ev, false, { code = "unsupported", why = "the vendored feedback module has no explicit executor pages (0.5.0 or newer); bind without pg to follow the console's page" })
+    return nil
+  end
+  table.sort(list)
+  local prevExecs, prevPage = state.execs, state.execPage
+  state.execs, state.execPage = list, obj.pg
+  local w, werr = rewatch(now)
+  if not w then
+    -- The new list cannot be watched in full: the previous binding is restored and watched again.
+    state.execs, state.execPage = prevExecs, prevPage
+    rewatch(now)
+    ackEvent(s, ev, false, { code = "bad-bind", why = "the binding cannot be watched in full (" .. tostring(werr) .. "); the previous binding is kept" })
+    return nil
+  end
+  state.counters.binds = (state.counters.binds or 0) + 1
+  local c = ctl()
+  local info = c and type(c.bindingInfo) == "function" and c:bindingInfo(now) or nil
+  log("bind: %d executor(s) %s (revision %s)", #list, obj.pg and ("on page " .. tostring(obj.pg) .. " (independent)") or "following the console's page", tostring(info and info.revision))
+  ackEvent(s, ev, true, { br = info and info.revision or nil, cg = info and info.generation or nil, n = #list })
+  return nil
+end
+
 local HANDLERS = {
-  key = handleKey, wheel = handleWheel, hb = handleHeartbeat, ctl = handleCtl,
+  key = handleKey, wheel = handleWheel, hb = handleHeartbeat, ctl = handleCtl, bind = handleBind,
   bye = function(s, _, now) closeSession(s, now, "bye"); return nil end,
 }
 
@@ -801,13 +871,17 @@ local function watchItems()
   local FB = state.modules.feedback and state.modules.feedback.module
   if not FB then return {} end
   local spec = { readers = { "blind", "highlight", "solo", "previewMode", "previewBar", "maState", "commandText", "page", "shortcutsActive" }, displays = { state.display } }
-  if #state.execs > 0 then spec.executors = state.execs end
+  -- The KB-06 per-executor state items (x<n>, f<n>) follow the execs= argument only; the executors a service binds
+  -- (KB-21, up to 96) are described by the context's ex[] (level, activity) without a second set of readers.
+  if #state.execsArg > 0 then spec.executors = state.execsArg end
   local items = FB.itemsFor(spec)
   -- KB-17: the control-context items (data pool, page, encoder bank and slots of the configured display,
   -- one target per configured executor) are watched alongside, so the loop keeps them observed and the
   -- context message is built from the cache without any read of its own.
-  if type(FB.contextItems) == "function" then
-    for _, it in ipairs(FB.contextItems(contextSpec(), nil)) do items[#items + 1] = it end
+  -- Review (PR #6): through the INSTANCE, so its configured bound (96 executors) applies, not the module default (32).
+  local f = fb()
+  if f and type(f.contextItems) == "function" then
+    for _, it in ipairs(f:contextItems(contextSpec())) do items[#items + 1] = it end
   end
   return items
 end
@@ -864,8 +938,25 @@ state._collectState = collectState
 -- KB-17: the snapshot spec this plugin follows (the configured display and executors).
 contextSpec = function()
   local spec = { display = state.display }
-  if #state.execs > 0 then spec.executors = state.execs end
+  if #state.execs > 0 then spec.executors = state.execs; spec.executorPage = state.execPage end
   return spec
+end
+
+-- KB-21: the watch list follows the bound executors (replaced on every bind).
+-- Returns the watch result; a truncated list (the module's bound was smaller than the list) is an error the caller
+-- must act on: an unobserved item means the context never becomes known.
+rewatch = function(now)
+  local f = fb()
+  if not f then return nil, "no feedback instance" end
+  local items = watchItems()
+  local okW, w = pcall(f.watch, f, items, now)
+  if not okW then logerr("feedback watch failed: %s", tostring(w)); return nil, tostring(w) end
+  if (w.truncated or 0) > 0 then
+    logerr("feedback: watch list of %d item(s) truncated by %d: the context would never be known", #items, w.truncated)
+    return nil, string.format("watch list of %d items exceeds the feedback bound by %d", #items, w.truncated)
+  end
+  log("feedback: watching %d item(s)", w.watched)
+  return w
 end
 
 -- The context message: a compact copy of the cached contextSnapshot. nil while the module is missing or
@@ -882,6 +973,12 @@ local function collectContext(now)
                 why = (known == 0) and (snap.generationNote or (snap.stale and "stale observations") or "unknown") or nil,
                 pool = snap.identity and snap.identity.dataPool and snap.identity.dataPool.name or "?",
                 page = snap.executorPage and snap.executorPage.no or "?" }
+  -- KB-21: what this plugin binds (the service compares it with what it asked) and the revision events must carry.
+  do
+    local c = ctl()
+    local info = c and type(c.bindingInfo) == "function" and c:bindingInfo(now) or nil
+    msg.bind = { ex = state.execs, pg = state.execPage, br = info and info.revision or nil, mode = snap.executorMode or (state.execPage and "page" or "current") }
+  end
   local e = snap.encoder
   if e and e.available and not e.stale then
     msg.enc = { bank = e.value.bank.index, bankName = e.value.bank.name or "?", page = e.value.page.index, pageName = e.value.page.name or "?", ctx = e.value.context or "?", attr = e.value.attributeEditing == true and 1 or 0 }
@@ -911,17 +1008,27 @@ local function collectContext(now)
   msg.ex = {}
   for _, x in ipairs(snap.executors or {}) do
     local r = { n = x.params and x.params.executor }
+    if x.params and x.params.page ~= nil then r.pg = x.params.page end
     if x.available and not x.stale then
       local v = x.value
       r.n = v.executor
       r.empty = v.empty and 1 or 0
       r.tgt = v.playbackTarget and 1 or 0
+      -- KB-21: the explicit identity and layout: the page read, width, a covering neighbour, a missing page.
+      if type(v.page) == "table" and v.page.no then r.pgno = v.page.no elseif type(v.page) == "number" then r.pgno = v.page end
+      if v.width then r.w = v.width end
+      if v.coveredBy then r.cov = v.coveredBy end
+      if v.pageMissing then r.pm = 1 end
+      -- Compact (KB-21: up to 96 executors in one datagram): empty fields and the plain "empty" reason are left out.
       if v.assigned then r.cls, r.name = v.assigned.class or "?", v.assigned.name or "?" end
-      if v.functions then r.kp, r.ku, r.fd = v.functions.keyPress or "", v.functions.keyUnpress or "", v.functions.fader or "" end
+      if v.functions then
+        r.kp, r.fd = v.functions.keyPress or "", v.functions.fader or ""
+        if v.functions.keyUnpress and v.functions.keyUnpress ~= "" then r.ku = v.functions.keyUnpress end
+      end
       if v.level and type(v.level.value) == "number" then r.lvl = math.floor(v.level.value + 0.5); r.tok = v.level.token end
-      if v.active ~= nil then r.act = v.active and 1 or 0 else r.act = "?" end
+      if v.active ~= nil then r.act = v.active and 1 or 0 elseif not v.empty then r.act = "?" end
       if v.appearance and v.appearance.backRGBA then r.rgba = v.appearance.backRGBA end
-      if v.reason then r.why = v.reason end
+      if v.reason and v.reason ~= "the executor is empty" then r.why = v.reason end
     else
       r.why = x.reason or x.error or "not observed"
     end
@@ -1228,7 +1335,11 @@ local function loadModules()
           -- revision; the exemption is declared here, explicitly (the module requires the revision by default).
           return mod.new({ owner = pluginName, deps = deps, config = { defaultLeaseMs = DEFAULTS.leaseMs, maxWorkPerService = DEFAULTS.controlWorkPerTick, requireBindingRevision = false } }):init()
         end
-        return mod.new({ owner = pluginName, deps = deps, config = { maxReadsPerService = DEFAULTS.readsPerService } }):init()
+        -- KB-21: a surface binds every bank window at once (M-Touch 30, M-Play 60 executors), above the module's default bound.
+        local cfg = { maxReadsPerService = DEFAULTS.readsPerService }
+        -- Review (PR #6): the watch list holds the state items, execs= readers and up to 96 targets: above the module's 64.
+        if entry.key == "feedback" then cfg.maxExecutors = MAX_BOUND_EXECUTORS; cfg.maxItems = MAX_WATCH_ITEMS end
+        return mod.new({ owner = pluginName, deps = deps, config = cfg }):init()
       end)
       if okI then rec.instance = inst else rec.loaded, rec.error = false, "instance: " .. tostring(inst) end
     else rec.error = err end
@@ -1559,6 +1670,8 @@ local function start(opts)
   state.allow = opts.allow
   state.display = opts.display or DEFAULTS.display
   state.execs = opts.execs or {}
+  state.execsArg = opts.execs or {}  -- the argument's list (its KB-06 state items); state.execs follows the service's bind
+  state.execPage = nil  -- KB-21: set by the service's bind (an explicit page), never by an argument
   state.bench = opts.bench == true
   state.benchWatch = {}
   state.sessions, state.byId, state.nonces, state.authFail, state.errReplies = {}, {}, {}, {}, {}
@@ -1679,7 +1792,10 @@ local function MainImpl(display_handle, argument)
       local busy = c:admission(now())
       log("control: %s backend=%s unresolved=%d counters admitted=%d applied=%d refused=%d lost=%d coalesced=%d dropped=%d%s", state.controlEnabled and "enabled" or "disabled", tostring(st.backend), #st.unresolved,
           st.counters.admitted, st.counters.applied, st.counters.refused, st.counters.lost, st.counters.coalesced, st.counters.dropped, busy and (" BUSY: " .. tostring(busy.description)) or "")
-      for id, sv in pairs(st.sessions) do for _, g in ipairs(sv.gestureList or {}) do log("control gesture %s: %s on %s/%s target=%s generation=%s%s", id, g.kind, g.device, g.control, json.encode(g.target), tostring(g.generation), g.rebound and " REBOUND (release and re-touch)" or "") end end
+      -- KB-21: the executor binding (what the service bound, or execs= at start) and its revision.
+      local info = type(c.bindingInfo) == "function" and c:bindingInfo(now()) or nil
+      log("binding: %d executor(s) [%s] %s revision=%s generation=%s", #state.execs, table.concat(state.execs, ","), state.execPage and ("on page " .. tostring(state.execPage) .. " (independent)") or "following the console's page", tostring(info and info.revision), tostring(info and info.generation or (info and info.unknown and info.unknown.code)))
+      for id, sv in pairs(st.sessions) do for _, g in ipairs(sv.gestureList or {}) do log("control gesture %s: %s on %s/%s target=%s generation=%s%s%s", id, g.kind, g.device, g.control, json.encode(g.target), tostring(g.generation), g.frozen and (" frozen=" .. json.encode(g.frozen)) or "", g.rebound and " REBOUND (release and re-touch)" or "") end end
       for _, u in ipairs(st.unresolved) do logerr("control UNRESOLVED: %s release on %s/%s: %s", tostring(u.kind), tostring(u.device), tostring(u.control), tostring(u.error)) end
     end
     if state.controlUnresolved and #state.controlUnresolved > 0 then log("%d unresolved control release(s) kept from a previous run (not adopted yet)", #state.controlUnresolved) end

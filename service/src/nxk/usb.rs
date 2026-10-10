@@ -39,6 +39,18 @@ pub trait Surface {
     fn poll_strips(&mut self) -> Result<Vec<crate::mtouch::Event>> {
         Ok(Vec::new())
     }
+    /// KB-21: reports of an attached M-Play (its playback buttons, faders and bank keys), decoded; none by default.
+    /// `Err` means the M-Play went away.
+    fn poll_mplay(&mut self) -> Result<Vec<crate::mtouch::Event>> {
+        Ok(Vec::new())
+    }
+    /// KB-21: one output write (a page display, an LED, a bar) to the M-Touch or the M-Play; dropped by default
+    /// and while that device is absent.
+    fn output(&mut self, _model: crate::mtouch::Model, _out: crate::mtouch::Output) {}
+    /// KB-21: whether that device is attached right now (its bank windows are bound only then).
+    fn device_present(&self, _model: crate::mtouch::Model) -> bool {
+        false
+    }
 }
 
 pub struct UsbKeypad {

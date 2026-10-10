@@ -130,6 +130,18 @@ keypad if it is unplugged and plugged back in.
 Without hardware, `mtpnxk sim --script "Record:down,5:tap@50,Record:up@300"`
 plays a key script and echoes the LED writes it would make.
 
+Playback banks (KB-21): `--pb-page follow` (default) makes the M-Touch's ten
+playback strips and the M-Play's two sections operate executors of the
+console's current page; `--pb-page 3` binds them to page 3 whatever page the
+console shows (the service never selects or creates a page). `--pb-rows
+101,201,301` names the executor rows a strip's upper button, fader and lower
+button mean (bank `k` adds `k x 10` for the M-Touch, `k x 12` for the M-Play's
+left block); `--pb-ext-row 401` the M-Play's right block. `--mplay off` ignores
+an M-Play; `--banks off` leaves the playback controls unmapped. The device's
+`PLAYBACK BANK +/-` (M-Touch) and `FADER BANK` / `FADER EXT BANK` (M-Play) keys
+move the banks; the page displays show page then bank (`12` = page 1, bank 2).
+The playback faders are not operated yet (KB-22).
+
 ### USB notes
 
 - macOS: nothing to install. The keypad enumerates unconfigured; the service
@@ -186,7 +198,10 @@ Plugin "mtpnxk_surface" "stop"
 ```
 
 `status` prints running state, binding, input mode, generation, every session
-with its held keys, counters, and any unresolved release records. `stop`
+with its held keys, counters, and any unresolved release records; since KB-21
+also `binding: N executor(s) [...] following the console's page | on page P
+(independent) revision=R generation=G` (what the service bound) and each held
+control gesture's frozen target. `stop`
 releases every key the plugin holds, closes the sessions and keeps any release
 it could not confirm as a record for the next start. The service notices a
 stopped plugin within 1.5 s: the Link LED blinks and every other LED goes off

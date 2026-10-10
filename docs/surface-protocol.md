@@ -70,7 +70,8 @@ operate right now; the service keeps it as data (`Link.context`) and renders or 
 | `enc` | `{bank, bankName, page, pageName, ctx, attr}` (1-based, `attr = 1` for the `Default` attribute-editing context) or `{why}` when that display's encoder bar is unavailable |
 | `slots[]` | per pool slot: `{n, kind}` plus, for `attribute`, `name, label, unit, readout, res, layer, cf` (channel function), `avail` (`no-selection | available | unavailable | mixed`), `val` (`none | value | empty | mixed | unavailable`), `abs` when a programmer value exists and `vc` (KB-20: 1 when the value was read completely, every selected fixture scanned and read; 0 for a bounded scan or a failed read, when `val` is the readable fixtures' agreement only; absent when nothing was read); `kind = "other"` carries `ref` (phaser/editor slots, unsupported); `kind = "empty"` nothing |
 | `sel` / `selIncomplete` / `slotsWhy` | the selection count / `1` when the module could not walk the whole selection identity (then `known = 0`) / why the slots are unavailable |
-| `ex[]` | per configured executor: `{n, empty, tgt, cls, name, kp, ku, fd, lvl, tok, act, rgba, why}`: `tgt = 0` for a Quickey object or an executor reserved by an owned Quickey bank (never a playback target), `lvl` the level of the **configured** fader function (`tok`), `act` `0/1/"?"` |
+| `ex[]` | per bound executor: `{n, empty, tgt, cls, name, kp, ku, fd, lvl, tok, act, rgba, why}`: `tgt = 0` for a Quickey object or an executor reserved by an owned Quickey bank (never a playback target), `lvl` the level of the **configured** fader function (`tok`), `act` `0/1/"?"`; since KB-21 (plugin 0.7.0, feedback 0.5.0) `pg` (the page the executor is bound to; absent when it follows the user's page), `pgno` (the page actually read), `w` (width), `cov` (the wider neighbour covering this number: not a separate playback, `tgt = 0`), `pm` (1: the bound page does not exist; nothing is created) |
+| `bind` | KB-21: what this plugin binds right now, `{ex[], pg?, br, mode}`: the executor list (the service's last `bind`, or `execs=` at start), the explicit page, the **binding revision** every motion and down must carry (`br` on `ctl`), the mode (`current` = following the user's page, `page` = independent) |
 
 Sent in the frame `cg`, `known` or `epoch` changes and with the full-state cadence (1000 ms) otherwise. The
 welcome carries `context: 1` when the vendored module supports it. The plugin's `display=` argument names the
@@ -81,8 +82,8 @@ generation every control event carries (section 3a).
 
 ### Transport
 
-UDP, one JSON object per datagram: at most 512 bytes towards the plugin, at most
-1024 bytes from it (the welcome carries key lists). Datagram layout:
+UDP, one JSON object per datagram: at most 512 bytes towards the plugin, at most 16 KiB from it (since KB-21: a
+`context` lists up to 96 bound executors; 1024 bytes before). Datagram layout:
 
 ```
 MTX1 <mac> <json>
@@ -264,7 +265,7 @@ every check reaches `hardkeys`/`feedback`/`control`.
 ### 3a. Continuous-control events (`ctl`, KB-18)
 
 ```
-service → plugin   ctl { t:"ctl", sid, seq, ev, k, dev, c, es, cg?, gs?, tgt, dx? | v? | d?, fine?, tk? }
+service → plugin   ctl { t:"ctl", sid, seq, ev, k, dev, c, es, cg?, gs?, br?, tgt, dx? | v? | d?, fine?, tk? }
 plugin  → service  ack { t:"ack", sid, seq, ev, ok, code?, why?, cg?, lost?, coalesced?, superseded?, queued?, boundary?, noop?, dup? }
 ```
 
@@ -275,8 +276,9 @@ plugin  → service  ack { t:"ack", sid, seq, ev, ok, code?, why?, cg?, lost?, c
 | `es` | the service's event sequence per device, one per packet sent (a merged burst is one); the plugin refuses a repeated one (`duplicate`) and an older unseen one (`out-of-order`, never applied late) and accepts a gap as packet loss, reported back as `lost` |
 | `cg` | the binding generation the event was produced against: the `cg` of the last known `context` message. Required for motion and downs; absent on a release. The plugin refuses a stale one (`stale-generation`, the current `cg` in the ack) and anything while it claims no generation (`binding-unknown`) |
 | `gs` | the gesture id: new on every touch down and button, and for untouched rotaries after 300 ms idle. The plugin coalesces deltas only within one gesture |
-| `tgt` | `{slot: n}` (encoder slot n of the bound display) or `{ex: n, el: fader\|key\|encoder}` (an element of a bound executor); the NX-K rotaries 1–4 are slots `--rotary-slots`..+3 (1–4 by default; `2` reaches slot 5, KB-19) |
+| `tgt` | `{slot: n}` (encoder slot n of the bound display) or `{ex: n, el: fader\|key\|encoder, pg?}` (an element of a bound executor; KB-21: `pg` names the page the executor is bound to and must be present for a page-bound binding and absent for a following one, the plugin resolves by (page, executor) and never silently against the current page); the NX-K rotaries 1–4 are slots `--rotary-slots`..+3 (1–4 by default; `2` reaches slot 5, KB-19) |
 | `fine` | the surface's explicit fine modifier (Bank held on the NX-K, or an M-Touch strip's own key held); on the console backend it divides the calibrated click by 10 (KB-19) |
+| `br` | KB-21: the binding revision the event was produced against (the last context's `bind.br`); required on motion and downs by the module when the consumer declares a mutable binding (this plugin keeps the exemption, so an event without `br` is checked by generation only; the service always sends it), absent on a release; an older one is refused `stale-binding` with the current revision |
 | `tk` | KB-20, on `abs` only: 1 when the position is a deliberate **takeover** (the strip's key was held at touch-down); the vendored module then places it on a slot whose fixtures hold different values instead of refusing `mixed-values`. `bad-tk` on any other kind or value |
 
 The service (`src/link.rs`) queues motion and merges it before sending: deltas of one control, generation and
@@ -311,6 +313,30 @@ adjustment backend", "Parameter strips on the console backend"). A session's lea
 plugin's stop ends its gestures through the backend and drops queued motion; a release the backend raised on is
 kept across restarts for `Plugin "mtpnxk_surface" "recover"`. The plugin's and the bridge's control instances do not
 arbitrate with each other (section 6 applies).
+
+### 3b. Executor binding (`bind`, KB-21)
+
+```
+service → plugin   bind { t:"bind", sid, seq, ev, ex: [n, ...], pg? }
+plugin  → service  ack  { t:"ack", sid, seq, ev, ok, br?, cg?, n?, code?, why? }
+```
+
+The service's playback banks (`service/src/banks.rs`) bind the executor numbers their windows currently map to (every
+row of every attached section, sorted, deduplicated) and the page they mean: `pg` absent follows the user's current
+page (the plugin reads the executors with `GetExecutor`; a `Page n` on the console moves `cg`), `pg` present is an
+independent page (read through `ObjectList("Page P.E")` whatever page the console shows; `cg` ignores the console's
+page changes; a page that does not exist is `pm: 1` per target and is never created). The packet is retransmitted
+like a key until acknowledged and sent again after every pairing; a bank change or a device appearing / going away
+sends a new one. The plugin validates it (`bad-bind`: not a list, a number outside 1..999, a page outside 1..9999;
+more than 96 executors is acknowledged `bad-bind` with the binding unchanged; a vendored feedback module without
+explicit pages acknowledges a `pg` bind `unsupported`), replaces its bound list, re-watches the context items (the watch
+list is budgeted for the state readers, two readers per `execs=` entry, the context items and 96 targets; a list the
+feedback could not watch in full is refused `bad-bind` and the previous binding re-watched, since an unobserved item would
+keep the context unknown), and
+the vendored control module makes the replaced spec a new **binding revision** (queued motion dropped, held touches
+rebound); the ack carries that revision (`br`), the generation (`cg`) and the count (`n`). A held button is unaffected:
+its release goes to the target its down resolved (the plugin's frozen record and the service's own), whatever the new
+list maps to the control. The `execs=` argument remains the binding until the first `bind`.
 
 ## 4. Loop budget
 

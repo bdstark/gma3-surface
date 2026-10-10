@@ -170,7 +170,7 @@ check("bad option refused", select(2, state._parseArgument("key=x bogus")) ~= ni
 check("start without a key is refused", reset("input=fake") == false and findLog("pairing key is required"))
 check("start with a short key is refused", reset("key=abcd input=fake") == false)
 check("start with a key succeeds on the fake backend", reset() == true and state.inputEnabled == true and state.inputMode == "fake" and state.gen:match("^%d+%-%x%x%x%x%x%x%x%x$"), J({ state.inputMode, state.gen }))
-check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.10.0" and state.modules.feedback.version == "0.4.0", J(state.moduleVersions))
+check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.10.0" and state.modules.feedback.version == "0.5.0", J(state.moduleVersions))
 check("feedback watch list bounded (9 state items + 3 more context items for the NX-K; page is shared)", state.modules.feedback.instance:status().watched == 12)
 
 -------------------------------------------------------------------------------
@@ -454,7 +454,7 @@ check("back on the original page: a new generation again (meaning changed twice)
 console.showFile = "show-c"
 local unknownCtx
 for _ = 1, 30 do tickAlive(0.05); for _, p in ipairs(ofType(drain(), "context")) do if p.epoch == fbEpoch + 1 and p.known == 0 then unknownCtx = p end end; if unknownCtx then break end end
-check("after a show change no generation is claimed until every part is observed again", unknownCtx and unknownCtx.cg == nil and unknownCtx.enc.why:find("not observed"), J(unknownCtx))
+check("after a show change no generation is claimed until every part is observed again", unknownCtx and unknownCtx.cg == nil and unknownCtx.why:find("not observed"), J(unknownCtx))
 local back
 for _ = 1, 30 do tickAlive(0.05); for _, p in ipairs(ofType(drain(), "context")) do if p.epoch == fbEpoch + 1 and p.known == 1 then back = p end end; if back then break end end
 check("the generation resumes in the new epoch", back and back.cg == G + 3, J(back))
@@ -490,7 +490,7 @@ do
     return a and a.ok == 0 and a.code == "control-disabled" end)())
   check("control=bogus is refused", select(2, state._parseArgument("key=" .. KEYHEX .. " control=bogus")) ~= nil)
   reset("key=" .. KEYHEX .. " input=fake control=fake")
-  check("control=fake enables the module on its fake backend", state.controlEnabled == true and state.controlMode == "fake" and state.modules.control.version == "0.3.0" and findLog("control enabled on the fake backend"), lastLog())
+  check("control=fake enables the module on its fake backend", state.controlEnabled == true and state.controlMode == "fake" and state.modules.control.version == "0.4.0" and findLog("control enabled on the fake backend"), lastLog())
   push({ t = "hello", v = 1, id = "nxk-c1", gen = 7, nonce = "c1c1c1c1c1c1c1c1", surface = "nxk", fw = "0.1.0" }); tick()
   local w = ofType(drain(), "welcome")[1]
   check("the welcome announces control 1 on the fake backend and the control session is open", w and w.control == 1 and w.controlBackend == "fake" and state.sessions[w.sid].controlOpen == true, J(w))
@@ -683,6 +683,169 @@ do
   inst.contextSnapshot = real
   reset("key=" .. KEYHEX .. " input=fake control=fake")
   check("the next control=fake start adopts it; recover re-attempts it through the fake backend", findLog("adopted 1 unresolved release") and (function() Main(nil, "recover"); Cleanup(); return findLog("control recover: 1 resolved, 0 still unresolved") ~= nil end)(), lastLog())
+end
+
+-------------------------------------------------------------------------------
+-- KB-21: the service's executor binding (bind), page-bound targets, frozen holds, the context's identity
+-------------------------------------------------------------------------------
+do
+  reset("key=" .. KEYHEX .. " input=fake control=fake execs=201")
+  push({ t = "hello", v = 1, id = "nxk-b1", gen = 21, nonce = "b1b1b1b1b1b1b1b1", surface = "nxk", fw = "0.1.0" }); tick()
+  local w = ofType(drain(), "welcome")[1]
+  sid, seq = w.sid, 0
+  local watchedBefore = state.modules.feedback.instance:status().watched
+  check("kb21: execs= at start binds the listed executors following the console's page (no page)", state.execs[1] == 201 and state.execPage == nil and watchedBefore == 15, J({ state.execs, watchedBefore }))
+  -- A bind from the service replaces the executor list and the page; the ack carries the revision.
+  pool.pages[2] = true
+  send({ t = "bind", ev = 1, ex = { 111, 101, 211, 101 }, pg = 2 }); tick()
+  local a = ofType(drain(), "ack")[1]
+  check("kb21: a bind is acknowledged with the binding revision; the list is sorted and deduplicated, the page kept", a and a.ok == 1 and a.br == 2 and a.n == 3 and state.execs[1] == 101 and state.execs[2] == 111 and state.execs[3] == 211 and state.execPage == 2 and findLog("bind: 3 executor%(s%) on page 2 %(independent%)"), J({ a, state.execs, state.execPage }))
+  check("kb21: the watch list now carries the three page-bound targets (the execs= argument keeps its own two state items)", state.modules.feedback.instance:status().watched == 17, state.modules.feedback.instance:status().watched)
+  for _ = 1, 6 do tickAlive(0.05); drain() end
+  local ctxMsg = state._collectContext(clock.t)
+  check("kb21: the context message carries the binding (ex, pg, br, mode) and each executor's page", ctxMsg and ctxMsg.bind and ctxMsg.bind.pg == 2 and ctxMsg.bind.br == 2 and ctxMsg.bind.mode == "page" and #ctxMsg.bind.ex == 3 and ctxMsg.ex[1].pg == 2 and ctxMsg.ex[1].n == 101 and ctxMsg.ex[1].empty == 1, J({ ctxMsg and ctxMsg.bind, ctxMsg and ctxMsg.ex }))
+  -- A page that does not exist: every target says pageMissing; nothing is created.
+  send({ t = "bind", ev = 2, ex = { 101 }, pg = 9 }); tick()
+  a = ofType(drain(), "ack")[1]
+  for _ = 1, 4 do tickAlive(0.05); drain() end
+  ctxMsg = state._collectContext(clock.t)
+  check("kb21: a bind to a page that does not exist is accepted (the plugin creates nothing) and the context says pageMissing per target, revision 3", a and a.ok == 1 and a.br == 3 and ctxMsg.ex[1].pm == 1 and ctxMsg.ex[1].tgt == 0 and pool.pages[9] == nil, J({ a, ctxMsg.ex }))
+  -- Malformed binds are rejected before anything changes.
+  local rej = state.counters.rejected
+  send({ t = "bind", ev = 3, ex = "101" }); send({ t = "bind", ev = 3, ex = { 0 } }); send({ t = "bind", ev = 3, ex = { 101 }, pg = 0 }); tick()
+  check("kb21: malformed binds are rejected and the binding is unchanged", state.counters.rejected == rej + 3 and state.execs[1] == 101 and state.execPage == 9, state.counters.rejected - rej)
+  local big = {}
+  for i = 1, 97 do big[i] = 100 + i end
+  send({ t = "bind", ev = 4, ex = big }); tick()
+  a = ofType(drain(), "ack")[1]
+  check("kb21: more than 96 executors are refused bad-bind, the binding unchanged", a and a.ok == 0 and a.code == "bad-bind" and #state.execs == 1, J(a))
+  -- Review (PR #6): an M-Play alone (60 executors) and both surfaces on different banks (84) are watched in full and known.
+  for _, n in ipairs({ 60, 84 }) do
+    local many = {}
+    for i = 1, n do many[i] = 100 + i end
+    send({ t = "bind", ev = 20 + n, ex = many }); tick()
+    local ab = ofType(drain(), "ack")[1]
+    for _ = 1, 16 do tickAlive(0.11); drain() end
+    local cm = state._collectContext(clock.t)
+    check(string.format("review: a bind of %d executors is watched in full (%d items) and the context becomes known with every executor listed", n, 14 + n), ab and ab.ok == 1 and state.modules.feedback.instance:status().watched == 14 + n and cm.known == 1 and #cm.ex == n, J({ ab, state.modules.feedback.instance:status().watched, cm.known, #cm.ex, cm.why }))
+  end
+  -- Review round 2: execs=201..220 (two state readers each) plus a bind of 90 (M-Play bank 1 and M-Touch bank 4) must be
+  -- watched in full; a list the feedback cannot watch in full is refused and the previous binding kept.
+  do
+    local twenty = {}
+    for i = 1, 20 do twenty[#twenty + 1] = tostring(200 + i) end
+    reset("key=" .. KEYHEX .. " input=fake control=fake execs=" .. table.concat(twenty, ","))
+    push({ t = "hello", v = 1, id = "nxk-b2", gen = 22, nonce = "b2b2b2b2b2b2b2b2", surface = "nxk", fw = "0.1.0" }); tick()
+    local w2 = ofType(drain(), "welcome")[1]
+    sid, seq = w2.sid, 0
+    local ninety = {}
+    for _, row in ipairs({ 100, 200, 300 }) do for i = 1, 12 do ninety[#ninety + 1] = row + i end end  -- the M-Play's bank 1: 101-112, 201-212, 301-312
+    for i = 1, 24 do ninety[#ninety + 1] = 400 + i end                                                  -- and its right block 401-424 (60 numbers)
+    for _, row in ipairs({ 100, 200, 300 }) do for i = 31, 40 do ninety[#ninety + 1] = row + i end end -- the M-Touch's bank 4: 131-140, 231-240, 331-340
+    send({ t = "bind", ev = 30, ex = ninety }); tick()
+    local a90 = ofType(drain(), "ack")[1]
+    for _ = 1, 24 do tickAlive(0.11); drain() end
+    local c90 = state._collectContext(clock.t)
+    local watched = state.modules.feedback.instance:status().watched
+    check("review 2: execs=201..220 and a bind of 90 are watched in full (9 + 40 + 3 + 90 = 142 items) and the context becomes known", a90 and a90.ok == 1 and a90.n == 90 and watched == 142 and c90.known == 1 and #c90.ex == 90, J({ a90, watched, c90.known, #c90.ex, c90.why }))
+    local fi = state.modules.feedback.instance
+    local realWatch = fi.watch
+    local calls = 0
+    fi.watch = function(self, items, t) calls = calls + 1; local r = realWatch(self, items, t); if calls == 1 then r.truncated = 3 end; return r end
+    send({ t = "bind", ev = 31, ex = { 501, 502 } }); tick()
+    local aT = ofType(drain(), "ack")[1]
+    fi.watch = realWatch
+    check("review 2: a bind whose watch list would be truncated is refused bad-bind and the previous binding is watched again", aT and aT.ok == 0 and aT.code == "bad-bind" and aT.why:find("cannot be watched in full") and #state.execs == 90 and calls == 2 and state.modules.feedback.instance:status().watched == 142, J({ aT, #state.execs, calls }))
+    local big = {}
+    for i = 1, 97 do big[#big + 1] = tostring(100 + i) end
+    check("review 2: execs= is bounded at 96 and validated", select(2, state._parseArgument("key=" .. KEYHEX .. " execs=" .. table.concat(big, ","))) ~= nil and select(2, state._parseArgument("key=" .. KEYHEX .. " execs=1000")) ~= nil and select(2, state._parseArgument("key=" .. KEYHEX .. " execs=x")) ~= nil)
+    reset("key=" .. KEYHEX .. " input=fake control=fake execs=201")
+    push({ t = "hello", v = 1, id = "nxk-b1", gen = 21, nonce = "b1b1b1b1b1b1b1b1", surface = "nxk", fw = "0.1.0" }); tick()
+    local wb = ofType(drain(), "welcome")[1]
+    sid, seq = wb.sid, 0
+    pool.pages[2] = true
+    send({ t = "bind", ev = 1, ex = { 111, 101, 211, 101 }, pg = 2 }); tick(); drain()
+    send({ t = "bind", ev = 2, ex = { 101 }, pg = 9 }); tick(); drain()
+  end
+  -- Back to a following binding: no page.
+  send({ t = "bind", ev = 5, ex = { 201, 202 } }); tick()
+  a = ofType(drain(), "ack")[1]
+  check("kb21: a bind without pg follows the console's page again (mode current)", a and a.ok == 1 and a.br == 4 and state.execPage == nil and findLog("following the console's page"), J(a))
+  -- Page-bound targets and frozen holds on the fake backend, over a staged binding with executors on two pages.
+  local inst = state.modules.feedback.instance
+  local real = inst.contextSnapshot
+  local gen = 3
+  local assigned = { [201] = "Sequence 1", [202] = "Sequence 2" }
+  local staged
+  staged = function(self, spec, t, opts)
+    local snap = real(self, spec, t, opts)
+    snap.generation, snap.generationUnknown, snap.generationNote, snap.stale, snap.notObserved = gen, nil, nil, nil, 0
+    snap.executors = {}
+    for _, n in ipairs(spec.executors or {}) do
+      local pg = spec.executorPage
+      local v = { executor = n, page = { no = pg or 3, name = "Page " .. tostring(pg or 3) }, pool = { name = "Default", no = 1 }, mode = pg and "page" or "current", width = 1 }
+      if assigned[n] then v.empty, v.playbackTarget, v.assigned, v.functions, v.level = false, true, { addr = assigned[n], class = "Sequence" }, { keyPress = "Go+", fader = "Master" }, { token = "FaderMaster", value = 0 }
+      else v.empty, v.playbackTarget, v.reason = true, false, "the executor is empty" end
+      snap.executors[#snap.executors + 1] = { available = true, params = { executor = n, page = pg }, value = v }
+    end
+    return snap
+  end
+  inst.contextSnapshot = staged
+  for _ = 1, 4 do tickAlive(0.05); drain() end
+  ctxMsg = state._collectContext(clock.t)
+  local br = ctxMsg.bind.br
+  local function btn(ev, es, c, ex, d, extra)
+    local o = { t = "ctl", ev = ev, k = "btn", dev = "mtouch", c = c, es = es, cg = gen, br = br, tgt = { ex = ex, el = "key" }, d = d }
+    for k, v in pairs(extra or {}) do o[k] = v end
+    return o
+  end
+  send(btn(10, 1, "PFA1", 201, 1)); tick()
+  a = ofType(drain(), "ack")[1]
+  local st = state.modules.control.instance:status(clock.t)
+  local g
+  for _, sv in pairs(st.sessions) do g = sv.gestureList and sv.gestureList[1] end
+  check("kb21: a button down on a following executor is admitted and frozen to page 3's Sequence 1 (the explicit identity is in the key)", a and a.ok == 1 and g and g.frozen and g.frozen.executor == 201 and g.frozen.page == 3 and g.frozen.assigned == "Sequence 1" and g.targetKey:find("^execDefault#1/3%.201%.key"), J({ a, g }))
+  -- The service's bank moves: a bind replaces the list (revision 5), the console page changes too (201 now Sequence 9 on page 4).
+  send({ t = "bind", ev = 11, ex = { 211, 212, 201 } }); tick()
+  a = ofType(drain(), "ack")[1]
+  assigned[201] = "Sequence 9"; gen = 4
+  inst.contextSnapshot = (function(f) return function(self, spec, t, opts) local snap = f(self, spec, t, opts); for _, x in ipairs(snap.executors) do x.value.page = { no = 4, name = "Page 4" } end; return snap end end)(inst.contextSnapshot)
+  for _ = 1, 4 do tickAlive(0.05); drain() end
+  st = state.modules.control.instance:status(clock.t)
+  for _, sv in pairs(st.sessions) do g = sv.gestureList and sv.gestureList[1] end
+  check("kb21: the rebind moved the revision and marked the hold rebound; its frozen target is unchanged", a and a.ok == 1 and a.br == 5 and g and g.rebound == true and g.frozen.page == 3 and g.frozen.assigned == "Sequence 1", J({ a, g }))
+  send(btn(12, 2, "PFA1", 201, 0, { cg = nil, br = nil })); tick()
+  a = ofType(drain(), "ack")[1]; tick()
+  local la = state.modules.control.instance:status(clock.t).lastApplied
+  check("kb21: the release is admitted without a binding and applied to the frozen target (page 3, Sequence 1), not to page 4's Sequence 9", a and a.ok == 1 and a.boundary == 1 and la and la.down == false and la.target:find("^execDefault#1/3%.201%.key|Sequence 1"), J({ a, la }))
+  send(btn(13, 3, "PFA1", 201, 1, { br = 1 })); tick()
+  a = ofType(drain(), "ack")[1]
+  check("kb21: a down carrying an old revision is refused stale-binding with the current one", a and a.ok == 0 and a.code == "stale-binding", J(a))
+  send(btn(14, 4, "PFA1", 201, 1, { br = 5 })); tick()
+  a = ofType(drain(), "ack")[1]; tick()
+  la = state.modules.control.instance:status(clock.t).lastApplied
+  check("kb21: a fresh down with the current revision resolves the new mapping (page 4, Sequence 9)", a and a.ok == 1 and la.down == true and la.target:find("^execDefault#1/4%.201%.key|Sequence 9"), J({ a, la }))
+  send(btn(15, 5, "PFA1", 201, 0)); tick(); drain()
+  -- Page-bound: bind to page 2 explicitly; a target must name the page; a target without it is refused.
+  inst.contextSnapshot = staged
+  send({ t = "bind", ev = 16, ex = { 201 }, pg = 2 }); tick()
+  a = ofType(drain(), "ack")[1]
+  for _ = 1, 4 do tickAlive(0.05); drain() end
+  ctxMsg = state._collectContext(clock.t)
+  send(btn(17, 6, "PFA1", 201, 1, { br = a.br, tgt = { ex = 201, el = "key", pg = 2 } })); tick()
+  local a1 = ofType(drain(), "ack")[1]; tick()
+  la = state.modules.control.instance:status(clock.t).lastApplied
+  send(btn(18, 7, "PFA2", 201, 1, { br = a.br })); tick()
+  local a2 = ofType(drain(), "ack")[1]
+  check("kb21: on an independent-page binding a down naming the page is admitted (frozen to page 2) and one without it is target-unavailable (never silently the current page)", a1 and a1.ok == 1 and la.target:find("^execDefault#1/2%.201%.key") and a2 and a2.ok == 0 and a2.code == "target-unavailable" and a2.why:find("needs target%.page"), J({ a1, a2, la }))
+  local rej2 = state.counters.rejected
+  send(btn(19, 8, "PFA3", 201, 1, { tgt = { ex = 201, el = "key", pg = 0 } })); send(btn(19, 8, "PFA3", 201, 1, { br = -1 })); tick()
+  check("kb21: a bad pg or br is rejected before the module", state.counters.rejected == rej2 + 2, state.counters.rejected - rej2)
+  send(btn(20, 8, "PFA1", 201, 0)); tick(); drain()
+  Main(nil, "status"); Cleanup()
+  check("kb21: status names the binding, its page, revision and generation", findLog("binding: 1 executor%(s%) %[201%] on page 2 %(independent%) revision=6 generation=4") ~= nil, lastLog())
+  inst.contextSnapshot = real
+  pool.pages[2] = nil
 end
 
 -------------------------------------------------------------------------------
