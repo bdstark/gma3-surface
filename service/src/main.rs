@@ -8,6 +8,8 @@ mod mtouch;
 mod nxk;
 mod protocol;
 mod sim;
+mod strips;
+mod usb_surfaces;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
@@ -41,6 +43,20 @@ struct Cli {
     /// the bound page does not have is refused by the plugin with the reason.
     #[arg(long, default_value_t = 1, global = true, value_parser = clap::value_parser!(u8).range(1..=5))]
     rotary_slots: u8,
+    /// KB-20: what the M-Touch's four base-channel strips do: `relative` (default: touch anchors, the drag adjusts
+    /// the slot like a rotary, lift and retouch re-anchors), `absolute` (positions after pickup or an explicit
+    /// takeover with the strip's key held at touch-down) or `off`.
+    #[arg(long, default_value = "relative", global = true)]
+    strips: strips::Mode,
+    /// KB-20: the first encoder slot the four strips mean (as --rotary-slots for the rotaries).
+    #[arg(long, default_value_t = 1, global = true, value_parser = clap::value_parser!(u8).range(1..=5))]
+    strip_slots: u8,
+    /// KB-20: detents across a strip's full travel (120 = the five encoder turns of one attribute range).
+    #[arg(long, default_value_t = 120, global = true, value_parser = clap::value_parser!(i32).range(1..=4096))]
+    strip_travel: i32,
+    /// KB-20: `auto` opens an attached M-Touch next to the NX-K in `run` (retrying while it is absent); `off` ignores it.
+    #[arg(long, default_value = "auto", global = true)]
+    mtouch: String,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -125,6 +141,14 @@ struct Loop {
     bye_on_exit: bool,
     /// KB-19: the first encoder slot of the rotaries (`--rotary-slots`).
     rotary_base: u8,
+    /// KB-20: the M-Touch parameter strips' gesture converter.
+    strips: strips::Strips,
+    strips_log_seen: usize,
+    /// Rotary pushes currently down (released for the keypad when it is lost).
+    pushed_wheels: BTreeSet<u8>,
+    /// The fine flag handed to the strips converter by the last strip report (what a stale Bank would corrupt).
+    #[cfg(test)]
+    last_strip_fine: Option<bool>,
 }
 
 impl Loop {
@@ -138,7 +162,14 @@ impl Loop {
         if cli.rotary_slots != 1 {
             eprintln!("rotaries: explicit slot window {}-{} (--rotary-slots {})", cli.rotary_slots, cli.rotary_slots + 3, cli.rotary_slots);
         }
-        Ok(Loop { link: link::Link::new(cfg, key, 0.0), leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots })
+        let strip_cfg = strips::Config { mode: cli.strips, base_slot: cli.strip_slots, detents_per_travel: cli.strip_travel, ..strips::Config::default() };
+        if cli.strips != strips::Mode::Off {
+            eprintln!("strips: {:?} on slots {}-{}, {} detents per travel (--strips/--strip-slots/--strip-travel)", cli.strips, cli.strip_slots, cli.strip_slots + 3, cli.strip_travel);
+        }
+        Ok(Loop { link: link::Link::new(cfg, key, 0.0), leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots,
+                  strips: strips::Strips::new(strip_cfg), strips_log_seen: 0, pushed_wheels: BTreeSet::new(),
+                  #[cfg(test)]
+                  last_strip_fine: None })
     }
 
     fn now(&self) -> f64 {
@@ -148,7 +179,11 @@ impl Loop {
     /// One iteration: surface events, datagrams, link timers, sends, LEDs.
     fn step(&mut self, surface: &mut dyn Surface) -> Result<()> {
         let now = self.now();
-        for ev in surface.poll()? {
+        if surface.reconnected() {
+            self.leds.invalidate();
+        }
+        let events = surface.poll()?;
+        for ev in events {
             match ev {
                 Event::KeyDown { name, .. } => {
                     if name == "Bank" {
@@ -169,8 +204,14 @@ impl Loop {
                 // backend: not qualified). Everything travels as `ctl` events through the link's admission.
                 // No acceleration is applied anywhere in the service: the device's delta is the detent count.
                 Event::Rotate { wheel, delta, .. } => self.link.control_event("nxk", ROTARIES[(wheel.clamp(1, 4) - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Rel { dx: delta, fine: self.bank_held }, now),
-                Event::PressDown { wheel, .. } => self.link.control_event("nxk", ROTARIES[(wheel.clamp(1, 4) - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Btn { down: true }, now),
-                Event::PressUp { wheel, .. } => self.link.control_event("nxk", ROTARIES[(wheel.clamp(1, 4) - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Btn { down: false }, now),
+                Event::PressDown { wheel, .. } => {
+                    self.pushed_wheels.insert(wheel.clamp(1, 4));
+                    self.link.control_event("nxk", ROTARIES[(wheel.clamp(1, 4) - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Btn { down: true }, now)
+                }
+                Event::PressUp { wheel, .. } => {
+                    self.pushed_wheels.remove(&wheel.clamp(1, 4));
+                    self.link.control_event("nxk", ROTARIES[(wheel.clamp(1, 4) - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Btn { down: false }, now)
+                }
                 Event::Unknown { bytes } => {
                     if self.verbose {
                         eprintln!("nxk: unknown packet {bytes:02x?}");
@@ -178,6 +219,49 @@ impl Loop {
                 }
             }
         }
+        // KB-20 (review): the keypad went away after whatever it sent above; what it still held is released.
+        if surface.disconnected() {
+            self.release_keypad(now);
+        }
+        // KB-20: the M-Touch's parameter strips. The converter emits the same control events the rotaries do;
+        // the binding generation and the slot's last known value come from the link's context.
+        let strip_events = match surface.poll_strips() {
+            Ok(ev) => ev,
+            Err(e) => {
+                eprintln!("strips: {e:#}; ending every touch");
+                let outs = self.strips.disconnect();
+                self.emit_strip_outs(outs, now);
+                Vec::new()
+            }
+        };
+        for ev in strip_events {
+            match ev {
+                mtouch::Event::Fader { id, value, touch, .. } => {
+                    if let Some(n) = strips::strip_of_fader(id) {
+                        let cg = self.link.current_generation(now);
+                        let slot = self.strips.cfg.base_slot.clamp(1, 5) + n - 1;
+                        let hint = self.link.slot_hint(slot, now);
+                        #[cfg(test)]
+                        {
+                            self.last_strip_fine = Some(self.bank_held);
+                        }
+                        let outs = self.strips.fader(n, value, touch, self.bank_held, cg, hint, now);
+                        self.emit_strip_outs(outs, now);
+                    } else {
+                        self.strips.stats.ignored += 1;  // playback strips are not parameters (KB-21/22)
+                    }
+                }
+                mtouch::Event::KeyDown { id, .. } | mtouch::Event::KeyUp { id, .. } => {
+                    if let Some(n) = strips::strip_of_key(id) {
+                        self.strips.key(n, matches!(ev, mtouch::Event::KeyDown { .. }));
+                    }
+                }
+                mtouch::Event::Pressure { .. } => self.strips.stats.ignored += 1,  // never an input (KB-20)
+            }
+        }
+        let cg = self.link.current_generation(now);
+        let outs = self.strips.tick(cg, now);
+        self.emit_strip_outs(outs, now);
         let mut buf = [0u8; 2048];
         loop {
             match self.sock.recv(&mut buf) {
@@ -206,14 +290,54 @@ impl Loop {
                 eprintln!("link: {}", self.link.log[self.log_seen]);
                 self.log_seen += 1;
             }
+            while self.strips_log_seen < self.strips.log.len() {
+                eprintln!("strips: {}", self.strips.log[self.strips_log_seen]);
+                self.strips_log_seen += 1;
+            }
         }
         Ok(())
+    }
+
+    /// KB-20 (review of PR #5): the keypad is gone, so it can never send its releases. Every key the link holds
+    /// for it is released (a pending press is superseded by its release, as for a physical release), every rotary
+    /// push is ended and the Bank modifier is cleared so the strips stop reading as fine. The M-Touch's own
+    /// gestures are untouched: a finger on a strip is still there.
+    fn release_keypad(&mut self, now: f64) {
+        let held: Vec<&'static str> = self.link.held().iter().copied().collect();
+        for name in &held {
+            self.link.key_event(name, false, now);
+        }
+        let pushed: Vec<u8> = self.pushed_wheels.iter().copied().collect();
+        for wheel in pushed {
+            self.link.control_event("nxk", ROTARIES[(wheel - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Btn { down: false }, now);
+        }
+        self.pushed_wheels.clear();
+        self.bank_held = false;
+        if !held.is_empty() || self.verbose {
+            eprintln!("nxk: lost with {} key(s) held ({}): released", held.len(), held.join(", "));
+        }
+    }
+
+    fn emit_strip_outs(&mut self, outs: Vec<strips::Out>, now: f64) {
+        for o in outs {
+            self.link.control_event("mtouch", o.control, o.target, o.kind, now);
+        }
     }
 
     fn run(&mut self, surface: &mut dyn Surface, until: impl Fn(&Loop, &dyn Surface) -> bool) -> Result<()> {
         eprintln!("mtpnxk {}: {} -> plugin at {}", env!("CARGO_PKG_VERSION"), surface.name(), self.sock.peer_addr().map(|a| a.to_string()).unwrap_or_default());
         loop {
-            self.step(surface)?;
+            if let Err(e) = self.step(surface) {
+                // The keypad went away: end every strip touch before the caller reopens the devices.
+                let now = self.now();
+                let outs = self.strips.disconnect();
+                self.emit_strip_outs(outs, now);
+                self.link.tick(now);
+                for d in self.link.take_outgoing() {
+                    let _ = self.sock.send(&d);
+                }
+                return Err(e);
+            }
             if until(self, surface) {
                 break;
             }
@@ -234,6 +358,92 @@ const ROTARIES: [&str; 4] = ["Rotary1", "Rotary2", "Rotary3", "Rotary4"];
 /// Rotary `wheel` (1-4) means encoder slot `base + wheel - 1` of the bound display (KB-19 `--rotary-slots`).
 fn link_target(wheel: u8, base: u8) -> protocol::CtlTarget {
     protocol::CtlTarget::Slot { slot: base.clamp(1, 5) + wheel.clamp(1, 4) - 1 }
+}
+
+#[cfg(test)]
+mod keypad_loss_tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    /// A surface that plays keypad events, then reports the keypad lost, then strip reports.
+    struct Script {
+        keys: VecDeque<Event>,
+        /// The keypad is found gone on this many-th empty poll after the last key (None: never).
+        lose_on_empty_poll: Option<usize>,
+        empty_polls: usize,
+        pending_loss: bool,
+        strips: VecDeque<mtouch::Event>,
+    }
+    impl Surface for Script {
+        /// One key per poll; strips are played one report per poll once the keys are done.
+        fn poll(&mut self) -> Result<Vec<Event>> {
+            match self.keys.pop_front() {
+                Some(ev) => Ok(vec![ev]),
+                None => {
+                    self.empty_polls += 1;
+                    if self.lose_on_empty_poll == Some(self.empty_polls) {
+                        self.pending_loss = true;
+                    }
+                    Ok(Vec::new())
+                }
+            }
+        }
+        fn led(&mut self, _id: u16, _value: u16) {}
+        fn name(&self) -> String {
+            "script".into()
+        }
+        fn disconnected(&mut self) -> bool {
+            std::mem::take(&mut self.pending_loss)
+        }
+        fn poll_strips(&mut self) -> Result<Vec<mtouch::Event>> {
+            if self.keys.is_empty() { Ok(self.strips.pop_front().into_iter().collect()) } else { Ok(Vec::new()) }
+        }
+    }
+
+    fn test_loop() -> Loop {
+        let cli = Cli::parse_from(["mtpnxk", "--key", &"ab".repeat(32), "sim"]);
+        Loop::new(&cli).expect("a loop on an ephemeral socket")
+    }
+    fn strip1(value: u8, touch: bool) -> mtouch::Event {
+        mtouch::Event::Fader { id: 0x6112, name: "VALUE BASE CHANNEL 1", value, touch }
+    }
+
+    #[test]
+    fn losing_the_keypad_releases_its_keys_pushes_and_bank_but_not_the_strips() {
+        let mut lp = test_loop();
+        let mut s = Script {
+            keys: VecDeque::from([Event::KeyDown { name: "Clear", id: 1 }, Event::KeyDown { name: "Bank", id: 2 }, Event::PressDown { wheel: 2, id: 0 }]),
+            lose_on_empty_poll: Some(3),
+            empty_polls: 0,
+            pending_loss: false,
+            // Strip reports from the fourth step on: a touch and a move with Bank still held, then (after the loss) a move.
+            strips: VecDeque::from([strip1(0, true), strip1(20, true), strip1(51, true), strip1(80, true)]),
+        };
+        for _ in 0..3 { lp.step(&mut s).unwrap(); }
+        assert!(lp.link.held().contains("Clear") && lp.link.held().contains("Bank"), "{:?}", lp.link.held());
+        assert!(lp.bank_held && lp.pushed_wheels.contains(&2));
+        lp.step(&mut s).unwrap();  // strip touch
+        lp.step(&mut s).unwrap();  // strip move with Bank held: fine
+        assert_eq!(lp.last_strip_fine, Some(true), "before the loss Bank makes the strips fine");
+        assert!(lp.strips.touching(1));
+        lp.step(&mut s).unwrap();  // the keypad is found gone in this poll: releases, then the strip move
+        assert!(lp.link.held().is_empty(), "every key the link held for the keypad is released: {:?}", lp.link.held());
+        assert!(!lp.bank_held, "the Bank modifier is cleared");
+        assert!(lp.pushed_wheels.is_empty(), "the rotary push is ended");
+        // Unpaired, the releases are counted as dropped (nothing to send them to) rather than lost.
+        assert!(lp.link.stats.dropped_unpaired >= 3);
+        assert_eq!(lp.last_strip_fine, Some(false), "the strip move right after the loss is no longer fine");
+        assert!(lp.strips.touching(1), "the finger on the strip is still there: the M-Touch's gesture survives the keypad's loss");
+        lp.step(&mut s).unwrap();
+        assert_eq!(lp.last_strip_fine, Some(false));
+        assert_eq!(lp.strips.stats.touches, 1);
+        assert_eq!(lp.strips.stats.forced_lifts, 0, "the strip was not released by the keypad's loss");
+        // A loss with nothing held releases nothing and changes nothing.
+        let mut lp2 = test_loop();
+        let mut s2 = Script { keys: VecDeque::new(), lose_on_empty_poll: Some(1), empty_polls: 0, pending_loss: false, strips: VecDeque::new() };
+        lp2.step(&mut s2).unwrap();
+        assert!(lp2.link.held().is_empty() && !lp2.bank_held && lp2.link.stats.dropped_unpaired == 0);
+    }
 }
 
 #[cfg(test)]
@@ -279,18 +489,19 @@ fn main() -> Result<()> {
         Cmd::MtouchLedTest { pid, hold_ms } => mtouch::tools::led_test(mtouch_model(pid.as_deref())?, Duration::from_millis(*hold_ms)),
         Cmd::Run => {
             let mut lp = Loop::new(&cli)?;
+            let with_mtouch = match cli.mtouch.to_ascii_lowercase().as_str() {
+                "auto" => true,
+                "off" | "none" => false,
+                other => return Err(anyhow!("--mtouch {other}: expected auto or off")),
+            };
+            // KB-20 (review of PR #5): the NX-K and the M-Touch are opened and reopened independently; the loop runs
+            // with whichever is present (an M-Touch alone polls its strips; losing the NX-K does not interrupt it).
+            let open_mtouch: Option<Box<dyn FnMut() -> Result<mtouch::usb::UsbSurface>>> =
+                if with_mtouch && cli.strips != strips::Mode::Off { Some(Box::new(|| mtouch::usb::UsbSurface::open_model(mtouch::Model::MTouch))) } else { None };
+            let mut surface = usb_surfaces::Combined::new(Box::new(nxk::usb::UsbKeypad::open), open_mtouch);
             loop {
-                let mut keypad = match nxk::usb::UsbKeypad::open() {
-                    Ok(k) => k,
-                    Err(e) => {
-                        eprintln!("{e:#}; retrying in 2 s");
-                        std::thread::sleep(Duration::from_secs(2));
-                        continue;
-                    }
-                };
-                lp.leds.invalidate();
-                let r = lp.run(&mut keypad, |_, _| false);
-                eprintln!("keypad loop ended: {r:?}; reopening in 1 s");
+                let r = lp.run(&mut surface, |_, _| false);
+                eprintln!("surface loop ended: {r:?}; continuing in 1 s");
                 std::thread::sleep(Duration::from_secs(1));
             }
         }
@@ -306,7 +517,7 @@ fn main() -> Result<()> {
                 let finished = !repeat && s.done() && lp.started.elapsed() > Duration::from_millis(500) && lp.link.pending_count() == 0;
                 timed_out || finished
             })?;
-            print_summary(&lp.link);
+            print_summary(&lp.link, &lp.strips);
             Ok(())
         }
         Cmd::Bench { taps, rate } => {
@@ -325,7 +536,7 @@ fn main() -> Result<()> {
             let mut lp = Loop::new(&cli)?;
             lp.run(&mut keypad, |lp, _| lp.started.elapsed() > total)?;
             println!("bench: {} taps at {rate}/s against {}", taps, cli.plugin);
-            print_summary(&lp.link);
+            print_summary(&lp.link, &lp.strips);
             percentiles("ack round trip", &lp.link.rtt_ms);
             let effects: Vec<f64> = lp.link.effect_ms.iter().filter(|m| **m >= 0).map(|m| *m as f64).collect();
             let no_effect = lp.link.effect_ms.iter().filter(|m| **m < 0).count();
@@ -347,7 +558,7 @@ fn mtouch_model(pid: Option<&str>) -> Result<Option<mtouch::Model>> {
     mtouch::Model::from_pid(n).map(Some).ok_or_else(|| anyhow!("--pid {p}: not an M-Touch (f808) or M-Play (f80c)"))
 }
 
-fn print_summary(link: &link::Link) {
+fn print_summary(link: &link::Link, strips: &strips::Strips) {
     let st = &link.stats;
     println!(
         "link: paired={} hellos={} events={} acked={} refused={} retransmitted={} lost={} superseded={} states={} link_downs={} rejected={} dropped_unpaired={}",
@@ -368,6 +579,13 @@ fn print_summary(link: &link::Link) {
         "control: events={} sent={} coalesced={} unbound={} aged={} stale={} unsupported={} refused={} lost_reported={} superseded={} overflow={} queued={} max_detent={}",
         st.ctl_events, st.ctl_sent, st.ctl_coalesced, st.ctl_unbound, st.ctl_aged, st.ctl_stale, st.ctl_unsupported, st.ctl_refused, st.ctl_lost_reported, st.ctl_superseded, st.ctl_overflow, link.queued_motion(), st.ctl_max_detent
     );
+    let ss = &strips.stats;
+    if ss.reports > 0 || strips.cfg.mode != strips::Mode::Off {
+        println!(
+            "strips: mode={:?} reports={} touches={} lifts={} detents={} positions={} rebound_dropped={} forced_lifts={} waiting_pickup={} takeovers={} ignored={}",
+            strips.cfg.mode, ss.reports, ss.touches, ss.lifts, ss.detents, ss.positions, ss.rebound_dropped, ss.forced_lifts, ss.waiting_pickup, ss.takeovers, ss.ignored
+        );
+    }
     if let Some(s) = link.session() {
         println!("session: sid={} plugin gen={} input={:?} control={} keys ok={} unsupported={:?}", s.sid, s.plugin_gen, s.input, if s.control { s.control_backend.clone().unwrap_or_else(|| "on".into()) } else { "off".into() }, s.keys.ok.len(), s.keys.unsupported);
     }
