@@ -400,20 +400,25 @@ values are refused unless the event says takeover; bridge 0.16.0; branch `feat/k
 - **Devices are independent** (review of PR #5): `run` opens the NX-K and the M-Touch separately and retries each
   every 2 s while it is absent; an M-Touch alone polls its strips, losing the NX-K does not interrupt the M-Touch
   (LED writes go nowhere until it is back, then every LED is repainted), losing the M-Touch releases every touched
-  strip and the device is reopened. `service/src/usb_surfaces.rs` is unit-tested with fake devices: M-Touch-only
-  startup, NX-K removal during M-Touch operation, M-Touch loss and reopen.
+  strip and the device is reopened. **A lost NX-K releases what it held** (review round 2): the loop releases every
+  key the link holds for it (a pending press is superseded by its release, as for a physical release, so heartbeats
+  stop reporting it), ends every rotary push and clears the Bank modifier, so the strips go back to coarse; a finger
+  on a strip is untouched by the keypad's loss. `service/src/usb_surfaces.rs` is unit-tested with fake devices
+  (M-Touch-only startup, NX-K removal during M-Touch operation, M-Touch loss and reopen) and the loop with a scripted
+  surface (Clear, Bank and a rotary push held, the keypad lost: held set empty, push ended, the next strip move no
+  longer fine, the touched strip still touched).
 - **M-Play:** its faders are playback faders (KB-21/22); none is mapped as a parameter strip here.
 - **`mtpnxk_surface.lua` 0.6.0:** carries `tk` (a position's takeover flag; `bad-tk` elsewhere) to the vendored module;
   the console-backend log line names the strips.
-- **Rust service** (`cargo test` 59, thirteen new): `strips.rs` (anchor, carried fraction, full stroke, jitter, fine
+- **Rust service** (`cargo test` 60, fourteen new): `strips.rs` (anchor, carried fraction, full stroke, jitter, fine
   from Bank or the strip key, the slot window, rebound, missed lift, disconnect, off, absolute pickup/takeover), `sim`
   strip steps (`strip<n>:t<v>|m<v>|lift|l<v>`, `skey<n>:down|up|tap`) and `poll_strips`, `tk` on the wire, the
   `--strips/--strip-slots/--strip-travel/--mtouch` flags, a `strips:` summary line, the pickup hint requiring `vc`
-  and the independent device slots of `usb_surfaces.rs`.
+  and the independent device slots of `usb_surfaces.rs`, and the keypad-loss release in the loop.
 
 Harness: `lua tools/ma3/test/surface_plugin_test.lua` 205 checks (10 new: a strip touch as a hold, the drag inside it
 `At + 3`, a position `At 25`, a Physical position `At -180`, `tk` carried, bad `tk` rejected, the lift as a boundary,
-`vc` in the context, a bounded-scan value refused `values-incomplete` with `vc` 0); `cargo test` 59; `sh tools/ma3/test/e2e.sh` adds the strip scenario (touch, drag and lift refused honestly by the stub
+`vc` in the context, a bounded-scan value refused `values-incomplete` with `vc` 0); `cargo test` 60; `sh tools/ma3/test/e2e.sh` adds the strip scenario (touch, drag and lift refused honestly by the stub
 console without an encoder bar, the lift a noop).
 
 **Verified live in this repository:** [docs/probes/kb-20-surface-macos-2.5.1.md](docs/probes/kb-20-surface-macos-2.5.1.md)

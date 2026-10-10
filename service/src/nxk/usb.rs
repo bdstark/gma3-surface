@@ -29,6 +29,11 @@ pub trait Surface {
     fn reconnected(&mut self) -> bool {
         false
     }
+    /// KB-20 (review): true once after the keypad was lost, so the loop releases every key, rotary push and
+    /// modifier it still holds for it (a device that is gone can never send the releases itself).
+    fn disconnected(&mut self) -> bool {
+        false
+    }
     /// KB-20: reports of an attached M-Touch (the parameter strips and their keys), decoded; none by default.
     /// `Err` means the M-Touch went away (the keypad may still be fine).
     fn poll_strips(&mut self) -> Result<Vec<crate::mtouch::Event>> {

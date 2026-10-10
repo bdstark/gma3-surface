@@ -3,7 +3,8 @@
 //! interrupt the M-Touch). A device absent at start is retried every two seconds; a device whose reads fail
 //! is dropped and reopened the same way; the loop keeps running with whichever device is present. Losing the
 //! M-Touch ends every touched strip (the loop turns the `Err` of `poll_strips` into releases); losing the
-//! keypad invalidates the LED cache so a reopened keypad is repainted (`reconnected`).
+//! keypad is reported once (`disconnected`) so the loop releases the keys, rotary pushes and the Bank modifier
+//! it held, and a reopened keypad is announced (`reconnected`) so its LEDs are repainted.
 //!
 //! Reports an M-Touch queued before the first poll are delivered at open (KB-16 record): the first 250 ms
 //! after an open are discarded, never used to seed a touch or a level.
@@ -41,6 +42,7 @@ pub struct Combined<K: Surface, M: StripDevice> {
     next_mtouch: Instant,
     discard_until: Instant,
     keypad_reconnected: bool,
+    keypad_lost: bool,
     announced_absent: bool,
 }
 
@@ -48,7 +50,7 @@ impl<K: Surface, M: StripDevice> Combined<K, M> {
     /// `open_mtouch` None: the M-Touch is not wanted (`--mtouch off` or `--strips off`).
     pub fn new(open_keypad: Box<dyn FnMut() -> Result<K>>, open_mtouch: Option<Box<dyn FnMut() -> Result<M>>>) -> Self {
         let now = Instant::now();
-        Combined { open_keypad, open_mtouch, keypad: None, mtouch: None, next_keypad: now, next_mtouch: now, discard_until: now, keypad_reconnected: false, announced_absent: false }
+        Combined { open_keypad, open_mtouch, keypad: None, mtouch: None, next_keypad: now, next_mtouch: now, discard_until: now, keypad_reconnected: false, keypad_lost: false, announced_absent: false }
     }
 
     fn try_open_keypad(&mut self) {
@@ -103,8 +105,9 @@ impl<K: Surface, M: StripDevice> Surface for Combined<K, M> {
         match k.poll() {
             Ok(ev) => Ok(ev),
             Err(e) => {
-                eprintln!("nxk: {e:#}; reopening in {} s", RETRY.as_secs());
+                eprintln!("nxk: {e:#}; reopening in {} s; its held keys are released", RETRY.as_secs());
                 self.keypad = None;
+                self.keypad_lost = true;
                 self.next_keypad = Instant::now() + RETRY;
                 Ok(Vec::new())
             }
@@ -128,6 +131,10 @@ impl<K: Surface, M: StripDevice> Surface for Combined<K, M> {
 
     fn reconnected(&mut self) -> bool {
         std::mem::take(&mut self.keypad_reconnected)
+    }
+
+    fn disconnected(&mut self) -> bool {
+        std::mem::take(&mut self.keypad_lost)
     }
 
     fn poll_strips(&mut self) -> Result<Vec<MtEvent>> {
@@ -245,6 +252,8 @@ mod tests {
         assert!(c.poll_strips().unwrap().is_empty());
         assert!(c.poll().unwrap().is_empty(), "the keypad failed: dropped, no error");
         assert!(!c.has_keypad());
+        assert!(c.disconnected(), "the loss is reported once so the loop releases what the keypad held");
+        assert!(!c.disconnected());
         wait_discard();
         let ev = c.poll_strips().unwrap();
         assert_eq!(ev.len(), 1, "the M-Touch is unaffected by the keypad's loss");

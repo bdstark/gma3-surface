@@ -144,6 +144,11 @@ struct Loop {
     /// KB-20: the M-Touch parameter strips' gesture converter.
     strips: strips::Strips,
     strips_log_seen: usize,
+    /// Rotary pushes currently down (released for the keypad when it is lost).
+    pushed_wheels: BTreeSet<u8>,
+    /// The fine flag handed to the strips converter by the last strip report (what a stale Bank would corrupt).
+    #[cfg(test)]
+    last_strip_fine: Option<bool>,
 }
 
 impl Loop {
@@ -162,7 +167,9 @@ impl Loop {
             eprintln!("strips: {:?} on slots {}-{}, {} detents per travel (--strips/--strip-slots/--strip-travel)", cli.strips, cli.strip_slots, cli.strip_slots + 3, cli.strip_travel);
         }
         Ok(Loop { link: link::Link::new(cfg, key, 0.0), leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots,
-                  strips: strips::Strips::new(strip_cfg), strips_log_seen: 0 })
+                  strips: strips::Strips::new(strip_cfg), strips_log_seen: 0, pushed_wheels: BTreeSet::new(),
+                  #[cfg(test)]
+                  last_strip_fine: None })
     }
 
     fn now(&self) -> f64 {
@@ -175,7 +182,8 @@ impl Loop {
         if surface.reconnected() {
             self.leds.invalidate();
         }
-        for ev in surface.poll()? {
+        let events = surface.poll()?;
+        for ev in events {
             match ev {
                 Event::KeyDown { name, .. } => {
                     if name == "Bank" {
@@ -196,14 +204,24 @@ impl Loop {
                 // backend: not qualified). Everything travels as `ctl` events through the link's admission.
                 // No acceleration is applied anywhere in the service: the device's delta is the detent count.
                 Event::Rotate { wheel, delta, .. } => self.link.control_event("nxk", ROTARIES[(wheel.clamp(1, 4) - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Rel { dx: delta, fine: self.bank_held }, now),
-                Event::PressDown { wheel, .. } => self.link.control_event("nxk", ROTARIES[(wheel.clamp(1, 4) - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Btn { down: true }, now),
-                Event::PressUp { wheel, .. } => self.link.control_event("nxk", ROTARIES[(wheel.clamp(1, 4) - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Btn { down: false }, now),
+                Event::PressDown { wheel, .. } => {
+                    self.pushed_wheels.insert(wheel.clamp(1, 4));
+                    self.link.control_event("nxk", ROTARIES[(wheel.clamp(1, 4) - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Btn { down: true }, now)
+                }
+                Event::PressUp { wheel, .. } => {
+                    self.pushed_wheels.remove(&wheel.clamp(1, 4));
+                    self.link.control_event("nxk", ROTARIES[(wheel.clamp(1, 4) - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Btn { down: false }, now)
+                }
                 Event::Unknown { bytes } => {
                     if self.verbose {
                         eprintln!("nxk: unknown packet {bytes:02x?}");
                     }
                 }
             }
+        }
+        // KB-20 (review): the keypad went away after whatever it sent above; what it still held is released.
+        if surface.disconnected() {
+            self.release_keypad(now);
         }
         // KB-20: the M-Touch's parameter strips. The converter emits the same control events the rotaries do;
         // the binding generation and the slot's last known value come from the link's context.
@@ -223,6 +241,10 @@ impl Loop {
                         let cg = self.link.current_generation(now);
                         let slot = self.strips.cfg.base_slot.clamp(1, 5) + n - 1;
                         let hint = self.link.slot_hint(slot, now);
+                        #[cfg(test)]
+                        {
+                            self.last_strip_fine = Some(self.bank_held);
+                        }
                         let outs = self.strips.fader(n, value, touch, self.bank_held, cg, hint, now);
                         self.emit_strip_outs(outs, now);
                     } else {
@@ -276,6 +298,26 @@ impl Loop {
         Ok(())
     }
 
+    /// KB-20 (review of PR #5): the keypad is gone, so it can never send its releases. Every key the link holds
+    /// for it is released (a pending press is superseded by its release, as for a physical release), every rotary
+    /// push is ended and the Bank modifier is cleared so the strips stop reading as fine. The M-Touch's own
+    /// gestures are untouched: a finger on a strip is still there.
+    fn release_keypad(&mut self, now: f64) {
+        let held: Vec<&'static str> = self.link.held().iter().copied().collect();
+        for name in &held {
+            self.link.key_event(name, false, now);
+        }
+        let pushed: Vec<u8> = self.pushed_wheels.iter().copied().collect();
+        for wheel in pushed {
+            self.link.control_event("nxk", ROTARIES[(wheel - 1) as usize], link_target(wheel, self.rotary_base), link::CtlKind::Btn { down: false }, now);
+        }
+        self.pushed_wheels.clear();
+        self.bank_held = false;
+        if !held.is_empty() || self.verbose {
+            eprintln!("nxk: lost with {} key(s) held ({}): released", held.len(), held.join(", "));
+        }
+    }
+
     fn emit_strip_outs(&mut self, outs: Vec<strips::Out>, now: f64) {
         for o in outs {
             self.link.control_event("mtouch", o.control, o.target, o.kind, now);
@@ -316,6 +358,92 @@ const ROTARIES: [&str; 4] = ["Rotary1", "Rotary2", "Rotary3", "Rotary4"];
 /// Rotary `wheel` (1-4) means encoder slot `base + wheel - 1` of the bound display (KB-19 `--rotary-slots`).
 fn link_target(wheel: u8, base: u8) -> protocol::CtlTarget {
     protocol::CtlTarget::Slot { slot: base.clamp(1, 5) + wheel.clamp(1, 4) - 1 }
+}
+
+#[cfg(test)]
+mod keypad_loss_tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    /// A surface that plays keypad events, then reports the keypad lost, then strip reports.
+    struct Script {
+        keys: VecDeque<Event>,
+        /// The keypad is found gone on this many-th empty poll after the last key (None: never).
+        lose_on_empty_poll: Option<usize>,
+        empty_polls: usize,
+        pending_loss: bool,
+        strips: VecDeque<mtouch::Event>,
+    }
+    impl Surface for Script {
+        /// One key per poll; strips are played one report per poll once the keys are done.
+        fn poll(&mut self) -> Result<Vec<Event>> {
+            match self.keys.pop_front() {
+                Some(ev) => Ok(vec![ev]),
+                None => {
+                    self.empty_polls += 1;
+                    if self.lose_on_empty_poll == Some(self.empty_polls) {
+                        self.pending_loss = true;
+                    }
+                    Ok(Vec::new())
+                }
+            }
+        }
+        fn led(&mut self, _id: u16, _value: u16) {}
+        fn name(&self) -> String {
+            "script".into()
+        }
+        fn disconnected(&mut self) -> bool {
+            std::mem::take(&mut self.pending_loss)
+        }
+        fn poll_strips(&mut self) -> Result<Vec<mtouch::Event>> {
+            if self.keys.is_empty() { Ok(self.strips.pop_front().into_iter().collect()) } else { Ok(Vec::new()) }
+        }
+    }
+
+    fn test_loop() -> Loop {
+        let cli = Cli::parse_from(["mtpnxk", "--key", &"ab".repeat(32), "sim"]);
+        Loop::new(&cli).expect("a loop on an ephemeral socket")
+    }
+    fn strip1(value: u8, touch: bool) -> mtouch::Event {
+        mtouch::Event::Fader { id: 0x6112, name: "VALUE BASE CHANNEL 1", value, touch }
+    }
+
+    #[test]
+    fn losing_the_keypad_releases_its_keys_pushes_and_bank_but_not_the_strips() {
+        let mut lp = test_loop();
+        let mut s = Script {
+            keys: VecDeque::from([Event::KeyDown { name: "Clear", id: 1 }, Event::KeyDown { name: "Bank", id: 2 }, Event::PressDown { wheel: 2, id: 0 }]),
+            lose_on_empty_poll: Some(3),
+            empty_polls: 0,
+            pending_loss: false,
+            // Strip reports from the fourth step on: a touch and a move with Bank still held, then (after the loss) a move.
+            strips: VecDeque::from([strip1(0, true), strip1(20, true), strip1(51, true), strip1(80, true)]),
+        };
+        for _ in 0..3 { lp.step(&mut s).unwrap(); }
+        assert!(lp.link.held().contains("Clear") && lp.link.held().contains("Bank"), "{:?}", lp.link.held());
+        assert!(lp.bank_held && lp.pushed_wheels.contains(&2));
+        lp.step(&mut s).unwrap();  // strip touch
+        lp.step(&mut s).unwrap();  // strip move with Bank held: fine
+        assert_eq!(lp.last_strip_fine, Some(true), "before the loss Bank makes the strips fine");
+        assert!(lp.strips.touching(1));
+        lp.step(&mut s).unwrap();  // the keypad is found gone in this poll: releases, then the strip move
+        assert!(lp.link.held().is_empty(), "every key the link held for the keypad is released: {:?}", lp.link.held());
+        assert!(!lp.bank_held, "the Bank modifier is cleared");
+        assert!(lp.pushed_wheels.is_empty(), "the rotary push is ended");
+        // Unpaired, the releases are counted as dropped (nothing to send them to) rather than lost.
+        assert!(lp.link.stats.dropped_unpaired >= 3);
+        assert_eq!(lp.last_strip_fine, Some(false), "the strip move right after the loss is no longer fine");
+        assert!(lp.strips.touching(1), "the finger on the strip is still there: the M-Touch's gesture survives the keypad's loss");
+        lp.step(&mut s).unwrap();
+        assert_eq!(lp.last_strip_fine, Some(false));
+        assert_eq!(lp.strips.stats.touches, 1);
+        assert_eq!(lp.strips.stats.forced_lifts, 0, "the strip was not released by the keypad's loss");
+        // A loss with nothing held releases nothing and changes nothing.
+        let mut lp2 = test_loop();
+        let mut s2 = Script { keys: VecDeque::new(), lose_on_empty_poll: Some(1), empty_polls: 0, pending_loss: false, strips: VecDeque::new() };
+        lp2.step(&mut s2).unwrap();
+        assert!(lp2.link.held().is_empty() && !lp2.bank_held && lp2.link.stats.dropped_unpaired == 0);
+    }
 }
 
 #[cfg(test)]
