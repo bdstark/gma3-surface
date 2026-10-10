@@ -438,7 +438,7 @@ executor / element / mode, read on the user's page or on an explicit page throug
 page is `pageMissing` and never created, a wider neighbour of the same row covers the following numbers; `gma3_mcp_control`
 0.4.0: targets resolve by (page, executor), a hold's release goes to the target its down resolved, frozen; bridge 0.17.0;
 branch `feat/kb21-playback-banks`, live record `docs/probes/kb-21-executors-macos-2.5.1.md` there). This repository
-vendors the 0.10.0 / 0.5.0 / 0.4.0 set unchanged from `14464ed` ([tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns
+vendors the 0.10.0 / 0.5.0 / 0.4.0 set unchanged from `ea5bc0d` ([tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns
 the banks (`service/src/banks.rs`): which physical control means which executor number is a profile decision made in
 the service, never inferred from the console.
 
@@ -507,7 +507,11 @@ binds 30 executors; `PLAYBACK BANK +` moves to bank 2 and the display shows `12`
 `executor 111 is empty` by the stub console, its release after `PLAYBACK BANK -` goes to the frozen 111 (`frozen=1`), the
 display is back at `11`; two playback fader reports are counted, not sent).
 
-**Verified live in this repository:** [docs/probes/kb-21-surface-macos-2.5.1.md](docs/probes/kb-21-surface-macos-2.5.1.md).
+**Verified live in this repository:** [docs/probes/kb-21-surface-macos-2.5.1.md](docs/probes/kb-21-surface-macos-2.5.1.md)
+(the surface plugin on onPC with `control=fake`, driven by the real service's `sim` scripts: a bank change while `PFA 1` was
+held released page 1's executor 201, not the newly mapped 211; a tap on bank 2 refused `executor 211 is empty`; an
+independent page 2 refused `executor 201 of page 2 is empty` while the console stayed on page 1; a console `Page 2` / `Page 1`
+moved the following binding's generation once each; the page display read `11` / `12` / `21`).
 
 **Not verified live:** the physical M-Touch and M-Play through `run` (the `sim` path enters the service after the decoder;
 the hardware qualification with the operator at the surfaces is KB-24's), the executor operations themselves (KB-22), an
