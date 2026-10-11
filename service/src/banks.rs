@@ -775,19 +775,21 @@ impl Banks {
                         let fs = self.faders.get(&(si, i));
                         let touching = fs.map(|f| f.touching).unwrap_or(false);
                         let pending = fs.map(|f| f.touching && !f.picked_up && !f.rebound).unwrap_or(false);
-                        out.push(PlaybackControl { model: s.model, id: ka, light: light_ab, control: ca, ex: s.executor(Row::KeyA, i), pg, held: held(ca), pickup_pending: false });
-                        out.push(PlaybackControl { model: s.model, id: bar, light: Light::BarRgb, control: cf, ex: s.executor(Row::Fader, i), pg, held: touching, pickup_pending: pending });
+                        // Hardware pass (local echo): a touched, picked-up fader shows its own position.
+                        let echo = fs.filter(|f| f.touching && f.picked_up && !f.rebound).map(|f| f.last_v);
+                        out.push(PlaybackControl { model: s.model, id: ka, light: light_ab, control: ca, ex: s.executor(Row::KeyA, i), pg, held: held(ca), pickup_pending: false, echo: None });
+                        out.push(PlaybackControl { model: s.model, id: bar, light: Light::BarRgb, control: cf, ex: s.executor(Row::Fader, i), pg, held: touching, pickup_pending: pending, echo });
                         if let Some(id) = pfd {
-                            out.push(PlaybackControl { model: s.model, id, light: Light::KeyRedGreen, control: cf, ex: s.executor(Row::Fader, i), pg, held: false, pickup_pending: false });
+                            out.push(PlaybackControl { model: s.model, id, light: Light::KeyRedGreen, control: cf, ex: s.executor(Row::Fader, i), pg, held: false, pickup_pending: false, echo: None });
                         }
-                        out.push(PlaybackControl { model: s.model, id: kb, light: light_ab, control: cb, ex: s.executor(Row::KeyB, i), pg, held: held(cb), pickup_pending: false });
+                        out.push(PlaybackControl { model: s.model, id: kb, light: light_ab, control: cb, ex: s.executor(Row::KeyB, i), pg, held: held(cb), pickup_pending: false, echo: None });
                     }
                 }
                 SectionKind::Keys(_) => {
                     for i in 1..=s.size {
                         let n = i as usize - 1;
                         let id = if i <= 12 { 0x9805 + 0x10 * (i as u16 - 1) } else { 0x98C5 + 0x10 * (i as u16 - 13) };
-                        out.push(PlaybackControl { model: s.model, id, light: Light::KeyRedGreen, control: MPE[n], ex: s.executor(Row::KeyA, i), pg, held: held(MPE[n]), pickup_pending: false });
+                        out.push(PlaybackControl { model: s.model, id, light: Light::KeyRedGreen, control: MPE[n], ex: s.executor(Row::KeyA, i), pg, held: held(MPE[n]), pickup_pending: false, echo: None });
                     }
                 }
             }

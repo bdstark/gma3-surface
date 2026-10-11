@@ -473,11 +473,13 @@ impl Loop {
             let ctx = self.link.lighting_context(now).map(|c| &c.body);
             let strips_present = surface.device_present(mtouch::Model::MTouch);
             let strips = if self.strips.cfg.mode != strips::Mode::Off {
-                Some(lights::ParamStrips { present: strips_present, base_slot: self.strips.cfg.base_slot, touching: [self.strips.touching(1), self.strips.touching(2), self.strips.touching(3), self.strips.touching(4)] })
+                Some(lights::ParamStrips { present: strips_present, base_slot: self.strips.cfg.base_slot, touching: [self.strips.touching(1), self.strips.touching(2), self.strips.touching(3), self.strips.touching(4)], echo: [self.strips.echo(1), self.strips.echo(2), self.strips.echo(3), self.strips.echo(4)] })
             } else {
                 None
             };
             let playback = self.banks.lights_controls();
+            // Hardware pass: a missing context while the link holds a fresh one is a rebind in flight, not staleness.
+            self.lights.set_rebinding(ctx.is_none() && self.link.lighting_block_reason(now).is_some());
             let writes = self.lights.render(&lights::Scene { ctx, strips, playback: &playback }, now);
             for (model, out) in writes {
                 surface.output(model, out);
@@ -706,8 +708,10 @@ mod lights_binding_tests {
         lp.step(&mut lamp).unwrap();
         assert!(lp.link.context_view(lp.now()).is_some(), "the previous context is still held as data");
         assert!(lp.link.lighting_context(lp.now()).is_none(), "but nothing lights from it while the bind is in flight");
-        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![mtouch::LedKey::off().blue().slow().value()], "PFA1 switches to the unavailable pattern, not 101's assigned state: {:?}", lamp.outputs);
-        assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111") && l.contains("unavailable")), "{:?}", lp.lights.lines);
+        // Hardware pass: a rebind in flight is dark (not 101's assigned state, and not the stale pattern, which read as
+        // an error during a normal bank change).
+        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![0], "PFA1 goes dark, not 101's assigned state: {:?}", lamp.outputs);
+        assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111") && l.contains("rebinding")), "{:?}", lp.lights.lines);
         // The ack (revision 2) without its context: still unavailable, nothing rewritten.
         let ev = lp.link.pending_bind_ev().expect("the new bind is in flight");
         lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":1,"br":2})), lp.now());
@@ -721,7 +725,7 @@ mod lights_binding_tests {
         { let now = lp.now(); let m = plugin.context(2, json!([{"n":111,"empty":1,"tgt":0}]), w2); lp.link.receive(&m, now); }
         lamp.outputs.clear();
         lp.step(&mut lamp).unwrap();
-        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![0], "{:?}", lamp.outputs);
+        assert!(key_writes(&lamp.outputs, 0x4201).is_empty(), "already dark from the rebind: nothing to rewrite: {:?}", lamp.outputs);
         assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111: empty, dark")), "{:?}", lp.lights.lines);
     }
 
@@ -751,7 +755,7 @@ mod lights_binding_tests {
         lamp.strips.push_back(mtouch::Event::KeyDown { id: 0x4111, name: "PLAYBACK BANK Up (+)" });
         lp.step(&mut lamp).unwrap();
         let ev = lp.link.pending_bind_ev().expect("the new bind is in flight");
-        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![mtouch::LedKey::off().blue().slow().value()], "unavailable while in flight");
+        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![0], "dark while in flight (the rebind grace)");
         // The plugin REFUSES the new binding and keeps [101..110]; it resends its unchanged context.
         lamp.outputs.clear();
         lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":0,"code":"bad-bind","why":"cannot watch in full"})), lp.now());
@@ -759,6 +763,11 @@ mod lights_binding_tests {
         { let now = lp.now(); let m = plugin.context(1, json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Go+","fd":"Master","lvl":100,"act":0,"col":"ff0000"}]), w1.clone()); lp.link.receive(&m, now); }
         lp.step(&mut lamp).unwrap();
         assert!(lp.link.lighting_context(lp.now()).is_none(), "the refused bind must not re-enable lighting from the old context");
+        assert!(key_writes(&lamp.outputs, 0x4201).is_empty(), "still dark inside the grace: {:?}", lamp.outputs);
+        // A refused bind never resolves: past the grace it is staleness and shows the unavailable pattern.
+        lp.lights.age_rebind(lights::REBIND_GRACE + 0.1);
+        lamp.outputs.clear();
+        lp.step(&mut lamp).unwrap();
         assert!(key_writes(&lamp.outputs, 0x4201).iter().all(|&v| v != mtouch::LedKey::off().blue().value() && v != 0), "PFA1 is neither 101's assigned nor dark: {:?}", lamp.outputs);
         assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111") && l.contains("unavailable")), "PFA1 is shown unavailable, mapped to 111: {:?}", lp.lights.lines);
     }

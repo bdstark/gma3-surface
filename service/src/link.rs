@@ -222,6 +222,9 @@ pub enum Phase {
     Paired(Session),
 }
 
+/// Hardware pass: while identical refusals keep arriving, their count is logged at most this often.
+const REFUSAL_SUMMARY_S: f64 = 2.0;
+
 /// The console state as last received, with everything needed to judge freshness.
 #[derive(Debug, Clone, Default)]
 pub struct ConsoleState {
@@ -303,6 +306,10 @@ pub struct Link {
     /// Review (PR #9): refusals per code over the whole pairing history (the `refusals` log below keeps the last
     /// 100 for diagnostics; verdicts use these counters).
     pub refusal_codes: BTreeMap<String, u64>,
+    /// Hardware pass: the last refusal logged (code and reason), its unprinted repeats and the last summary time.
+    last_refusal: Option<String>,
+    refusal_repeats: u64,
+    refusal_summary_at: f64,
     pub refusals: Vec<Refusal>,
     pub log: Vec<String>,
     /// KB-18: per-device event sequence (next value), gestures per control, queued motion.
@@ -352,6 +359,9 @@ impl Link {
             feedback_probe: None,
             plugin_load: Vec::new(),
             refusal_codes: BTreeMap::new(),
+            last_refusal: None,
+            refusal_repeats: 0,
+            refusal_summary_at: 0.0,
             refusals: Vec::new(),
             log: Vec::new(),
             es_next: BTreeMap::new(),
@@ -441,10 +451,42 @@ impl Link {
     }
 
     fn note(&mut self, line: String) {
+        self.flush_refusal_repeats();
+        self.push_log(line);
+    }
+
+    fn push_log(&mut self, line: String) {
         self.log.push(line);
         if self.log.len() > 500 {
             self.log.remove(0);
         }
+    }
+
+    /// Hardware pass: identical consecutive refusals are logged once; the repeats are summarised when anything else is
+    /// logged, or every `REFUSAL_SUMMARY_S` while they continue.
+    fn flush_refusal_repeats(&mut self) {
+        if self.refusal_repeats > 0 {
+            let n = std::mem::take(&mut self.refusal_repeats);
+            let what = self.last_refusal.clone().unwrap_or_default();
+            self.push_log(format!("{what}: repeated {n} more time(s)"));
+        }
+    }
+
+    /// One refusal for the log: a repeat of the previous refusal (same code and reason) is counted, not printed.
+    fn note_refusal(&mut self, ev: u64, code: &str, why: &str, now: f64) {
+        let key = format!("refused [{code}] {why}");
+        if self.last_refusal.as_deref() == Some(key.as_str()) {
+            self.refusal_repeats += 1;
+            if now - self.refusal_summary_at >= REFUSAL_SUMMARY_S {
+                self.refusal_summary_at = now;
+                self.flush_refusal_repeats();
+            }
+            return;
+        }
+        self.flush_refusal_repeats();
+        self.push_log(format!("event {ev} {key}"));
+        self.last_refusal = Some(key);
+        self.refusal_summary_at = now;
     }
 
     fn send_json(&mut self, json: String) {
@@ -658,7 +700,12 @@ impl Link {
         // only; `vc` 1 (feedback valueComplete) is required before a value is a pickup target.
         let complete = s.get("vc").and_then(|v| v.as_u64()) == Some(1);
         let abs = s.get("abs").and_then(|v| v.as_f64()).map(|a| (a / 100.0).clamp(0.0, 1.0));
-        Some(crate::strips::SlotHint { single: state == "value" && complete && abs.is_some(), value: abs })
+        // Hardware pass (local echo): one Coarse click is exactly 1 % of the travel for the Percent readouts.
+        let step = match s.get("readout").and_then(|v| v.as_str()) {
+            Some("Percent") | Some("PercentFine") => Some(0.01),
+            _ => None,
+        };
+        Some(crate::strips::SlotHint { single: state == "value" && complete && abs.is_some(), value: abs, step })
     }
 
     /// KB-22: what the last context said about a bound executor, for the playback faders' pickup: whether it is
@@ -1145,7 +1192,7 @@ impl Link {
                     }
                     let r = Refusal { ev, code: code.unwrap_or_default(), why: why.unwrap_or_default() };
                     *self.refusal_codes.entry(r.code.clone()).or_insert(0) += 1;
-                    self.note(format!("event {} refused [{}] {}", r.ev, r.code, r.why));
+                    self.note_refusal(r.ev, &r.code.clone(), &r.why.clone(), now);
                     self.refusals.push(r);
                     if self.refusals.len() > 100 {
                         self.refusals.remove(0);
@@ -1592,7 +1639,7 @@ mod tests {
         let f = plugin.frame(v);
         link.receive(&f, 5.0);
         let h = |n| link.slot_hint(n, 5.1);
-        assert_eq!(h(1), Some(crate::strips::SlotHint { single: true, value: Some(0.409) }));
+        assert_eq!(h(1), Some(crate::strips::SlotHint { single: true, value: Some(0.409), step: None }));
         assert_eq!(h(2).map(|h| h.single), Some(false), "a bounded or failed read (vc 0) is no pickup target");
         assert_eq!(h(3).map(|h| h.single), Some(false), "an older plugin without vc is never assumed complete");
         assert_eq!(h(4).map(|h| h.single), Some(false), "mixed values are no pickup target");
@@ -2140,4 +2187,35 @@ mod tests {
         assert!(!link.position_supersedes(&CtlTarget::Executor { ex: 201, el: "fader", pg: Some(3) }, 10.3), "an unbound page is unknown: no");
     }
 
+    #[test]
+    fn identical_consecutive_refusals_are_logged_once_with_a_count() {
+        let (mut link, mut plugin) = pair(70.0);
+        let base = link.log.len();
+        for i in 0..50u64 {
+            link.key_event("Record", i % 2 == 0, 70.0 + i as f64 * 0.01);
+            let ev = plugin.decode(link.take_outgoing()).last().unwrap()["ev"].as_u64().unwrap();
+            let a = plugin.frame(json!({"t":"ack","ev":ev,"ok":0,"code":"target-unavailable","why":"slot 1 is empty"}));
+            link.receive(&a, 70.0 + i as f64 * 0.01);
+        }
+        let lines: Vec<&String> = link.log[base..].iter().filter(|l| l.contains("refused")).collect();
+        assert_eq!(lines.len(), 1, "one line for 50 identical refusals within the summary interval: {lines:?}");
+        assert_eq!(link.stats.refused, 50, "every refusal is still counted");
+        assert_eq!(link.refusal_codes.get("target-unavailable"), Some(&50));
+        // A different refusal flushes the count first, then logs itself.
+        link.key_event("Record", true, 71.0);
+        let ev = plugin.decode(link.take_outgoing()).last().unwrap()["ev"].as_u64().unwrap();
+        link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":0,"code":"conflict","why":"held elsewhere"})), 71.0);
+        let tail: Vec<&String> = link.log[base..].iter().collect();
+        assert!(tail.iter().any(|l| l.contains("refused [target-unavailable] slot 1 is empty: repeated 49 more time(s)")), "{tail:?}");
+        assert!(tail.last().unwrap().contains("refused [conflict] held elsewhere"), "{tail:?}");
+        // While they keep coming, a summary at most every REFUSAL_SUMMARY_S.
+        for i in 0..30u64 {
+            let t = 72.0 + i as f64 * 0.2;
+            link.key_event("Record", i % 2 == 0, t);
+            let ev = plugin.decode(link.take_outgoing()).last().unwrap()["ev"].as_u64().unwrap();
+            link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":0,"code":"conflict","why":"held elsewhere"})), t);
+        }
+        let summaries = link.log[base..].iter().filter(|l| l.contains("refused [conflict] held elsewhere: repeated")).count();
+        assert!((2..=3).contains(&summaries), "about one summary per 2 s over 6 s: {summaries}");
+    }
 }
