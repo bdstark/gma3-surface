@@ -7,7 +7,7 @@ for the console, host and firmware it names. Vocabulary as in [deployments.md](d
 *harness*, *unqualified*.
 
 Revision of this matrix: service branch `feat/kb24-device-profiles`; vendored modules hardkeys 0.10.0 /
-feedback 0.7.0 / control 0.7.0 at `9cf1659` ([VENDOR.md](../tools/ma3/VENDOR.md)); plugin `mtpnxk_surface`
+feedback 0.7.0 / control 0.7.0 at `bdcfe6e` ([VENDOR.md](../tools/ma3/VENDOR.md)); plugin `mtpnxk_surface`
 0.11.0 (adds the heartbeat load report; 0.10.0 / protocol 2 is the localhost-only transport without a pairing key; the field is optional).
 
 ## Automated suites (what each run establishes)

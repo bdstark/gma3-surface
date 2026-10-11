@@ -254,3 +254,9 @@ count exactly once the order passed the region, and reports an upper bound with 
 no run in this record produced one (every refusal-free run reports 0 lost; the accounting change does not alter any
 figure above). Known received events are never reported as lost.
 
+### Review round 3 (2026-10-11): forgotten history never regains a false certainty
+
+Control 0.7.0 at `bdcfe6e`: a refusal inside the forgotten history (a retry of a dropped number, or a new one there)
+is not counted again and sets an explicit unknown state; an eviction after the order entered the region keeps the
+count unknown. While unknown, the loss figure is an upper bound with `lostUncertain`; the state clears once the order
+passed the region. No measurement figure changes (no run produced an uncertain figure).

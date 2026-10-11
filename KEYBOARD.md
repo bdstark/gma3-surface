@@ -749,7 +749,7 @@ Windows/Linux hosts.
 
 The console half is the MCP repository's note (ENCODERS.md "KB-24 results"): control 0.6.0 and 0.7.0, feedback 0.7.0
 (the module defects the qualification found and the improvements that followed, 2026-10-11), the set hardkeys
-0.10.0 / feedback 0.7.0 / control 0.7.0 at `9cf1659` (after the PR #28 review round 2).
+0.10.0 / feedback 0.7.0 / control 0.7.0 at `bdcfe6e` (after the PR #28 review round 3).
 This half has two parts; the first is done, the second needs the operator at the surfaces.
 
 **Documentation (done):**
