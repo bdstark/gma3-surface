@@ -298,6 +298,9 @@ pub struct Link {
     pub feedback_missed: u64,
     feedback_probe: Option<FeedbackProbe>,
     pub plugin_load: Vec<PluginLoad>,
+    /// Review (PR #9): refusals per code over the whole pairing history (the `refusals` log below keeps the last
+    /// 100 for diagnostics; verdicts use these counters).
+    pub refusal_codes: BTreeMap<String, u64>,
     pub refusals: Vec<Refusal>,
     pub log: Vec<String>,
     /// KB-18: per-device event sequence (next value), gestures per control, queued motion.
@@ -346,6 +349,7 @@ impl Link {
             feedback_missed: 0,
             feedback_probe: None,
             plugin_load: Vec::new(),
+            refusal_codes: BTreeMap::new(),
             refusals: Vec::new(),
             log: Vec::new(),
             es_next: BTreeMap::new(),
@@ -1133,6 +1137,7 @@ impl Link {
                         self.note(format!("event {ev}: the plugin's binding generation is {g}; our context lags (events against it are refused until the next context message)"));
                     }
                     let r = Refusal { ev, code: code.unwrap_or_default(), why: why.unwrap_or_default() };
+                    *self.refusal_codes.entry(r.code.clone()).or_insert(0) += 1;
                     self.note(format!("event {} refused [{}] {}", r.ev, r.code, r.why));
                     self.refusals.push(r);
                     if self.refusals.len() > 100 {

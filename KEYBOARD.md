@@ -749,7 +749,7 @@ Windows/Linux hosts.
 
 The console half is the MCP repository's note (ENCODERS.md "KB-24 results"): control 0.6.0 and 0.7.0, feedback 0.7.0
 (the module defects the qualification found and the improvements that followed, 2026-10-11), the set hardkeys
-0.10.0 / feedback 0.7.0 / control 0.7.0 at `3dd82b2`.
+0.10.0 / feedback 0.7.0 / control 0.7.0 at `e4741b9` (after the PR #28 review round 1).
 This half has two parts; the first is done, the second needs the operator at the surfaces.
 
 **Documentation (done):**
@@ -811,6 +811,14 @@ press-to-effect p95 fell from 122 to 66 ms (B7), feedback 49 ms median / 172 ms 
 agreed at a tenth of the probes (3–5 of 39 are missed in every run since round 4; B7 is at 13 %). The context
 collection stays per tick: gating it shifts the binding revision the KB-21/KB-22 tests expect, with the finding
 recorded; the hardware pass is deferred until the merge.
+
+**Review round 1 (PR #9 / GrandMA3MCP #28, 2026-10-11):** six findings fixed: the early merge runs behind every
+admission guard (P1); both merge paths and the absolute supersede stop at another control's motion on the same
+target; the refused-sequence set is bounded; the load window rotates at the end of the reporting tick so no tick is
+lost; the measurement keeps one session through warm-up, workload and drain; the ordering verdict uses cumulative
+per-code counters minus the warm-up snapshot. Re-measured: B8, C6 and E5 pass every check (feedback p95 141 ms, 2 of
+39 probes missed); the 100 detents/s saturation run fails only the by-design deferral line and the plugin tick max
+(247 ms, now honestly counted). `control_admission_test` 296, Lua 244, cargo 96, e2e.
 
 **Pending (hardware pass, operator at the surfaces):** `measure` against onPC with the plugin 0.11.0 installed
 (procedure in the record), the physical NX-K rotaries, M-Touch and

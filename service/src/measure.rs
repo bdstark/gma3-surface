@@ -120,6 +120,8 @@ pub struct Snapshot {
     feedback_missed: u64,
     effect: usize,
     load: usize,
+    refusal_codes: BTreeMap<String, u64>,
+    hellos: u64,
 }
 
 impl Snapshot {
@@ -135,6 +137,8 @@ impl Snapshot {
             feedback_missed: link.feedback_missed,
             effect: link.effect_ms.len(),
             load: link.plugin_load.len(),
+            refusal_codes: link.refusal_codes.clone(),
+            hellos: link.stats.hellos,
         }
     }
 }
@@ -264,11 +268,16 @@ pub fn report(link: &link::Link, strips: &strips::Strips, banks: &banks::Banks, 
     let no_effect = link.effect_ms[before.effect.min(link.effect_ms.len())..].iter().filter(|m| **m < 0).count() as u64;
     c("effect_none", no_effect);
 
-    // Refusal codes over the link's bounded refusal log (its last 100 entries).
+    // Refusal codes over the run: the link's cumulative per-code counters minus the warm-up snapshot (the bounded
+    // refusal log stays for diagnostics; review of PR #9).
     let mut refusals: BTreeMap<String, u64> = BTreeMap::new();
-    for r in &link.refusals {
-        *refusals.entry(r.code.clone()).or_insert(0) += 1;
+    for (code, n) in &link.refusal_codes {
+        let d = delta(before.refusal_codes.get(code).copied().unwrap_or(0), *n);
+        if d > 0 {
+            refusals.insert(code.clone(), d);
+        }
     }
+    c("hellos", delta(before.hellos, st.hellos));
 
     let slice = |v: &[f64], from: usize| -> Vec<f64> { v[from.min(v.len())..].to_vec() };
     let key_ack = summarise(&slice(&link.rtt_key_ms, before.rtt_key));
@@ -324,6 +333,7 @@ pub fn report(link: &link::Link, strips: &strips::Strips, banks: &banks::Banks, 
     zero("rejected plugin packets", "rejected");
     zero("link downs", "link_downs");
     zero("deltas ignored", "deltas_ignored");
+    zero("re-pairings during the run", "hellos");
     let ooo = refusals.get("out-of-order").copied().unwrap_or(0);
     checks.push(Check { name: "out-of-order refusals".into(), value: Some(ooo as f64), threshold: "= 0".into(), verdict: if ooo == 0 { Verdict::Pass } else { Verdict::Fail } });
     let events = counters.get("events").copied().unwrap_or(0);
@@ -409,7 +419,7 @@ impl Report {
         out.push_str(&format!("counters: {}\n", counters.join(" ")));
         if !self.refusals.is_empty() {
             let r: Vec<String> = self.refusals.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            out.push_str(&format!("refusals (last 100): {}\n", r.join(" ")));
+            out.push_str(&format!("refusals (run, by code): {}\n", r.join(" ")));
         }
         for c in &self.checks {
             let v = match c.value {
@@ -433,7 +443,7 @@ impl Report {
             "metrics": self.metrics.iter().map(|(k, v)| (k.clone(), s(v))).collect::<serde_json::Map<_, _>>(),
             "plugin_loop": self.load.map(|(tmax, tavg, pmax, full, n)| json!({ "ticks": n, "tick_max_ms": tmax, "tick_mean_ms": tavg, "datagrams_per_tick_max": pmax, "ticks_at_budget": full, "phases_ms": self.load_phases.map(|(m, p, s)| json!({ "modules": m, "datagrams": p, "state_context": s })), "scheduling": self.load_sched.map(|(co, ovl)| json!({ "coroutines_max": co, "overlapping_ticks": ovl })) })),
             "counters": self.counters,
-            "refusals_last_100": self.refusals,
+            "refusals_by_code": self.refusals,
             "checks": self.checks.iter().map(|c| json!({ "name": c.name, "value": c.value, "threshold": c.threshold, "verdict": match c.verdict { Verdict::Pass => "pass", Verdict::Fail => "fail", Verdict::NotAvailable => "n.a." } })).collect::<Vec<_>>(),
             "verdict": if self.failed() { "fail" } else { "pass" },
         })

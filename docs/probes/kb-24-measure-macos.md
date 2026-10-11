@@ -217,11 +217,30 @@ Agreed in this round: "feedback probes missed" is a tenth of the probes rather t
 every run since round 4, inside the 400 ms before the probe's Clear; the console's frame and read timing, not the
 transport). B7 sits at 13 %, just over; the motion runs were not repeated (nothing in this round touches them).
 
-### Recommended next steps
+### Review round 1 of PR #9 / GrandMA3MCP PR #28 (2026-10-11) and the re-measurement
 
-- Plugin loop: decouple the binding-revision baseline from the context collection (prime it once per control
-  instance where the first snapshot is taken, then gate the collection to the 40 ms cadence); the KB-21/KB-22
-  scenes are the regression tests.
-- The missed probes: observe the command line right after a key event at the plugin (the `bench` watch does this
-  for NUM taps) and send the state delta from that observation.
-- Hardware pass: the physical surfaces at the same workloads, after the merge.
+| Finding | Fix |
+| --- | --- |
+| P1 the early merge bypassed admission guards (a missing or stale binding revision, a busy input owner) | control 0.7.0 (`e4741b9`): the merge runs after the binding lookup, the stale checks, the binding-required rule, the rebound rule, the busy owner and the target's owner (against the queued intent's resolved target); only the target resolution and the target-dependent checks are skipped |
+| P2 cross-control merging reordered motion on one target (`A +100, B -100, A +100` → `A +200, B -100`) | both merge paths and the absolute supersede stop at another control's motion on the same target |
+| P2 the refused-sequence set grew without bound | at most `seqWindow` (64) numbers, the oldest forgotten first; a gap beyond the window is loss anyway |
+| P2 the heartbeat that reported a window discarded its own tick | the window rotates at the END of the reporting tick and the reply carries the previously closed window; every tick is in exactly one report (the first reply of a run has none) |
+| P2 the warm-up said `bye` and the workload re-paired | one session across warm-up, workload and drain; `re-pairings during the run` (hellos) is a zero-check now |
+| P2 the ordering verdict used the bounded 100-entry log | cumulative per-code refusal counters in the link, warm-up snapshot subtracted; the log stays for diagnostics |
+
+Re-measured with the same setup (reload by Macro 150, fixtures 401+402 on bank 4.1 for the motion runs, playback left
+out, `ClearAll` afterwards). Because the reporting tick's own duration is now kept, the plugin's tick maxima are
+higher than the earlier rounds reported, not because the plugin got slower.
+
+| Run | Workload | key ack (n / median / p95 / worst) | boundary ack p95 | motion queue (p95 / worst) | feedback | press-to-effect p95 | plugin loop (ticks / mean / max / at budget) | loss, ordering, re-pairings | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **B8** | keys 4/s + Record probe, 20 s | 394 / 45 / 67 / 83 ms | — | — | n=37 of 39, median 56, **p95 141 ms**, 2 missed (5 %) | 68 ms | 366 / 42 ms / 170 / 0 | all zero, hellos 0 | **PASS** |
+| **C6** | rotaries 2+3 at 20/s + strip | — | 42 ms | 9.8 / 22 ms | — | — | 1235 / 29 ms / 173 / 0 | all zero | **PASS** |
+| **E5** | rotaries 20/s + strip + keys 4/s | 241 / 41 / 67 / 79 ms | 49 ms | 11.2 / 25 ms | — | — | 677 / 47 ms / 186 / 0 | all zero | **PASS** |
+| D5 | rotaries 50/s + strip + keys 4/s | 241 / 48 / 70 / 84 ms | 45 ms | 31.5 / 44 ms | — | — | 208 / **132 ms** / **247 ms** / 0 | all zero (1214 deltas merged) | FAIL on motion queue (deferral under the ceiling) and plugin tick max 247 ms (the reporting ticks now counted) |
+
+What the review round changed in the figures: nothing in the service-side latencies or the loss counters; the
+plugin's tick maximum under saturation is honest now (247 ms at 100 detents/s plus a strip plus keys, mean 132 ms),
+and so is the feedback tail (p95 141 ms, 2 of 39 probes missed). Every scheduling window still shows one coroutine
+and no overlapping ticks.
+

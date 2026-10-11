@@ -7,7 +7,7 @@ for the console, host and firmware it names. Vocabulary as in [deployments.md](d
 *harness*, *unqualified*.
 
 Revision of this matrix: service branch `feat/kb24-device-profiles`; vendored modules hardkeys 0.10.0 /
-feedback 0.7.0 / control 0.7.0 at `3dd82b2` ([VENDOR.md](../tools/ma3/VENDOR.md)); plugin `mtpnxk_surface`
+feedback 0.7.0 / control 0.7.0 at `e4741b9` ([VENDOR.md](../tools/ma3/VENDOR.md)); plugin `mtpnxk_surface`
 0.11.0 (adds the heartbeat load report; 0.10.0 / protocol 2 is the localhost-only transport without a pairing key; the field is optional).
 
 ## Automated suites (what each run establishes)
@@ -79,7 +79,7 @@ and claims nothing.
 | out-of-order refusals | the plugin saw a later per-device sequence first | 0 | ordering must hold on loopback |
 | retransmit ratio | retransmitted / events | ≤ 1 % | acks later than 60 ms must be rare |
 | feedback probes missed | a probe never saw its change before its Clear 400 ms later | ≤ 10 % of probes | **agreed 2026-10-11**: 3–5 of 39 are missed in every run since round 4 (the console's frame and read timing); zero was not reachable on 2.5.1 |
-| plugin tick max | the longest plugin loop iteration in a heartbeat window (plugin 0.11.0) | ≤ 200 ms | **agreed 2026-10-11**: idle spikes of 167 ms recur on 2.5.1 (the console's own work); indicative only while the tick-count anomaly of the record stands |
+| plugin tick max | the longest plugin loop iteration in a heartbeat window (plugin 0.11.0) | ≤ 200 ms | **agreed 2026-10-11**: idle spikes of 167 ms recur on 2.5.1 (the console's own work); met in every run but the 100 detents/s saturation (247 ms) |
 | plugin ticks at the packet budget | ticks that processed 32 datagrams | 0 | the workload must not approach the per-tick budget |
 
 ### Results so far
@@ -91,6 +91,7 @@ and claims nothing.
 | onPC 2.5.1 loopback, plugin 0.11.0 + control 0.6.0, after the fixes (runs B2–B5, C3, E2, D2) | 2026-10-11 | **keys and admitted motion pass**: C3 passes every check; E2 and D2 lose nothing (0 lost / superseded / refused / retransmitted at 40 and 100 detents/s with keys; before: 103 lost, 101 superseded, 1957 `queue-full`); key acks 65–69 ms p95 against 80. **Open**: feedback read-back p95 509 ms (11 of 39 probes missed; median 60 ms), plugin tick spikes 266–275 ms, D2 at the datagram budget in 27 ticks and motion deferred by the ceiling (25 / 146 ms) | same record, `…-run{B2,B3,B4,B5,C3,E2,D2}-*.json` |
 | onPC 2.5.1 loopback, plugin 0.11.0 + control 0.7.0 + feedback 0.7.0, round 4 (B6, C4, E3, D3) | 2026-10-11 | **C4 and E3 pass**; D3 (100 detents/s + strip + keys) fails only the motion-queue line by design under the ceiling (44 ms worst, was 146; the plugin never at its datagram budget, was 27 ticks); B6: feedback median 55 ms, p95 165 ms (was 60 / 509), 3 probes missed (was 11), press-to-effect p95 122 ms against 100. Scheduling diagnostics: one coroutine, no overlapping ticks, coherent phase sums | same record, `…-run{B6,C4,E3,D3}-*-round4.json` |
 | onPC 2.5.1 loopback, round 5 (B7: the state read on the tick after a key event) | 2026-10-11 | press-to-effect p95 **66 ms** (was 122), feedback median 49 / p95 172 ms, key acks 69 ms p95, all zero loss; 5 of 39 probes missed (13 %, line 10 %) | same record, `…-runB7-keys-round5.json` |
+| onPC 2.5.1 loopback, after review round 1 of PR #9 / #28 (B8, C6, E5, D5) | 2026-10-11 | **B8, C6, E5 pass every check**; D5 (100 detents/s + strip + keys) fails the motion-queue line by design under the ceiling and the plugin tick max (247 ms, mean 132 ms: the reporting ticks are counted now); no loss, no reordering, no re-pairing in any run | same record, `…-run{B8,C6,E5,D5}-*-review1.json` |
 
 The onPC runs confirmed the second artefact as a defect of the vendored control module's accounting and
 identified two more (the control queue overflowing at realistic rates, the plugin loop saturating at 100 detents/s

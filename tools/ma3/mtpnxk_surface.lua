@@ -713,14 +713,14 @@ local function handleHeartbeat(s, obj, now, revived)
   s.unsyncedHeld = unsynced
   local reply = { t = "hb", held = pluginHeld, unsynced = unsynced, gen = state.gen }
   -- KB-24: the loop's load since the last heartbeat reply (any session), then the window starts again.
-  local ld = state.load
-  if ld and ld.n > 0 then
-    local r3 = function(v) return math.floor((v or 0) * 1000 + 0.5) / 1000 end
-    local cos = 0
-    for _ in pairs(ld.cos or {}) do cos = cos + 1 end
-    reply.load = { tmax = r3(ld.tmax), tavg = r3(ld.tsum / ld.n), pmax = ld.pmax, full = ld.full, n = ld.n, smod = r3(ld.smod), spkt = r3(ld.spkt), sstate = r3(ld.sstate), co = cos, ovl = ld.ovl or 0 }
-    state.load = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0, smod = 0, spkt = 0, sstate = 0, cos = {}, ovl = 0 }
+  -- Review (PR #9): the window is rotated at the END of the tick that answers a heartbeat (so this tick's own
+  -- duration, datagrams and budget state are kept), and the reply carries the window completed by the previous
+  -- rotation. The first reply of a run therefore has no report; every tick is in exactly one report.
+  if state.loadReport then
+    reply.load = state.loadReport
+    state.loadReport = nil
   end
+  state.loadRotate = true
   if revived then reply.resynced = 1 end
   if releasedNow > 0 then reply.reconciled = releasedNow end
   sendToSession(s, reply)
@@ -1316,6 +1316,14 @@ local function tick(now)
   end
   ld.n = ld.n + 1
   state.inTick = false
+  if state.loadRotate then
+    state.loadRotate = nil
+    local r3 = function(v) return math.floor((v or 0) * 1000 + 0.5) / 1000 end
+    local cos = 0
+    for _ in pairs(ld.cos or {}) do cos = cos + 1 end
+    state.loadReport = { tmax = r3(ld.tmax), tavg = r3(ld.tsum / ld.n), pmax = ld.pmax, full = ld.full, n = ld.n, smod = r3(ld.smod), spkt = r3(ld.spkt), sstate = r3(ld.sstate), co = cos, ovl = ld.ovl or 0 }
+    state.load = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0, smod = 0, spkt = 0, sstate = 0, cos = {}, ovl = 0 }
+  end
 end
 state._tick = tick
 

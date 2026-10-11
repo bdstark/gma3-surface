@@ -967,6 +967,8 @@ fn main() -> Result<()> {
             let script = measure::workload(&measure::Workload { key_rate: *key_rate, motion_rate: *motion_rate, probe_rate: *probe_rate, probe_key: probe, strip: !no_strip, playback: !no_playback });
             let mut lp = Loop::new(&cli)?;
             lp.probe = Some((probe, probe_item.clone()));
+            // Review (PR #9): one session for warm-up, workload and drain; only the drain says bye.
+            lp.bye_on_exit = false;
             // Warm-up: pair and wait for a known binding generation (the context), at most 5 s, with no input.
             let mut idle = sim::SimKeypad::new(Vec::new(), false, false);
             lp.run(&mut idle, |lp, _| lp.link.current_generation(lp.now()).is_some() || lp.started.elapsed() > Duration::from_secs(5))?;
@@ -976,7 +978,6 @@ fn main() -> Result<()> {
             let before = measure::Snapshot::of(&lp.link, &lp.strips, &lp.banks);
             let mut keypad = sim::SimKeypad::new(sim::parse_script(&script)?, true, false);
             let total = Duration::from_secs_f64(*seconds);
-            lp.bye_on_exit = false;
             let start = Instant::now();
             lp.run(&mut keypad, |_, _| start.elapsed() > total)?;
             // Drain: let the last acks and states arrive, then say bye.

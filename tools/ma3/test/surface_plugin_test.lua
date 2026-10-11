@@ -402,23 +402,27 @@ send({ t = "hb", held = {} }); tick(); drain()
 -- KB-24: the heartbeat reply carries the loop's load since the previous reply, then the window restarts
 -------------------------------------------------------------------------------
 tick(1.1)
-state.load = nil
+state.load, state.loadReport, state.loadRotate = nil, nil, nil
 for _ = 1, 5 do tick(0.001) end
 send({ t = "hb", held = {} }); tick()
 local hbLoad = ofType(drain(), "hb")[1]
-check("the heartbeat reply carries a load report", hbLoad and type(hbLoad.load) == "table", J(hbLoad))
-check("the report covers the ticks completed since the previous report (the tick carrying this hb is not in it yet)",
-      hbLoad.load.n == 5 and hbLoad.load.pmax == 0 and hbLoad.load.full == 0, J(hbLoad.load))
+check("the first heartbeat reply of a window series carries no report; it rotates the window at the end of its tick", hbLoad and hbLoad.load == nil, J(hbLoad))
+send({ t = "hb", held = {} }); tick()
+hbLoad = ofType(drain(), "hb")[1]
+check("the second reply carries the window closed by the first: the 5 idle ticks and the reporting tick itself (6 ticks, one datagram)",
+      hbLoad and type(hbLoad.load) == "table" and hbLoad.load.n == 6 and hbLoad.load.pmax == 1 and hbLoad.load.full == 0, J(hbLoad and hbLoad.load))
 check("tick times are non-negative milliseconds (the stub clock stands still inside a tick: 0)", hbLoad.load.tmax == 0 and hbLoad.load.tavg == 0, J(hbLoad.load))
--- 32 datagrams queued at once: the tick exhausts its budget, the report says so, the 33rd waits for the next tick.
+check("scheduling diagnostics: one coroutine, no overlapping tick", hbLoad.load.co == 1 and hbLoad.load.ovl == 0, J(hbLoad.load))
+-- 32 datagrams queued at once: the tick exhausts its budget; the 33rd waits for the next tick. Review (PR #9): the
+-- reporting tick's own 32 datagrams and budget exhaustion are in the window it closes, not lost.
 for i = 1, 33 do send({ t = "hb", held = {} }) end
 tick()
 check("a tick processes at most the budget (32); the rest waits", #inbox == 1, #inbox)
--- The 33rd hb is answered on the next tick; its report is the window of one completed tick: the burst tick.
+drain()
 tick()
 hbLoad = ofType(drain(), "hb")
 hbLoad = hbLoad[#hbLoad]
-check("the next report names the burst tick: at the budget (pmax 32, full 1), one tick", hbLoad.load and hbLoad.load.full == 1 and hbLoad.load.pmax == 32 and hbLoad.load.n == 1, J(hbLoad.load))
+check("the 33rd heartbeat's reply reports the burst tick (the window the burst tick itself closed): at the budget (pmax 32, full 1), one tick", hbLoad.load and hbLoad.load.full == 1 and hbLoad.load.pmax == 32 and hbLoad.load.n == 1, J(hbLoad.load))
 
 -------------------------------------------------------------------------------
 -- KB-24: a burst of continuous-control packets never delays a key release behind it, and the per-session rate
