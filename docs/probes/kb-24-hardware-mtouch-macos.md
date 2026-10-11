@@ -72,8 +72,24 @@ Fixed during this pass (branch `fix/kb24-hardware-findings`): consistent device 
 line per device and absence; slow device opens and slow loop steps are logged; unit tests no longer reach a live
 plugin (they had replaced the running service's session twice).
 
-Not tested yet: unplugging the M-Touch with a strip touched and a playback key held, the dedicated Go/Pause keys
-(`--pb-go`, `--pb-pause`), the M-Play.
+Not tested yet: the dedicated Go/Pause keys (`--pb-go`, `--pb-pause`), the M-Play.
 
 Re-test note: switching the encoder bank (Dimmer ↔ Color) lights the four strip bars with the new slots' programmer
 values after the brief dark transition, as designed; attributes with nothing in the programmer stay dark (finding 3).
+
+## Removal while held (2026-10-11)
+
+Setup: `Assign Sequence 2 At Page 1.101` with its key set to Flash (`Set("Key", "Flash")`), surface on bank 1,
+fixtures 401 + 402 on bank 4.1.
+
+| # | Check | Observed | Verdict |
+| --- | --- | --- | --- |
+| U1 | hold PFA 1 (Flash on 101) | StartShow 1 ran while held (PFD green), off at the release (PFD red); a noticeable but acceptable delay between the press and the light | PASS; delay noted below |
+| U2 | hold PFA 1 and touch parameter strip 1, unplug the M-Touch | `mtouch: M-Touch disconnected; its strip touches are ended and its playback buttons released`, `mtouch/PFA1: mtouch lost while held; released executor 101 key`, the bank window unbound; on the console StartShow 1 off, no control gestures, nothing unresolved, admission not busy | PASS |
+| U3 | replug | `mtouch: M-Touch (no serial) open`, the window bound again, the lights repainted as before (PFA 1 solid: 101 assigned) | PASS |
+
+Observation: a playback key's press-to-light delay is noticeable (key event, plugin tick, the console's Flash, the
+read-back to the light). Key acks measure about 45 ms median on this onPC; the light also waits for the read-back.
+Not measured yet; the harness can time it.
+
+Cleanup: `Off Page 1.101`, `Delete Page 1.101 /NoConfirmation`, `ClearAll`.
