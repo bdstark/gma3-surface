@@ -636,7 +636,7 @@ feature / activation group names parsed from the definition's own path text and 
 with `colorDefined` (a black colour, which Dimmer and Gobo have live, defines none), every assigned executor's
 appearance carries its `BackRGBA` as 0..1 components; colour and appearance stay out of the binding digest; the bridge
 0.18.0 and control 0.5.0 are unchanged; branch `feat/kb23-parameter-colors`, probe `scripts/kb23-probe.mjs`). This
-repository vendors feedback 0.6.0 from `b07c71b` ([tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns every LED
+repository vendors feedback 0.6.0 from `730395f` (after the MCP live run: UV's out-of-gamut definition colour clamped and flagged; [tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns every LED
 translation (`service/src/lights.rs`):
 
 - **Colours from verified metadata, never from a label:** the plugin's context carries per attribute slot `fg`, `fn`,
@@ -699,7 +699,13 @@ appearance, an activity change resending the context within 0.4 s with the gener
 tools/ma3/test/e2e.sh` checks the lights summary, the textual lines (every bound executor empty on the stub console:
 dark) and that the PFA1 key is written dark once per binding.
 
-**Not verified live:** nothing of KB-23 has run against onPC yet. Next: the MCP probe `node scripts/kb23-probe.mjs run`
-(which colour components the show's definitions actually colour) and a `sim` session on `mcp-test-disposable` with
+**Verified live on the console half:** the MCP probe (`node scripts/kb23-probe.mjs run`, 10/10 on 2026-10-10, record
+`docs/probes/kb-23-colours-macos-2.5.1.md` there) established what this renderer's colours rest on: the show's
+definitions colour R `1,0,0`, G, B, RY ("Amber") `1,0.5,0` and W; Dimmer/Pan/Gobo1 are black (category scheme); UV's
+colour is out of gamut (`0.1744,-0.1443,1,1`, clamped by the module; the name override shows it as violet/magenta
+anyway); appearances arrive as hex `FF7F00FF` ("Orange" -> yellow lanes). Both plugins (bridge with feedback 0.6.0,
+`mtpnxk_surface` 0.9.0) are installed and running on `mcp-test-disposable`.
+
+**Not verified live in this repository:** the rendered lights. Next: a `sim` session on `mcp-test-disposable` with
 `control=console` reading the context's `fg`/`col` fields and the rendered `light:` lines for the RGB page, a mixed
 selection, a running executor and a stopped plugin (stale); the physical lights remain KB-24's hardware qualification.
