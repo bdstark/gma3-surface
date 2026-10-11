@@ -181,7 +181,7 @@ check("bad option refused", select(2, state._parseArgument("key=x bogus")) ~= ni
 check("start without a key uses fixed loopback", reset("input=fake") == true and state.host == "127.0.0.1")
 check("legacy key and network overrides are refused", select(2, state._parseArgument("key=abcd")) ~= nil and select(2, state._parseArgument("bind=0.0.0.0")) ~= nil and select(2, state._parseArgument("allow=10.0.0.1")) ~= nil)
 check("start without credentials succeeds on the fake backend", reset() == true and state.inputEnabled == true and state.inputMode == "fake" and state.gen:match("^%d+%-%x%x%x%x%x%x%x%x$"), J({ state.inputMode, state.gen }))
-check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.10.0" and state.modules.feedback.version == "0.7.0", J(state.moduleVersions))
+check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.10.0" and state.modules.feedback.version == "0.7.1", J(state.moduleVersions))
 check("feedback watch list bounded (9 state items + 3 more context items for the NX-K; page is shared)", state.modules.feedback.instance:status().watched == 12)
 
 -------------------------------------------------------------------------------
