@@ -37,7 +37,7 @@ A row's live status is the KB-16 protocol-level qualification unless a later rec
 
 | Device | VID:PID | Firmware / protocol source | Automated | Live (protocol) | Live (roles through `run`) |
 | --- | --- | --- | --- | --- | --- |
-| NX-K | `11be:e102` | product "NX-K"; decoder from captures (KB-07) | decoder, LED map, device-slot tests | **qualified** macOS (KB-07: keys and LEDs confirmed by the operator) | keys **qualified** (KB-07/08); rotaries as encoders **sim only** (KB-19): the physical rotaries are the KB-24 hardware pass |
+| NX-K | `11be:e102` | product "NX-K"; decoder from captures (KB-07) | decoder, LED map, device-slot tests | **qualified** macOS (KB-07: keys and LEDs confirmed by the operator) | keys **qualified** (KB-07/08); keys, LEDs, rotaries, Fine, unplug with a key held, replug and plugin restart **qualified through `run`** 2026-10-11 ([record](probes/kb-24-hardware-nxk-macos.md)) |
 | M-Touch | `11be:f808` | product "M-Touch", no serial; MTouchPlay `e48eb2c` `docs/protocol.md` | 17 decoder/encoder tests, strips 8, banks 18, lights 7 | **qualified** macOS 2026-10-10 ([record](probes/kb-16-hardware-mtouch-macos.md)): every control, report type, LED/bar/display write, unplug and replug | parameter strips, playback keys/faders and lights **sim only** (KB-20 … KB-23 records): physical pass pending |
 | M-Play | `11be:f80c` | product "M-Play"; MTouchPlay `e48eb2c` | decoder/encoder tests, banks | **qualified** macOS 2026-10-10 ([record](probes/kb-16-hardware-mplay-macos.md)) | playback buttons/faders and lights **sim only** (KB-21 … KB-23): physical pass pending |
 | two surfaces at once (NX-K + M-Touch, + M-Play) | — | — | `usb_surfaces.rs` 3 tests, `main.rs` loss tests | unqualified | unqualified (KB-24 hardware pass) |

@@ -70,7 +70,7 @@ down, up to the plugin's hold limit (12 simultaneous, 60 s).
 
 | Physical control | Default role | Flag |
 | --- | --- | --- |
-| Rotary 1 … 4, turned | encoder slot `base + n - 1` of the console's current encoder bank, one detent = one console click (Coarse; Fine while `Bank` is held). Sent as relative motion; nothing is accelerated | `--rotary-slots <base>` (default 1: slots 1–4) |
+| Rotary 1 … 4, turned | encoder slot `base + n - 1` of the console's current encoder bank, one report unit = one console click (Coarse; Fine while `Bank` is held). The NX-K encoders are continuous, without physical detents: a "detent" in the service and the console calibration is one report unit of the device (the operator qualified the speed, [hardware record](probes/kb-24-hardware-nxk-macos.md)). Sent as relative motion; nothing is accelerated | `--rotary-slots <base>` (default 1: slots 1–4) |
 | Rotary 1 … 4, pushed | a button boundary on the same slot; the console backend refuses encoder presses as `unsupported` (not qualified), the service reports the refusal | — |
 | Encoder LEDs | all four on while `Bank` is held | — |
 

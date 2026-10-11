@@ -38,6 +38,25 @@ impl StripDevice for mtouch::usb::UsbSurface {
 const RETRY: Duration = Duration::from_secs(2);
 const DISCARD_AFTER_OPEN: Duration = Duration::from_millis(250);
 
+/// Hardware-pass finding (2026-10-11): each device reports its own absence once per absence. Before, one flag was
+/// shared and set only by the NX-K, so the M-Play's failure line repeated every retry while the NX-K was attached,
+/// and the M-Touch never reported a failed open.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Presence {
+    announced_absent: bool,
+}
+
+impl Presence {
+    /// A failed open: true the first time since the device was last open (the caller logs once).
+    pub fn absent(&mut self) -> bool {
+        !std::mem::replace(&mut self.announced_absent, true)
+    }
+    /// The device opened (or was lost while open): the next failed open is announced again.
+    pub fn present(&mut self) {
+        self.announced_absent = false;
+    }
+}
+
 pub struct Combined<K: Surface, M: StripDevice> {
     open_keypad: Box<dyn FnMut() -> Result<K>>,
     open_mtouch: Option<Box<dyn FnMut() -> Result<M>>>,
@@ -48,7 +67,9 @@ pub struct Combined<K: Surface, M: StripDevice> {
     discard_until: Instant,
     keypad_reconnected: bool,
     keypad_lost: bool,
-    announced_absent: bool,
+    keypad_presence: Presence,
+    mtouch_presence: Presence,
+    mplay_presence: Presence,
     /// KB-21: the M-Play, opened and reopened like the M-Touch.
     open_mplay: Option<Box<dyn FnMut() -> Result<M>>>,
     mplay: Option<M>,
@@ -60,7 +81,7 @@ impl<K: Surface, M: StripDevice> Combined<K, M> {
     /// `open_mtouch` None: the M-Touch is not wanted (`--mtouch off` or `--strips off`).
     pub fn new(open_keypad: Box<dyn FnMut() -> Result<K>>, open_mtouch: Option<Box<dyn FnMut() -> Result<M>>>) -> Self {
         let now = Instant::now();
-        Combined { open_keypad, open_mtouch, keypad: None, mtouch: None, next_keypad: now, next_mtouch: now, discard_until: now, keypad_reconnected: false, keypad_lost: false, announced_absent: false,
+        Combined { open_keypad, open_mtouch, keypad: None, mtouch: None, next_keypad: now, next_mtouch: now, discard_until: now, keypad_reconnected: false, keypad_lost: false, keypad_presence: Presence::default(), mtouch_presence: Presence::default(), mplay_presence: Presence::default(),
                    open_mplay: None, mplay: None, next_mplay: now, discard_mplay_until: now }
     }
 
@@ -78,13 +99,14 @@ impl<K: Surface, M: StripDevice> Combined<K, M> {
         let Some(open) = self.open_mplay.as_mut() else { return };
         match open() {
             Ok(m) => {
-                eprintln!("mplay: {} opened; its playback buttons and bank keys are live (faders: KB-22)", m.name());
+                eprintln!("mplay: {} open; its playback buttons, faders and bank keys are live", m.name());
                 self.discard_mplay_until = Instant::now() + DISCARD_AFTER_OPEN;
                 self.mplay = Some(m);
+                self.mplay_presence.present();
             }
             Err(e) => {
-                if self.mplay.is_none() && !self.announced_absent {
-                    eprintln!("mplay: not open ({e:#}); retrying every {} s", RETRY.as_secs());
+                if self.mplay_presence.absent() {
+                    eprintln!("mplay: not attached ({e:#}); retrying every {} s", RETRY.as_secs());
                 }
             }
         }
@@ -97,15 +119,14 @@ impl<K: Surface, M: StripDevice> Combined<K, M> {
         self.next_keypad = Instant::now() + RETRY;
         match (self.open_keypad)() {
             Ok(k) => {
-                eprintln!("nxk: {} open", k.name());
+                eprintln!("nxk: {} open; its keys and rotaries are live", k.name());
                 self.keypad = Some(k);
                 self.keypad_reconnected = true;
-                self.announced_absent = false;
+                self.keypad_presence.present();
             }
             Err(e) => {
-                if !self.announced_absent {
-                    eprintln!("nxk: {e:#}; retrying every {} s (the M-Touch, if any, keeps working)", RETRY.as_secs());
-                    self.announced_absent = true;
+                if self.keypad_presence.absent() {
+                    eprintln!("nxk: not attached ({e:#}); retrying every {} s", RETRY.as_secs());
                 }
             }
         }
@@ -117,10 +138,18 @@ impl<K: Surface, M: StripDevice> Combined<K, M> {
             return;
         }
         self.next_mtouch = Instant::now() + RETRY;
-        if let Ok(dev) = open() {
-            eprintln!("strips: {} open; its four base-channel strips are parameter strips", dev.name());
-            self.mtouch = Some(dev);
-            self.discard_until = Instant::now() + DISCARD_AFTER_OPEN;
+        match open() {
+            Ok(dev) => {
+                eprintln!("mtouch: {} open; its parameter strips, playback strips and bank keys are live", dev.name());
+                self.mtouch = Some(dev);
+                self.discard_until = Instant::now() + DISCARD_AFTER_OPEN;
+                self.mtouch_presence.present();
+            }
+            Err(e) => {
+                if self.mtouch_presence.absent() {
+                    eprintln!("mtouch: not attached ({e:#}); retrying every {} s", RETRY.as_secs());
+                }
+            }
         }
     }
 
@@ -364,5 +393,19 @@ mod tests {
         let mut n: Combined<FakeKeypad, FakeMtouch> = Combined::new(Box::new(|| Err(anyhow!("none"))), None);
         assert!(n.poll_strips().unwrap().is_empty());
         assert_eq!(n.name(), "no NX-K, no M-Touch (retrying)");
+    }
+
+    #[test]
+    fn each_device_announces_its_absence_once_per_absence() {
+        let mut p = Presence::default();
+        assert!(p.absent(), "the first failed open is announced");
+        assert!(!p.absent(), "later retries are silent");
+        assert!(!p.absent());
+        p.present();
+        assert!(p.absent(), "a new absence after the device was open is announced again");
+        let (mut a, mut b) = (Presence::default(), Presence::default());
+        assert!(a.absent());
+        b.present();
+        assert!(b.absent(), "devices do not share the flag");
     }
 }
