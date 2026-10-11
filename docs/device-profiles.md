@@ -107,7 +107,7 @@ it resolved at its down ("frozen") across the change.
 
 | Physical control | Id | Default role |
 | --- | --- | --- |
-| `Next (Go)` | `0x5513` | presses the executor named by `--pb-go <n>` (its configured key function); **unmapped** without the flag |
+| `Go` | `0x5513` | presses the executor named by `--pb-go <n>` (its configured key function); **unmapped** without the flag |
 | `Pause` (`||` / Back) | `0x5512` | presses the executor named by `--pb-pause <n>`; **unmapped** without the flag |
 | `EDIT`, `CLEAR`, `RECORD`, `UPDATE`, `LOAD` | `0x5101`, `0x5103`, `0x5401`, `0x5402`, `0x5411` | **unmapped** (the NX-K carries the command keys) |
 | `SELECT`, `RELEASE`, `BEAT`, `SNAP` | `0x5502`–`0x5504`, `0x5511` | **unmapped** |
@@ -147,7 +147,7 @@ Roles: `service/src/banks.rs` (sections `mplay-left` and `mplay-ext`).
 | Right `PageUp` / `PageDown` | `0x9E12` / `0x9E13` | next / previous bank of the right section (24 wide: banks 1–3, executors `x01`–`x72`) | — |
 | `FADER EXT PF 1` … `12` | `0x9805 + 0x10·(n-1)` | executor keys of the **ext row**: `401 + 24·(bank-1) + n-1` | red/green |
 | `FADER EXT PF 13` … `24` | `0x98C5 + 0x10·(n-13)` | `401 + 24·(bank-1) + n-1` (continues the same window) | red/green |
-| `Next (Go)` / `Pause` | `0x5513` / `0x5512` | `--pb-go` / `--pb-pause` executors, as on the M-Touch; **unmapped** without the flags | — |
+| `Go` / `Pause` | `0x5513` / `0x5512` | `--pb-go` / `--pb-pause` executors, as on the M-Touch; **unmapped** without the flags | — |
 | `SELECT`, `RELEASE`, `BEAT`, `SNAP` | `0x5502`–`0x5504`, `0x5511` | **unmapped** | — |
 | Backlight | `0x7110` | not driven | — |
 

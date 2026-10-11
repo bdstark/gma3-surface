@@ -72,7 +72,7 @@ Fixed during this pass (branch `fix/kb24-hardware-findings`): consistent device 
 line per device and absence; slow device opens and slow loop steps are logged; unit tests no longer reach a live
 plugin (they had replaced the running service's session twice).
 
-Not tested yet: the dedicated Go/Pause keys (`--pb-go`, `--pb-pause`), the M-Play.
+Not tested yet: the M-Play.
 
 Re-test note: switching the encoder bank (Dimmer ↔ Color) lights the four strip bars with the new slots' programmer
 values after the brief dark transition, as designed; attributes with nothing in the programmer stay dark (finding 3).
@@ -93,3 +93,38 @@ read-back to the light). Key acks measure about 45 ms median on this onPC; the l
 Not measured yet; the harness can time it.
 
 Cleanup: `Off Page 1.101`, `Delete Page 1.101 /NoConfirmation`, `ClearAll`.
+
+## Go and Pause keys (2026-10-11)
+
+Setup: service restarted with `--pb-go 189 --pb-pause 190`; `Assign Sequence 2 At Page 1.189` (Go+) and
+`Sequence 2 At Page 1.190` with its key set to Pause (both verified empty first; bound as 32 executors).
+
+| # | Check | Observed | Verdict |
+| --- | --- | --- | --- |
+| G1 | the Go key (0x5513) | `Press Page 1.189` then `Unpress`; StartShow 1 started (strip 1's PFD went green: 201 holds the same sequence); its fader bar stayed at 0 (201's Master level, which a Go does not move) | PASS |
+| G2 | the Pause key (0x5512) on an executor whose key function is Pause | refused `unsupported`: "the configured key function Pause is not qualified yet (served: Flash, Go+, Temp, Toggle, Top)"; nothing changed | PASS (as specified); qualifying Pause is a possible follow-up |
+| G3 | naming | the code and docs called 0x5513 "Next (Go)" (from the protocol notes); the M-Touch labels it **Go**, and Next is the separate browse key 0x6402. Renamed to Go in the service and the current docs | fixed |
+
+Operator error during the setup, recorded for the show's integrity: executors 191 and 192 were overwritten before
+the "is it empty" check had returned (they held `LOS2 All DelayA`/`DelayB`, sequences 5527/5528). Both objects were
+reassigned; 191 kept its original Top key; 192's key had been changed to Pause and was restored to Top by inference
+from its pair (no record of its original key exists). Targets are now checked empty in a separate step first.
+
+## Press-to-light timing (2026-10-11)
+
+The service logs, for each playback key, the time from the key going down until the console's context reports the
+executor running, and for a Flash/Temp release, until it reports it stopped (`playback: … ms after the key went …`):
+this is what the key and bar lights wait for. Executor 101 with StartShow 1 on a Flash key, ten taps of PFA 1:
+
+| Transition | n | median | fastest | slowest |
+| --- | --- | --- | --- | --- |
+| down → running | 10 | 162 ms | 86 ms | 451 ms |
+| up → stopped | 10 | 112 ms | 90 ms | 356 ms |
+
+Bimodal: 16 of 20 within 90–178 ms, four at 356–451 ms. The key reaches the console quickly (acks about 45 ms); the
+light waits for the read-back, and the plugin re-reads each of the 32 bound executors only on its turn in the round
+robin and at most every poll interval, so a change that just misses its turn waits a whole cycle. Proposed fix: when
+the plugin applies a button to an executor, re-read that executor on the next tick (a single-item refresh in the
+feedback module, upstream), which should remove the slow tail. Not implemented yet.
+
+Cleanup: `Off Page 1.101`; `Delete Page 1.101`, `1.189`, `1.190`.

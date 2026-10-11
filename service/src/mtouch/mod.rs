@@ -126,7 +126,7 @@ pub const CONTROLS_MTOUCH: &[Control] = &[
     c(0x5101, 'K', "COMMAND EDIT"), c(0x5103, 'K', "COMMAND CLEAR"),
     c(0x5401, 'K', "COMMAND RECORD"), c(0x5402, 'K', "COMMAND UPDATE"), c(0x5411, 'K', "COMMAND LOAD"),
     c(0x5502, 'K', "SELECT"), c(0x5503, 'K', "RELEASE (Rel)"), c(0x5504, 'K', "BEAT"),
-    c(0x5511, 'K', "SNAP"), c(0x5512, 'K', "Pause (||/Back)"), c(0x5513, 'K', "Next (Go)"),
+    c(0x5511, 'K', "SNAP"), c(0x5512, 'K', "Pause (||/Back)"), c(0x5513, 'K', "Go"),
     c(0x5801, 'V', "MF 1"), c(0x5802, 'V', "MF 2"), c(0x5803, 'V', "MF 3"), c(0x5804, 'V', "MF 4"), c(0x5805, 'V', "MF 5"),
     c(0x5806, 'V', "MF 6"), c(0x5807, 'V', "MF 7"), c(0x5808, 'V', "MF 8"), c(0x5809, 'V', "MF 9"), c(0x580A, 'V', "MF 10"),
     c(0x5812, 'L', "MF mode LED Playback"), c(0x5813, 'L', "MF mode LED F-key"), c(0x5814, 'L', "MF mode LED Base"), c(0x5815, 'L', "MF mode LED Effect"),
@@ -145,7 +145,7 @@ pub const CONTROLS_MTOUCH: &[Control] = &[
 /// + 0x10*(n-1); two page displays 0x9F01 (left) and 0x9E01 (right). mplay-notes.md.
 pub const CONTROLS_MPLAY: &[Control] = &[
     c(0x5502, 'K', "SELECT"), c(0x5503, 'K', "RELEASE (Rel)"), c(0x5504, 'K', "BEAT"),
-    c(0x5511, 'K', "SNAP"), c(0x5512, 'K', "Pause (||/Back)"), c(0x5513, 'K', "Next (Go)"),
+    c(0x5511, 'K', "SNAP"), c(0x5512, 'K', "Pause (||/Back)"), c(0x5513, 'K', "Go"),
     c(0x7110, 'B', "BackLight"),
     c(0x9203, 'F', "FADER LEVEL 1"), c(0x9213, 'F', "FADER LEVEL 2"), c(0x9223, 'F', "FADER LEVEL 3"), c(0x9233, 'F', "FADER LEVEL 4"),
     c(0x9243, 'F', "FADER LEVEL 5"), c(0x9253, 'F', "FADER LEVEL 6"), c(0x9263, 'F', "FADER LEVEL 7"), c(0x9273, 'F', "FADER LEVEL 8"),

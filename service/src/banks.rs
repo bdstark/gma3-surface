@@ -44,7 +44,7 @@
 //!     PRESSURE keys (kind V) on the hardware: a report with `touch` 1 is the down, the release report (`touch` 0)
 //!     the up, the pressure value itself is never an input.
 //!   * KB-22: the dedicated keys are mapped only through an EXPLICIT profile: `--pb-go <executor>` makes the
-//!     `Next (Go)` key (0x5513, both devices) press that executor's `key` element (its configured function,
+//!     `Go` key (0x5513, both devices) press that executor's `key` element (its configured function,
 //!     whatever it is: nothing here assumes Go+), `--pb-pause <executor>` the same for `Pause (||/Back)`
 //!     (0x5512); the executor is on the bound page (follow or independent) and never banked. Without the flag
 //!     the keys stay unmapped and counted; SELECT, RELEASE, BEAT and SNAP are ambiguous and stay unmapped.
@@ -166,7 +166,7 @@ pub struct Config {
     /// KB-22: a context received this long after our last position that still reports the level elsewhere is an
     /// external edit (the plugin refreshes the context at least once a second; the grace covers one refresh).
     pub external_grace: f64,
-    /// KB-22: the executor whose key element the `Next (Go)` key presses (explicit profile; None = unmapped).
+    /// KB-22: the executor whose key element the `Go` key presses (explicit profile; None = unmapped).
     pub go_executor: Option<u32>,
     /// KB-22: the executor whose key element the `Pause (||/Back)` key presses (explicit profile; None = unmapped).
     pub pause_executor: Option<u32>,
@@ -438,7 +438,7 @@ impl Banks {
         self.key_on(if id >= 0x9000 { "mplay" } else { "mtouch" }, id, down)
     }
 
-    /// KB-22: a key of a named device. The dedicated `Next (Go)` and `Pause` keys press the profile's executors.
+    /// KB-22: a key of a named device. The dedicated `Go` and `Pause` keys press the profile's executors.
     pub fn key_on(&mut self, dev: &'static str, id: u16, down: bool) -> Option<Out> {
         if let Some((section, delta)) = bank_key_of(id) {
             if down {

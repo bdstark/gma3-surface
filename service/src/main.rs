@@ -76,7 +76,7 @@ struct Cli {
     /// picks it up; until then the strip moves nothing and its bar shows the span to travel.
     #[arg(long, default_value_t = 0.02, global = true)]
     pb_pickup: f64,
-    /// KB-22: the executor the `Next (Go)` key of the M-Touch / M-Play presses (its key element, whatever button
+    /// KB-22: the executor the `Go` key of the M-Touch / M-Play presses (its key element, whatever button
     /// function is configured on it; on the bound page, never banked). Unmapped without it.
     #[arg(long, global = true, value_parser = clap::value_parser!(u32).range(1..=999))]
     pb_go: Option<u32>,
@@ -225,6 +225,11 @@ struct Loop {
     lights_lines_seen: Vec<String>,
     lights_block_seen: Option<String>,
     present: BTreeMap<mtouch::Model, bool>,
+    /// Hardware pass: playback keys waiting for the console to report their effect: (executor, page) -> (the
+    /// activity expected, when the key moved, the control's name). See `time_playback_keys`.
+    key_timing: BTreeMap<(u32, Option<u32>), (bool, f64, &'static str)>,
+    /// Press/release-to-activity samples in milliseconds (logged and kept for the summary).
+    pub key_effect_ms: Vec<f64>,
     /// KB-24: the measurement harness's feedback probe: a press of this NX-K key opens a probe on this console
     /// state item (the time until the item changes is a feedback-latency sample).
     probe: Option<(&'static str, String)>,
@@ -279,7 +284,7 @@ impl Loop {
         Ok(Loop { link, leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots,
                   strips: strips::Strips::new(strip_cfg), strips_log_seen: 0, pushed_wheels: BTreeSet::new(),
                   banks, banks_log_seen: 0, displays: BTreeMap::new(), bar_writes: Vec::new(),
-                  lights: lights::Lights::new(lights::Config { enabled: lights_on, min_interval: cli.lights_interval as f64 / 1000.0 }), lights_lines_seen: Vec::new(), lights_block_seen: None, present: BTreeMap::new(), probe: None,
+                  lights: lights::Lights::new(lights::Config { enabled: lights_on, min_interval: cli.lights_interval as f64 / 1000.0 }), lights_lines_seen: Vec::new(), lights_block_seen: None, present: BTreeMap::new(), key_timing: BTreeMap::new(), key_effect_ms: Vec::new(), probe: None,
                   #[cfg(test)]
                   last_strip_fine: None })
     }
@@ -501,6 +506,9 @@ impl Loop {
                 self.lights_lines_seen = self.lights.lines.clone();
             }
         }
+        if !self.key_timing.is_empty() {
+            self.time_playback_keys(now);
+        }
         // KB-21: the page displays show "page then bank" (blank while the page is unknown); written on change only.
         if self.banks.cfg.enabled {
             let page = self.link.console_page(now);
@@ -578,9 +586,57 @@ impl Loop {
     /// is logged (the rebind goes out from `step`).
     fn emit_bank_out(&mut self, out: Option<banks::Out>, now: f64) {
         match out {
-            Some(banks::Out::Button { dev, control, target, kind }) | Some(banks::Out::Fader { dev, control, target, kind }) => self.link.control_event(dev, control, target, kind, now),
+            Some(banks::Out::Button { dev, control, target, kind }) => {
+                if let (protocol::CtlTarget::Executor { ex, pg, .. }, link::CtlKind::Btn { down }) = (target, kind) {
+                    self.note_key_timing(ex, pg, down, control, now);
+                }
+                self.link.control_event(dev, control, target, kind, now)
+            }
+            Some(banks::Out::Fader { dev, control, target, kind }) => self.link.control_event(dev, control, target, kind, now),
             Some(banks::Out::Bar { model, id, data }) => self.bar_writes.push((model, mtouch::Output::FaderBar { id, data })),
             Some(banks::Out::Bank { .. }) | None => {}
+        }
+    }
+
+    /// The context's activity of a bound executor (`act` 1/0) and its key function, if the context lists it.
+    fn exec_activity(&self, ex: u32, pg: Option<u32>, now: f64) -> Option<(bool, Option<String>)> {
+        let ctx = self.link.context_view(now)?;
+        let exs = ctx.body.get("ex")?.as_array()?;
+        let x = exs.iter().find(|x| x.get("n").and_then(|n| n.as_u64()) == Some(ex as u64) && x.get("pg").and_then(|p| p.as_u64()).map(|p| p as u32) == pg)?;
+        let act = x.get("act").and_then(|v| v.as_u64())? == 1;
+        Some((act, x.get("kp").and_then(|v| v.as_str()).map(|s| s.to_string())))
+    }
+
+    /// Hardware pass: start timing a playback key. A down expects the executor to start running (skipped when it
+    /// already runs); an up expects it to stop only for the momentary functions (Flash, Temp).
+    fn note_key_timing(&mut self, ex: u32, pg: Option<u32>, down: bool, control: &'static str, now: f64) {
+        let Some((act, kp)) = self.exec_activity(ex, pg, now) else { return };
+        let momentary = matches!(kp.as_deref(), Some("Flash") | Some("Temp"));
+        if down && !act {
+            self.key_timing.insert((ex, pg), (true, now, control));
+        } else if !down && act && momentary {
+            self.key_timing.insert((ex, pg), (false, now, control));
+        } else {
+            self.key_timing.remove(&(ex, pg));
+        }
+    }
+
+    /// Hardware pass: log how long each timed key took to show as running/stopped in the console's context (what the
+    /// lights follow), or that it did not within 3 s.
+    fn time_playback_keys(&mut self, now: f64) {
+        let keys: Vec<(u32, Option<u32>)> = self.key_timing.keys().copied().collect();
+        for k in keys {
+            let (want, at, control) = self.key_timing[&k];
+            let seen = self.exec_activity(k.0, k.1, now).map(|(a, _)| a == want).unwrap_or(false);
+            if seen {
+                let ms = (now - at) * 1000.0;
+                self.key_effect_ms.push(ms);
+                eprintln!("playback: {control} -> executor {}: {} {:.0} ms after the key went {}", k.0, if want { "running" } else { "stopped" }, ms, if want { "down" } else { "up" });
+                self.key_timing.remove(&k);
+            } else if now - at > 3.0 {
+                eprintln!("playback: {control} -> executor {}: not reported {} within 3 s", k.0, if want { "running" } else { "stopped" });
+                self.key_timing.remove(&k);
+            }
         }
     }
 
