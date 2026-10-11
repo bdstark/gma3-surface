@@ -140,7 +140,23 @@ left block); `--pb-ext-row 401` the M-Play's right block. `--mplay off` ignores
 an M-Play; `--banks off` leaves the playback controls unmapped. The device's
 `PLAYBACK BANK +/-` (M-Touch) and `FADER BANK` / `FADER EXT BANK` (M-Play) keys
 move the banks; the page displays show page then bank (`12` = page 1, bank 2).
-The playback faders are not operated yet (KB-22).
+
+Playback faders and buttons (KB-22): with the plugin started `control=console`
+a strip's buttons press and release the executor (`Press`/`Unpress Page P.E`:
+the console runs whatever button function is configured on it; Temp, Flash,
+Toggle, Top and Go+ are the qualified ones, anything else is refused with the
+function named) and its fader places the executor's configured fader function
+(Master and Temp qualified; Rate, Speed and the crossfades refused until
+qualified). A fader never jumps: touch it and move it across the level the
+executor is at (shown as a blinking yellow span on the strip's bar) and it
+picks up; it picks up again after every touch, bank change, reconnect or a
+level edited elsewhere (`--pb-pickup 0.02` is the tolerance). Startup reports
+of the device never set a level. `--pb-go 201` / `--pb-pause 202` make the
+`Next (Go)` and `Pause` keys press those executors' buttons (their configured
+function, whatever it is); without them the keys do nothing. If an executor is
+reassigned while its button is held, the release is kept as a record instead
+of operating the new assignment: the plugin's `status` shows it and `recover`
+releases it once the original object is back (or end that playback by hand).
 
 ### USB notes
 

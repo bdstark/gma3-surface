@@ -314,7 +314,7 @@ plugin's stop ends its gestures through the backend and drops queued motion; a r
 kept across restarts for `Plugin "mtpnxk_surface" "recover"`. The plugin's and the bridge's control instances do not
 arbitrate with each other (section 6 applies).
 
-### 3b. Executor binding (`bind`, KB-21)
+### 3b. Executor binding (`bind`, KB-21; KB-22: the ack's revision is adopted at once and the plugin pushes the context on the next tick, so an event right after a bank change is not refused `stale-binding`)
 
 ```
 service → plugin   bind { t:"bind", sid, seq, ev, ex: [n, ...], pg? }

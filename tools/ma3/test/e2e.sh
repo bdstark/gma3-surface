@@ -32,9 +32,12 @@ echo "$STRIP" | grep -q 'control: events=4 sent=4 coalesced=0 unbound=0 aged=0 s
 echo "$STRIP" | grep -q 'refused ev [0-9]*: \[target-unavailable\] the encoder bar context is unavailable' || { echo "FAIL: expected the strip's slot target refused by the plugin"; fail=1; }
 echo "$STRIP" | grep -q 'lost=0' || { echo "FAIL: strip events lost"; fail=1; }
 echo "--- playback banks (KB-21): the service binds its bank windows (bank 1, then bank 2 after PLAYBACK BANK +); a PFA press travels as a btn event on the executor's key; the stub console has no executors, so the plugin refuses it empty and the release is a noop ---"
-BANK=$("$BIN" --plugin 127.0.0.1:$PORT --key "$KEY" sim --script "pbank:up@900,pfa1:down@400,pbank:down@50,pfa1:up@400,pb1:t100@50,pb1:lift@50" --seconds 4 2>&1 | grep -v '^led ')
-echo "$BANK" | grep -q 'banks: follow page=1 mtouch=bank1(101-110) mplay-left=absent mplay-ext=absent held=0 changes=2 edge=0 downs=1 ups=1 frozen=1 ignored_faders=2 unmapped=0' || { echo "FAIL: bank summary: $(echo "$BANK" | grep '^banks:')"; fail=1; }
+BANK=$("$BIN" --plugin 127.0.0.1:$PORT --key "$KEY" sim --script "pbank:up@900,pfa1:down@400,pbank:down@50,pfa1:up@400,pb1:t100@50,pb1:m120@40,pb1:lift@50,mpa1:tap@100,go:tap@100" --seconds 4 2>&1 | grep -v '^led ')
+echo "$BANK" | grep -q 'banks: follow page=1 mtouch=bank1(101-110) mplay-left=bank1(101-112) mplay-ext=bank1(401-424) held=0 changes=2 edge=0 downs=2 ups=2 frozen=1 ignored_faders=0 unmapped=2 faders: touched=0 touches=1 lifts=1 positions=0 pickups=0 waiting=1 resets=0 rebound=0 forced=0 dedicated=0' || { echo "FAIL: bank summary: $(echo "$BANK" | grep '^banks:')"; fail=1; }
 echo "$BANK" | grep -q 'refused ev [0-9]*: \[target-unavailable\] executor 111 is empty' || { echo "FAIL: expected the PFA1 down on bank 2 (executor 111) refused empty by the plugin"; fail=1; }
+echo "--- playback faders (KB-22): a touch on playback fader 1 is a hold on executor 201's fader element (refused empty by the stub console), the move waits for pickup (no level known), the lift is a noop; an M-Play pressure button is one down and one up (refused empty); the Go key without a profile is unmapped ---"
+echo "$BANK" | grep -q 'refused ev [0-9]*: \[target-unavailable\] executor 201 is empty' || { echo "FAIL: expected the fader touch on executor 201 refused empty by the plugin"; fail=1; }
+echo "$BANK" | grep -q 'refused ev [0-9]*: \[target-unavailable\] executor 101 is empty' || { echo "FAIL: expected the M-Play button on executor 101 refused empty by the plugin"; fail=1; }
 echo "$BANK" | grep -q 'out MTouch display 4401 <- 12' || { echo "FAIL: expected the page display to show page 1 bank 2 (12): $(echo "$BANK" | grep '^out ')"; fail=1; }
 echo "$BANK" | grep -q 'out MTouch display 4401 <- 11' || { echo "FAIL: expected the page display at page 1 bank 1 (11)"; fail=1; }
 echo "$BANK" | grep -q 'lost=0' || { echo "FAIL: bank events lost"; fail=1; }

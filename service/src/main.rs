@@ -76,6 +76,17 @@ struct Cli {
     /// KB-21: `on` binds the playback banks (the plugin reads their executors); `off` leaves playback controls unmapped.
     #[arg(long, default_value = "on", global = true)]
     banks: String,
+    /// KB-22: a playback fader position within this distance (0..1 of the travel) of the executor's last known level
+    /// picks it up; until then the strip moves nothing and its bar shows the span to travel.
+    #[arg(long, default_value_t = 0.02, global = true)]
+    pb_pickup: f64,
+    /// KB-22: the executor the `Next (Go)` key of the M-Touch / M-Play presses (its key element, whatever button
+    /// function is configured on it; on the bound page, never banked). Unmapped without it.
+    #[arg(long, global = true, value_parser = clap::value_parser!(u32).range(1..=999))]
+    pb_go: Option<u32>,
+    /// KB-22: the executor the `Pause (||/Back)` key presses (as --pb-go). Unmapped without it.
+    #[arg(long, global = true, value_parser = clap::value_parser!(u32).range(1..=999))]
+    pb_pause: Option<u32>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -170,6 +181,8 @@ struct Loop {
     banks_log_seen: usize,
     /// What each page display last showed (written only on change).
     displays: BTreeMap<u16, Option<u16>>,
+    /// KB-22: fader bar writes produced while handling reports (flushed after the LEDs).
+    bar_writes: Vec<(mtouch::Model, mtouch::Output)>,
     /// The fine flag handed to the strips converter by the last strip report (what a stale Bank would corrupt).
     #[cfg(test)]
     last_strip_fine: Option<bool>,
@@ -200,15 +213,20 @@ impl Loop {
             "off" | "none" => false,
             other => return Err(anyhow!("--mplay {other}: expected auto or off")),
         };
-        let bank_cfg = banks::Config { enabled: banks_on, mode: cli.pb_page, rows: cli.pb_rows, ext_row: cli.pb_ext_row, mplay: mplay_on };
+        if !(0.0..=0.5).contains(&cli.pb_pickup) {
+            return Err(anyhow!("--pb-pickup {}: expected a tolerance in 0..0.5 of the travel", cli.pb_pickup));
+        }
+        let bank_cfg = banks::Config { enabled: banks_on, mode: cli.pb_page, rows: cli.pb_rows, ext_row: cli.pb_ext_row, mplay: mplay_on,
+                                       pickup_tolerance: cli.pb_pickup, go_executor: cli.pb_go, pause_executor: cli.pb_pause, ..banks::Config::default() };
         let banks = banks::Banks::new(bank_cfg);
         if banks_on {
-            eprintln!("{} (--pb-page/--pb-rows/--pb-ext-row/--banks; the playback faders are KB-22)", banks.summary(None));
+            eprintln!("{} (--pb-page/--pb-rows/--pb-ext-row/--banks; faders pick up within {} of the executor's level, --pb-pickup; Go/Pause keys {})", banks.summary(None), cli.pb_pickup,
+                      match (cli.pb_go, cli.pb_pause) { (None, None) => "unmapped (--pb-go/--pb-pause)".to_string(), (g, p) => format!("go={} pause={}", g.map(|n| n.to_string()).unwrap_or_else(|| "-".into()), p.map(|n| n.to_string()).unwrap_or_else(|| "-".into())) });
         }
         let link = link::Link::new(cfg, key, 0.0);
         Ok(Loop { link, leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots,
                   strips: strips::Strips::new(strip_cfg), strips_log_seen: 0, pushed_wheels: BTreeSet::new(),
-                  banks, banks_log_seen: 0, displays: BTreeMap::new(),
+                  banks, banks_log_seen: 0, displays: BTreeMap::new(), bar_writes: Vec::new(),
                   #[cfg(test)]
                   last_strip_fine: None })
     }
@@ -293,8 +311,8 @@ impl Loop {
                         }
                         let outs = self.strips.fader(n, value, touch, self.bank_held, cg, hint, now);
                         self.emit_strip_outs(outs, now);
-                    } else if banks::playback_fader_of(id).is_some() {
-                        self.banks.fader();  // playback faders are KB-22 (pickup against the executor's level)
+                    } else if let Some((section, strip)) = banks::playback_fader_of(id) {
+                        self.playback_fader(section, strip, value, touch, now);
                     } else {
                         self.strips.stats.ignored += 1;
                     }
@@ -304,12 +322,13 @@ impl Loop {
                     if let Some(n) = strips::strip_of_key(id) {
                         self.strips.key(n, down);
                     } else {
-                        // KB-21: playback buttons and the bank keys.
-                        let out = self.banks.key(id, down);
+                        // KB-21: playback buttons and the bank keys; KB-22: the dedicated Go/Pause keys through the profile.
+                        let out = self.banks.key_on("mtouch", id, down);
                         self.emit_bank_out(out, now);
                     }
                 }
-                mtouch::Event::Pressure { .. } => self.strips.stats.ignored += 1,  // never an input (KB-20)
+                // KB-22: the M-Touch's pressure keys (PFD, MF) are counted unmapped once per press; never a strip input (KB-20).
+                mtouch::Event::Pressure { id, value, touch, .. } => { let o = self.banks.pressure("mtouch", id, value, touch); self.emit_bank_out(o, now); }
             }
         }
         // KB-21: the M-Play's playback buttons, bank keys and (counted) faders.
@@ -326,10 +345,13 @@ impl Loop {
         };
         for ev in mplay_events {
             match ev {
-                mtouch::Event::Fader { .. } => self.banks.fader(),
-                mtouch::Event::KeyDown { id, .. } => { let o = self.banks.key(id, true); self.emit_bank_out(o, now); }
-                mtouch::Event::KeyUp { id, .. } => { let o = self.banks.key(id, false); self.emit_bank_out(o, now); }
-                mtouch::Event::Pressure { .. } => self.banks.stats.unmapped_keys += 1,
+                // KB-22: the M-Play's twelve faders by id; its playback buttons are pressure keys (one down, one up).
+                mtouch::Event::Fader { id, value, touch, .. } => {
+                    if let Some((section, strip)) = banks::playback_fader_of(id) { self.playback_fader(section, strip, value, touch, now); } else { self.banks.stats.ignored_faders += 1; }
+                }
+                mtouch::Event::KeyDown { id, .. } => { let o = self.banks.key_on("mplay", id, true); self.emit_bank_out(o, now); }
+                mtouch::Event::KeyUp { id, .. } => { let o = self.banks.key_on("mplay", id, false); self.emit_bank_out(o, now); }
+                mtouch::Event::Pressure { id, value, touch, .. } => { let o = self.banks.pressure("mplay", id, value, touch); self.emit_bank_out(o, now); }
             }
         }
         // KB-21: only attached devices' bank windows are bound (an absent M-Play's 60 executors are not watched).
@@ -342,10 +364,14 @@ impl Loop {
         // strip is rebound here as it is there; absolute mode picks up again on the next touch.
         if self.link.take_binding_changed() {
             self.strips.rebind_all();
+            let outs = self.banks.rebind_faders();
+            self.emit_bank_outs(outs, now);
         }
         let cg = self.link.current_generation(now);
         let outs = self.strips.tick(cg, now);
         self.emit_strip_outs(outs, now);
+        let outs = self.banks.tick(cg, now);
+        self.emit_bank_outs(outs, now);
         let mut buf = [0u8; 16384];
         loop {
             match self.sock.recv(&mut buf) {
@@ -368,6 +394,10 @@ impl Loop {
         let held: BTreeSet<&'static str> = self.link.held().clone();
         for (id, v) in self.leds.render(&view, &held, now) {
             surface.led(id, v);
+        }
+        // KB-22: the pickup display of the playback faders' bars (banks emits a write on change only).
+        for (model, out) in std::mem::take(&mut self.bar_writes) {
+            surface.output(model, out);
         }
         // KB-21: the page displays show "page then bank" (blank while the page is unknown); written on change only.
         if self.banks.cfg.enabled {
@@ -421,6 +451,21 @@ impl Loop {
         }
     }
 
+    /// KB-22: one playback fader report: the executor's last known level comes from the link's context.
+    fn playback_fader(&mut self, section: usize, strip: u32, value: u8, touch: bool, now: f64) {
+        let cg = self.link.current_generation(now);
+        let (ex, pg) = self.banks.fader_executor(section, strip);
+        let hint = self.link.exec_hint(ex, pg, now);
+        let outs = self.banks.fader(section, strip, value, touch, cg, hint.as_ref(), now);
+        self.emit_bank_outs(outs, now);
+    }
+
+    fn emit_bank_outs(&mut self, outs: Vec<banks::Out>, now: f64) {
+        for o in outs {
+            self.emit_bank_out(Some(o), now);
+        }
+    }
+
     fn emit_strip_outs(&mut self, outs: Vec<strips::Out>, now: f64) {
         for o in outs {
             self.link.control_event("mtouch", o.control, o.target, o.kind, now);
@@ -431,7 +476,8 @@ impl Loop {
     /// is logged (the rebind goes out from `step`).
     fn emit_bank_out(&mut self, out: Option<banks::Out>, now: f64) {
         match out {
-            Some(banks::Out::Button { dev, control, target, kind }) => self.link.control_event(dev, control, target, kind, now),
+            Some(banks::Out::Button { dev, control, target, kind }) | Some(banks::Out::Fader { dev, control, target, kind }) => self.link.control_event(dev, control, target, kind, now),
+            Some(banks::Out::Bar { model, id, data }) => self.bar_writes.push((model, mtouch::Output::FaderBar { id, data })),
             Some(banks::Out::Bank { .. }) | None => {}
         }
     }
@@ -651,8 +697,9 @@ fn main() -> Result<()> {
             };
             // KB-20 (review of PR #5): the NX-K and the M-Touch are opened and reopened independently; the loop runs
             // with whichever is present (an M-Touch alone polls its strips; losing the NX-K does not interrupt it).
+            // KB-22: the M-Touch is wanted for its playback strips even with the parameter strips off.
             let open_mtouch: Option<Box<dyn FnMut() -> Result<mtouch::usb::UsbSurface>>> =
-                if with_mtouch && cli.strips != strips::Mode::Off { Some(Box::new(|| mtouch::usb::UsbSurface::open_model(mtouch::Model::MTouch))) } else { None };
+                if with_mtouch && (cli.strips != strips::Mode::Off || lp.banks.cfg.enabled) { Some(Box::new(|| mtouch::usb::UsbSurface::open_model(mtouch::Model::MTouch))) } else { None };
             // KB-21: the M-Play is a third independently reopened device (its playback buttons and bank keys).
             let open_mplay: Option<Box<dyn FnMut() -> Result<mtouch::usb::UsbSurface>>> =
                 if lp.banks.cfg.mplay && lp.banks.cfg.enabled { Some(Box::new(|| mtouch::usb::UsbSurface::open_model(mtouch::Model::MPlay))) } else { None };

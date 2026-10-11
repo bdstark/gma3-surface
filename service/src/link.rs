@@ -447,7 +447,12 @@ impl Link {
     /// KB-21: the plugin's binding revision as the last context reported it (`bind.br`); motion and downs
     /// carry it so a replaced binding refuses what was produced against the old one.
     pub fn current_binding(&self, now: f64) -> Option<u64> {
-        self.context_view(now).and_then(|c| c.body.get("bind")).and_then(|b| b.get("br")).and_then(|v| v.as_u64())
+        let ctx = self.context_view(now).and_then(|c| c.body.get("bind")).and_then(|b| b.get("br")).and_then(|v| v.as_u64());
+        // KB-22: a bind ack carries the revision before the next context does; the newer of the two is current.
+        match (ctx, self.last_br) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// KB-21: the plugin's binding as the last context reported it: the executor list, the page (None =
@@ -513,6 +518,20 @@ impl Link {
         let complete = s.get("vc").and_then(|v| v.as_u64()) == Some(1);
         let abs = s.get("abs").and_then(|v| v.as_f64()).map(|a| (a / 100.0).clamp(0.0, 1.0));
         Some(crate::strips::SlotHint { single: state == "value" && complete && abs.is_some(), value: abs })
+    }
+
+    /// KB-22: what the last context said about a bound executor, for the playback faders' pickup: whether it is
+    /// a playback target, the configured fader function's level as 0..1 (the context's integer `lvl` / 100), the
+    /// function's name and when the context arrived. The context is refreshed on a generation change and at least
+    /// once a second, so the level is the binding's last read, not live.
+    pub fn exec_hint(&self, ex: u32, pg: Option<u32>, now: f64) -> Option<crate::banks::ExecHint> {
+        let ctx = self.context_view(now)?;
+        let exs = ctx.body.get("ex")?.as_array()?;
+        let x = exs.iter().find(|x| x.get("n").and_then(|n| n.as_u64()) == Some(ex as u64) && x.get("pg").and_then(|p| p.as_u64()).map(|p| p as u32) == pg)?;
+        let target = x.get("tgt").and_then(|v| v.as_u64()) == Some(1);
+        let level = x.get("lvl").and_then(|v| v.as_f64()).map(|l| (l / 100.0).clamp(0.0, 1.0));
+        let function = x.get("fd").and_then(|v| v.as_str()).filter(|f| !f.is_empty()).map(|f| f.to_string());
+        Some(crate::banks::ExecHint { target, level, function, received_at: ctx.received_at })
     }
 
     /// Whether a newer position may replace a queued one for this target (review 7): an encoder slot or an
@@ -912,6 +931,15 @@ impl Link {
                 if was_bind {
                     if ok == 1 {
                         self.note(format!("bind acknowledged: binding revision {}", br.map(|b| b.to_string()).unwrap_or_else(|| "?".into())));
+                        // KB-22: the acked revision is adopted at once (the context that carries it may lag a tick):
+                        // events produced from now on are stamped with it, and held gestures are rebound now.
+                        if br.is_some() && br != self.last_br {
+                            if self.last_br.is_some() {
+                                self.binding_changed = true;
+                                self.stats.binding_revisions += 1;
+                            }
+                            self.last_br = br;
+                        }
                     } else {
                         self.note(format!("bind refused [{}] {}: the plugin keeps its previous binding", code.clone().unwrap_or_default(), why.clone().unwrap_or_default()));
                     }

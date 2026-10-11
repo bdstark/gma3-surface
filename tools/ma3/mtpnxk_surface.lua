@@ -74,7 +74,7 @@ local json   = require("json")
 -- `unsupported` by that backend at admission (nothing pressed; KB-20/21/22). The console semantics are
 -- the MCP repository's (docs/modules.md there, "Console adjustment backend"); this plugin only chooses
 -- the backend.
-local VERSION   = "0.7.0"
+local VERSION   = "0.8.0"
 -- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
 local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
 -- Review (PR #6, round 2): the watch list budget covers every supported configuration at once: the ordinary state
@@ -802,6 +802,10 @@ local function handleBind(s, obj, now)
   local info = c and type(c.bindingInfo) == "function" and c:bindingInfo(now) or nil
   log("bind: %d executor(s) %s (revision %s)", #list, obj.pg and ("on page " .. tostring(obj.pg) .. " (independent)") or "following the console's page", tostring(info and info.revision))
   ackEvent(s, ev, true, { br = info and info.revision or nil, cg = info and info.generation or nil, n = #list })
+  -- KB-22: the binding revision changed, so the context (which carries it as bind.br, the value events are stamped
+  -- with) goes out on the next tick instead of at the next periodic refresh: a press right after a bank change is
+  -- not refused stale-binding for up to a second.
+  for _, sess in pairs(state.sessions) do if sess.state == "active" then sess.lastContextAt = nil end end
   return nil
 end
 
@@ -1540,7 +1544,7 @@ enableControl = function(mode)
   if not rec or not rec.instance then logerr("control %s requested but the control module is not loaded (%s)", mode, tostring(rec and rec.error)); state.controlMode = "off"; return false end
   local ok, err = pcall(function()
     if mode == "console" then
-      if type(rec.module.consoleBackend) ~= "function" then error("the vendored control module " .. tostring(rec.version) .. " has no console backend (0.2.0 or newer is needed; 0.3.0 serves the strips)", 0) end
+      if type(rec.module.consoleBackend) ~= "function" then error("the vendored control module " .. tostring(rec.version) .. " has no console backend (0.2.0 or newer is needed; 0.3.0 serves the strips, 0.5.0 the executors)", 0) end
       rec.instance:enableInput(rec.module.consoleBackend(rec.module.consoleDeps(_G)))
     else
       rec.instance:enableInput(rec.module.fakeBackend())
@@ -1555,7 +1559,7 @@ enableControl = function(mode)
   end
   state.controlEnabled = true
   if mode == "console" then
-    log("control enabled on the console backend: a rotary detent or strip drag on slot n is applied as Attribute \"<name>\" At +/- <detents x step> for the selection (KB-19), a strip touch holds the slot and a strip position is Attribute \"<name>\" At <value> (KB-20); pushes are refused unsupported")
+    log("control enabled on the console backend: a rotary detent or strip drag on slot n is applied as Attribute \"<name>\" At +/- <detents x step> for the selection (KB-19), a strip touch holds the slot and a strip position is Attribute \"<name>\" At <value> (KB-20); a playback button is Press/Unpress Page <p>.<e> (the executor's configured function) and a playback fader Fader<Function> Page <p>.<e> At <level> for the qualified functions (KB-22, control 0.5.0 or newer); pushes and executor encoders are refused unsupported")
   else
     log("control enabled on the fake backend (intents recorded; nothing moves on the console)")
   end
@@ -1796,7 +1800,7 @@ local function MainImpl(display_handle, argument)
       local info = type(c.bindingInfo) == "function" and c:bindingInfo(now()) or nil
       log("binding: %d executor(s) [%s] %s revision=%s generation=%s", #state.execs, table.concat(state.execs, ","), state.execPage and ("on page " .. tostring(state.execPage) .. " (independent)") or "following the console's page", tostring(info and info.revision), tostring(info and info.generation or (info and info.unknown and info.unknown.code)))
       for id, sv in pairs(st.sessions) do for _, g in ipairs(sv.gestureList or {}) do log("control gesture %s: %s on %s/%s target=%s generation=%s%s%s", id, g.kind, g.device, g.control, json.encode(g.target), tostring(g.generation), g.frozen and (" frozen=" .. json.encode(g.frozen)) or "", g.rebound and " REBOUND (release and re-touch)" or "") end end
-      for _, u in ipairs(st.unresolved) do logerr("control UNRESOLVED: %s release on %s/%s: %s", tostring(u.kind), tostring(u.device), tostring(u.control), tostring(u.error)) end
+      for _, u in ipairs(st.unresolved) do logerr("control UNRESOLVED: %s release on %s/%s: %s%s", tostring(u.kind), tostring(u.device), tostring(u.control), tostring(u.error), u.reassigned and "  (KB-22: the executor was reassigned or emptied while held; `recover` releases it once the original object is back, or end that playback by hand)" or "") end
     end
     if state.controlUnresolved and #state.controlUnresolved > 0 then log("%d unresolved control release(s) kept from a previous run (not adopted yet)", #state.controlUnresolved) end
     for sid, s in pairs(state.sessions or {}) do
