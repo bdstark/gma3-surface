@@ -158,6 +158,24 @@ reassigned while its button is held, the release is kept as a record instead
 of operating the new assignment: the plugin's `status` shows it and `recover`
 releases it once the original object is back (or end that playback by hand).
 
+Lights (KB-23): the M-Touch and M-Play keys and bars follow the console. A
+playback strip's blue buttons are lit while their executor is assigned, blink
+slowly while it runs and fast while pressed; the red/green button under a fader
+(and every M-Play button) is red for assigned, green for running; the fader's
+RGB bar shows the configured fader function's level in the executor's
+appearance colour (reduced to red/green/blue/yellow/cyan/magenta/white; green
+when the object has no appearance). The four parameter strips are blue-only:
+their bar shows the slot's programmer value (so many of ten LEDs), the two end
+LEDs blink when the selected fixtures hold different values, the bar is dark
+when nothing is in the programmer, and the key is lit while the slot can be
+adjusted. The colour a parameter stands for (red component, amber, UV shown as
+violet) comes from the show's attribute definitions and is printed in the
+`--verbose` `lights:` lines and `sim`'s `light:` lines; the blue strips cannot
+show it. When the console state is stale (plugin stopped, link down) every lit
+control switches to a blinking "unavailable" pattern instead of keeping a
+level. `--lights off` disables all of this but the pickup span;
+`--lights-interval 50` is the minimum spacing of writes in milliseconds.
+
 ### USB notes
 
 - macOS: nothing to install. The keypad enumerates unconfigured; the service
@@ -224,6 +242,10 @@ stopped plugin within 1.5 s: the Link LED blinks and every other LED goes off
 (unknown), and it pairs again on its own when the plugin comes back.
 
 ## LEDs
+
+The M-Touch / M-Play lights are described above (KB-23): there, "unknown" is a
+distinct blinking pattern on anything that was lit, and dark means empty or
+unassigned. On the NX-K:
 
 Off means "not active" **or** "unknown": the NX-K has single-colour LEDs. The
 Link LED carries the difference: off while paired with fresh console state,

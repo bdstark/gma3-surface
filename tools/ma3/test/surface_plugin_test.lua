@@ -60,6 +60,8 @@ local function sequenceHandle(n)
   local sq = pool.sequences[n]
   return { name = sq.name, GetClass = function() return "Sequence" end, Addr = function() return "Sequence " .. n end,
            Get = function(_, k) if k == "No" then return n end end, HasActivePlayback = function() return sq.active end,
+           -- KB-23: an Appearance with the live hex BackRGBA form when the stub sequence names one
+           Appearance = sq.appearance and { name = sq.appearance, Get = function(_, k) if k == "BackRGBA" then return sq.backRGBA or "FF7F00FF" end end } or nil,
            GetFader = function() return sq.level end, GetFaderText = function() return tostring(sq.level) .. "%" end }
 end
 local function sequenceExecutor(x)
@@ -195,7 +197,7 @@ check("bad option refused", select(2, state._parseArgument("key=x bogus")) ~= ni
 check("start without a key is refused", reset("input=fake") == false and findLog("pairing key is required"))
 check("start with a short key is refused", reset("key=abcd input=fake") == false)
 check("start with a key succeeds on the fake backend", reset() == true and state.inputEnabled == true and state.inputMode == "fake" and state.gen:match("^%d+%-%x%x%x%x%x%x%x%x$"), J({ state.inputMode, state.gen }))
-check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.10.0" and state.modules.feedback.version == "0.5.0", J(state.moduleVersions))
+check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.10.0" and state.modules.feedback.version == "0.6.0", J(state.moduleVersions))
 check("feedback watch list bounded (9 state items + 3 more context items for the NX-K; page is shared)", state.modules.feedback.instance:status().watched == 12)
 
 -------------------------------------------------------------------------------
@@ -990,7 +992,7 @@ do
   push({ t = "hello", v = 1, id = "nxk-k22", gen = 31, nonce = "2222222222222222", surface = "nxk", fw = "0.1.0" }); tick()
   local w = ofType(drain(), "welcome")[1]
   sid, seq = w.sid, 0
-  pool.sequences = { [1] = { name = "Seq A", active = false, level = 0 }, [2] = { name = "Seq B", active = false, level = 0 } }
+  pool.sequences = { [1] = { name = "Seq A", active = false, level = 0, appearance = "Orange" }, [2] = { name = "Seq B", active = false, level = 0 } }
   pageWithExecutors(1, 201, 2)
   pool.executors[execKey(1, 201)] = { sequence = 1 }
   send({ t = "bind", ev = 1, ex = { 201, 202 }, pg = 1 }); tick()
@@ -1001,6 +1003,20 @@ do
   for _ = 1, 10 do tickAlive(0.11); drain() end
   local cm = state._collectContext(clock.t)
   check("kb22: the context lists the stub sequence executor with its configured key and fader functions, level and activity", cm.known == 1 and cm.ex[1].n == 201 and cm.ex[1].tgt == 1 and cm.ex[1].kp == "Go+" and cm.ex[1].fd == "Master" and cm.ex[1].lvl == 0 and cm.ex[1].act == 0 and cm.ex[2].empty == 1, J(cm.ex))
+  check("kb23: the context carries the executor's assignment colour as six hex digits from the parsed appearance (none for an object without one)", cm.ex[1].col == "ff7f00" and cm.ex[1].rgba == "FF7F00FF" and cm.ex[2].col == nil, J(cm.ex))
+  do
+    -- KB-23: a change of what the service lights (the activity here) resends the context within feedbackMinMs, not
+    -- only with the 1 s cadence; the generation does not move for it.
+    for _ = 1, 3 do tickAlive(0.11); drain() end
+    local before = state.counters.contexts
+    local cgBefore = state._collectContext(clock.t).cg
+    pool.sequences[1].active = true
+    local got, ticks = nil, 0
+    for _ = 1, 4 do tickAlive(0.1); ticks = ticks + 1; local cs = ofType(drain(), "context"); if #cs > 0 then got = cs[#cs]; break end end
+    check("kb23: an activity change resends the context within 0.4 s (feedback digest) with the generation unchanged", got ~= nil and got.ex[1].act == 1 and got.cg == cgBefore and state.counters.contexts == before + 1 and (state.counters.feedbackContexts or 0) >= 1, J({ got and got.ex, ticks, state.counters.contexts, before }))
+    pool.sequences[1].active = false
+    for _ = 1, 10 do tickAlive(0.11); drain() end
+  end
   local cg = cm.cg
   local function ctl22(ev, k, extra)
     local o = { t = "ctl", ev = ev, k = k, dev = "mtouch", c = extra.c or "PFA1", es = extra.es, cg = cg, gs = extra.gs or 1, tgt = extra.tgt or { ex = 201, el = "key", pg = 1 }, br = 2 }

@@ -4,6 +4,7 @@
 mod auth;
 mod banks;
 mod leds;
+mod lights;
 mod link;
 mod mtouch;
 mod nxk;
@@ -87,6 +88,14 @@ struct Cli {
     /// KB-22: the executor the `Pause (||/Back)` key presses (as --pb-go). Unmapped without it.
     #[arg(long, global = true, value_parser = clap::value_parser!(u32).range(1..=999))]
     pb_pause: Option<u32>,
+    /// KB-23: `on` lights the M-Touch / M-Play keys and bars from the console context (parameter values on the
+    /// blue strip bars, playback assignment / running / pressed / level in the appearance colour, an unavailable
+    /// pattern while the context is stale); `off` writes no light but the KB-22 pickup span.
+    #[arg(long, default_value = "on", global = true)]
+    lights: String,
+    /// KB-23: the minimum interval between two flushes of light writes, in milliseconds (coalescing bound).
+    #[arg(long, default_value_t = 50, global = true, value_parser = clap::value_parser!(u64).range(1..=1000))]
+    lights_interval: u64,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -183,6 +192,10 @@ struct Loop {
     displays: BTreeMap<u16, Option<u16>>,
     /// KB-22: fader bar writes produced while handling reports (flushed after the LEDs).
     bar_writes: Vec<(mtouch::Model, mtouch::Output)>,
+    /// KB-23: the M-Touch / M-Play lights renderer (keys and bars from the console context).
+    lights: lights::Lights,
+    lights_lines_seen: Vec<String>,
+    present: BTreeMap<mtouch::Model, bool>,
     /// The fine flag handed to the strips converter by the last strip report (what a stale Bank would corrupt).
     #[cfg(test)]
     last_strip_fine: Option<bool>,
@@ -223,10 +236,19 @@ impl Loop {
             eprintln!("{} (--pb-page/--pb-rows/--pb-ext-row/--banks; faders pick up within {} of the executor's level, --pb-pickup; Go/Pause keys {})", banks.summary(None), cli.pb_pickup,
                       match (cli.pb_go, cli.pb_pause) { (None, None) => "unmapped (--pb-go/--pb-pause)".to_string(), (g, p) => format!("go={} pause={}", g.map(|n| n.to_string()).unwrap_or_else(|| "-".into()), p.map(|n| n.to_string()).unwrap_or_else(|| "-".into())) });
         }
+        let lights_on = match cli.lights.to_ascii_lowercase().as_str() {
+            "on" | "yes" => true,
+            "off" | "no" => false,
+            other => return Err(anyhow!("--lights {other}: expected on or off")),
+        };
+        if lights_on {
+            eprintln!("lights: on (--lights/--lights-interval {} ms): parameter values on the blue strip bars, playback assignment/running/pressed/level on the keys and RGB bars, an unavailable pattern while the context is stale", cli.lights_interval);
+        }
         let link = link::Link::new(cfg, key, 0.0);
         Ok(Loop { link, leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots,
                   strips: strips::Strips::new(strip_cfg), strips_log_seen: 0, pushed_wheels: BTreeSet::new(),
                   banks, banks_log_seen: 0, displays: BTreeMap::new(), bar_writes: Vec::new(),
+                  lights: lights::Lights::new(lights::Config { enabled: lights_on, min_interval: cli.lights_interval as f64 / 1000.0 }), lights_lines_seen: Vec::new(), present: BTreeMap::new(),
                   #[cfg(test)]
                   last_strip_fine: None })
     }
@@ -355,8 +377,14 @@ impl Loop {
             }
         }
         // KB-21: only attached devices' bank windows are bound (an absent M-Play's 60 executors are not watched).
-        self.banks.set_present(mtouch::Model::MTouch, surface.device_present(mtouch::Model::MTouch));
-        self.banks.set_present(mtouch::Model::MPlay, surface.device_present(mtouch::Model::MPlay));
+        for model in [mtouch::Model::MTouch, mtouch::Model::MPlay] {
+            let present = surface.device_present(model);
+            self.banks.set_present(model, present);
+            // KB-23: a device that (re)appeared gets every light rewritten.
+            if self.present.insert(model, present) != Some(present) && present {
+                self.lights.invalidate(model);
+            }
+        }
         if self.banks.take_rebind() && self.banks.cfg.enabled {
             self.link.set_binding(self.banks.targets(), now);
         }
@@ -397,7 +425,30 @@ impl Loop {
         }
         // KB-22: the pickup display of the playback faders' bars (banks emits a write on change only).
         for (model, out) in std::mem::take(&mut self.bar_writes) {
+            self.lights.note_external(model, &out);
             surface.output(model, out);
+        }
+        // KB-23: the keys and bars from the console context, change-only and rate-limited; input and releases were
+        // handled above, so a flush never delays them.
+        {
+            let ctx = self.link.context_view(now).map(|c| &c.body);
+            let strips_present = surface.device_present(mtouch::Model::MTouch);
+            let strips = if self.strips.cfg.mode != strips::Mode::Off {
+                Some(lights::ParamStrips { present: strips_present, base_slot: self.strips.cfg.base_slot, touching: [self.strips.touching(1), self.strips.touching(2), self.strips.touching(3), self.strips.touching(4)] })
+            } else {
+                None
+            };
+            let playback = self.banks.lights_controls();
+            let writes = self.lights.render(&lights::Scene { ctx, strips, playback: &playback }, now);
+            for (model, out) in writes {
+                surface.output(model, out);
+            }
+            if self.verbose && self.lights.lines != self.lights_lines_seen {
+                for l in &self.lights.lines {
+                    eprintln!("lights: {l}");
+                }
+                self.lights_lines_seen = self.lights.lines.clone();
+            }
         }
         // KB-21: the page displays show "page then bank" (blank while the page is unknown); written on change only.
         if self.banks.cfg.enabled {
@@ -724,6 +775,11 @@ fn main() -> Result<()> {
             })?;
             print_summary(&lp.link, &lp.strips);
             println!("{}", lp.banks.summary(lp.link.console_page(lp.now())));
+            // KB-23: the textual state of every light (colour is never the only cue) and the renderer's counters.
+            println!("{}", lp.lights.summary());
+            for l in &lp.lights.lines {
+                println!("light: {l}");
+            }
             Ok(())
         }
         Cmd::Bench { taps, rate } => {

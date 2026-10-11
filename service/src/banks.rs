@@ -744,6 +744,57 @@ impl Banks {
         self.held.len()
     }
 
+    /// KB-23: every playback light the present, enabled sections map right now, with the executor it means and
+    /// whether its button is down / its fader is touched and waiting for pickup. The M-Touch strip: PFA (blue
+    /// key, row A), the RGB bar and the red/green PFD (both the fader row's executor), PFB (blue key, row B); the
+    /// M-Play strip: top button (red/green, row A), the RGB bar (fader row), bottom button (red/green, row B); the
+    /// M-Play right block: red/green buttons (its row). The lights of a section whose device is absent are not
+    /// listed (nothing can be written to it).
+    pub fn lights_controls(&self) -> Vec<crate::lights::PlaybackControl> {
+        use crate::lights::{Light, PlaybackControl};
+        let mut out = Vec::new();
+        if !self.cfg.enabled {
+            return out;
+        }
+        let pg = self.page();
+        for (si, s) in self.sections.iter().enumerate() {
+            if !s.enabled || !s.present {
+                continue;
+            }
+            let held = |control: &'static str| self.held.contains_key(&(s.dev, control));
+            match s.kind {
+                SectionKind::Strips(_) => {
+                    for i in 1..=s.size {
+                        let n = i as usize - 1;
+                        let (ka, kb, bar, pfd, light_ab) = if si == MTOUCH {
+                            (0x4201 + 0x10 * (i as u16 - 1), 0x4202 + 0x10 * (i as u16 - 1), 0x4203 + 0x10 * (i as u16 - 1), Some(0x4205 + 0x10 * (i as u16 - 1)), Light::KeyBlue)
+                        } else {
+                            (0x9205 + 0x10 * (i as u16 - 1), 0x92C5 + 0x10 * (i as u16 - 1), 0x9203 + 0x10 * (i as u16 - 1), None, Light::KeyRedGreen)
+                        };
+                        let (ca, cb, cf): (&'static str, &'static str, &'static str) = if si == MTOUCH { (PFA[n], PFB[n], PB[n]) } else { (MPA[n], MPB[n], MPF[n]) };
+                        let fs = self.faders.get(&(si, i));
+                        let touching = fs.map(|f| f.touching).unwrap_or(false);
+                        let pending = fs.map(|f| f.touching && !f.picked_up && !f.rebound).unwrap_or(false);
+                        out.push(PlaybackControl { model: s.model, id: ka, light: light_ab, control: ca, ex: s.executor(Row::KeyA, i), pg, held: held(ca), pickup_pending: false });
+                        out.push(PlaybackControl { model: s.model, id: bar, light: Light::BarRgb, control: cf, ex: s.executor(Row::Fader, i), pg, held: touching, pickup_pending: pending });
+                        if let Some(id) = pfd {
+                            out.push(PlaybackControl { model: s.model, id, light: Light::KeyRedGreen, control: cf, ex: s.executor(Row::Fader, i), pg, held: false, pickup_pending: false });
+                        }
+                        out.push(PlaybackControl { model: s.model, id: kb, light: light_ab, control: cb, ex: s.executor(Row::KeyB, i), pg, held: held(cb), pickup_pending: false });
+                    }
+                }
+                SectionKind::Keys(_) => {
+                    for i in 1..=s.size {
+                        let n = i as usize - 1;
+                        let id = if i <= 12 { 0x9805 + 0x10 * (i as u16 - 1) } else { 0x98C5 + 0x10 * (i as u16 - 13) };
+                        out.push(PlaybackControl { model: s.model, id, light: Light::KeyRedGreen, control: MPE[n], ex: s.executor(Row::KeyA, i), pg, held: held(MPE[n]), pickup_pending: false });
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// The page display value of a section: page x 10 + bank while both fit, else the bank, None while the page is unknown.
     pub fn display_value(&self, section: usize, console_page: Option<u32>) -> Option<u16> {
         let s = &self.sections[section];

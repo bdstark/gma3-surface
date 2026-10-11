@@ -174,7 +174,6 @@ impl Strips {
         Out { control: CONTROLS[(n.clamp(1, 4) - 1) as usize], target: self.target(n), kind }
     }
 
-    #[cfg(test)]
     pub fn touching(&self, n: u8) -> bool {
         self.strips[(n.clamp(1, 4) - 1) as usize].touching
     }
