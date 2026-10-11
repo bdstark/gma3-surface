@@ -706,6 +706,14 @@ colour is out of gamut (`0.1744,-0.1443,1,1`, clamped by the module; the name ov
 anyway); appearances arrive as hex `FF7F00FF` ("Orange" -> yellow lanes). Both plugins (bridge with feedback 0.6.0,
 `mtpnxk_surface` 0.9.0) are installed and running on `mcp-test-disposable`.
 
-**Not verified live in this repository:** the rendered lights. Next: a `sim` session on `mcp-test-disposable` with
-`control=console` reading the context's `fg`/`col` fields and the rendered `light:` lines for the RGB page, a mixed
-selection, a running executor and a stopped plugin (stale); the physical lights remain KB-24's hardware qualification.
+**Verified live in this repository:** [docs/probes/kb-23-surface-macos-2.5.1.md](docs/probes/kb-23-surface-macos-2.5.1.md)
+(the plugin 0.9.0 on onPC with `control=console`, driven by the release service's `sim`): at rest the assigned keys lit
+blue, the fader rows' PFDs red, the running executor's PFD green with its bar at ten LEDs in the yellow lanes (Orange
+appearance); on the RGB page the strips' blue bars showed 5/10 for `ColorRGB_R` at 50 and 10/10 for the group-activated
+G and B, each line naming the definition colour (Red/Green/Blue/Yellow); a two-fixture selection with different R values
+showed the two end LEDs blinking and the touched strip's key fast-blinking; a PFA tap went blue fast while held and blue
+slow once the console ran its Go+; stopping the plugin switched every lit control to the unavailable pattern (bars all
+ten blinking red / blue, PFDs red slow, blue keys slow) and left the dark ones dark. Every setup change was undone.
+
+**Not verified live:** the physical M-Touch / M-Play rendering of the mixes, the slow blink and blue on playback bars
+(KB-24's hardware pass); Windows/Linux hosts.
