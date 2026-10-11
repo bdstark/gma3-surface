@@ -504,10 +504,43 @@ pub fn page_display(n: Option<u16>) -> [u8; 6] {
     out
 }
 
-/// The digits a `page_display` payload shows, as text (`"-"` for a blank display), for logs and tests.
+/// The decimal-point segment of a 7-segment digit (bit 7; the digit masks use bits 0-6).
+pub const SEG_DP: u8 = 0x80;
+
+/// Hardware pass (finding 6): a playback section's display as `page.bank` (`1.1` = page 1, bank 1): the page's last
+/// digit carries the decimal point, the bank is the last digit. `v` is the banks' `page x 10 + bank` value; a value
+/// below 10 is the bank alone (a page beyond two digits) and shows without a point; None is blank.
+pub fn page_bank_display(v: Option<u16>) -> [u8; 6] {
+    let Some(v) = v else { return [0u8; 6] };
+    if v < 10 {
+        return page_display(Some(v));
+    }
+    let (page, bank) = (v / 10, v % 10);
+    let mut out = [0u8; 6];
+    out[2] = SEG[bank as usize];
+    out[3] = SEG[(page % 10) as usize] | SEG_DP;
+    if page >= 10 {
+        out[4] = SEG[((page / 10) % 10) as usize];
+    }
+    out
+}
+
+/// The digits a `page_display` payload shows, as text (`"-"` for a blank display), for logs and tests; a digit with
+/// the decimal point is followed by `.`.
 pub fn page_display_text(data: &[u8; 6]) -> String {
-    let digit = |b: u8| SEG.iter().position(|s| *s == b).map(|d| char::from(b'0' + d as u8));
-    let s: String = [data[4], data[3], data[2]].iter().filter_map(|b| if *b == 0 { None } else { digit(*b) }).collect();
+    let digit = |b: u8| SEG.iter().position(|s| *s == (b & !SEG_DP)).map(|d| char::from(b'0' + d as u8));
+    let mut s = String::new();
+    for b in [data[4], data[3], data[2]] {
+        if b == 0 {
+            continue;
+        }
+        if let Some(c) = digit(b) {
+            s.push(c);
+            if b & SEG_DP != 0 {
+                s.push('.');
+            }
+        }
+    }
     if s.is_empty() { "-".into() } else { s }
 }
 
@@ -1010,5 +1043,18 @@ mod tests {
         assert_eq!(Model::from_pid(0xF80C), Some(MPlay));
         assert_eq!(Model::from_pid(0xE102), None);
         assert_eq!((MTouch.bank_units(), MPlay.bank_units()), (0x0A, 0x0C));
+    }
+
+    #[test]
+    fn the_playback_display_shows_page_dot_bank() {
+        assert_eq!(page_display_text(&page_bank_display(Some(11))), "1.1");
+        assert_eq!(page_display_text(&page_bank_display(Some(32))), "3.2");
+        assert_eq!(page_display_text(&page_bank_display(Some(129))), "12.9", "a two-digit page");
+        assert_eq!(page_display_text(&page_bank_display(Some(2))), "2", "a page beyond two digits: the bank alone, no point");
+        assert_eq!(page_display_text(&page_bank_display(None)), "-");
+        let d = page_bank_display(Some(11));
+        assert_eq!(d[3] & SEG_DP, SEG_DP, "the page digit carries the decimal point");
+        assert_eq!(d[2] & SEG_DP, 0);
+        assert_eq!(page_display_text(&page_display(Some(42))), "42", "the plain display is unchanged");
     }
 }

@@ -56,6 +56,18 @@ over the MCP bridge. Second part of the hardware pass ([NX-K record](kb-24-hardw
 7. **One log line per identical refusal.** Every refused strip event printed its own line (hundreds while the encoder
    bar was unavailable); identical consecutive refusals should collapse into one line with a count.
 
+## Status of the findings (2026-10-11)
+
+| # | Finding | Status |
+| --- | --- | --- |
+| 1 | colour-picker encoders unsupported | open feature: [work item](../work-item-colour-picker-encoders.md) with a handoff note |
+| 2 | misleading reason with the picker open | fixed: feedback 0.7.1 (GrandMA3MCP `1061735`) names the colour picker's encoders, a covering view (bank selector missing) or missing attribute encoders |
+| 3 | parameter bars dark at rest | open, no source found: the encoder bar's value is not readable from Lua on onPC 2.5.1. `GetDMXValue`/`GetDMXUniverse` return nil (DMX output not granted without output hardware); the encoder widgets carry no value (`SHOWVALUE=false`, hidden band faders at 0.0); the encoder bar's fixture-sheet grid returns no cell data; the API list has no output-value function. Defaults would match an idle stage but invent a value under a running playback, so nothing is shown rather than a guess |
+| 4 | bar lag while moving | fixed: local echo while touched (strips: value at the touch plus detents x one click, Percent readouts; playback faders: the fader position once picked up); the read-back takes over at the lift |
+| 5 | red flash on a bank change | fixed: a rebind in flight is dark for up to 1 s; only a rebind that does not resolve (a refused bind) shows the unavailable pattern |
+| 6 | page display `11` | changed to `page.bank` with the display's decimal point (`1.1`); the point segment (bit 7) is to be confirmed on the hardware |
+| 7 | one log line per identical refusal | fixed: logged once, the repeats summarised when anything else is logged or every 2 s |
+
 Fixed during this pass (branch `fix/kb24-hardware-findings`): consistent device log prefixes and one "not attached"
 line per device and absence; slow device opens and slow loop steps are logged; unit tests no longer reach a live
 plugin (they had replaced the running service's session twice).

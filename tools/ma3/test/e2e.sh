@@ -37,8 +37,8 @@ echo "$BANK" | grep -q 'refused ev [0-9]*: \[target-unavailable\] executor 111 i
 echo "--- playback faders (KB-22): a touch on playback fader 1 is a hold on executor 201's fader element (refused empty by the stub console), the move waits for pickup (no level known), the lift is a noop; an M-Play pressure button is one down and one up (refused empty); the Go key without a profile is unmapped ---"
 echo "$BANK" | grep -q 'refused ev [0-9]*: \[target-unavailable\] executor 201 is empty' || { echo "FAIL: expected the fader touch on executor 201 refused empty by the plugin"; fail=1; }
 echo "$BANK" | grep -q 'refused ev [0-9]*: \[target-unavailable\] executor 101 is empty' || { echo "FAIL: expected the M-Play button on executor 101 refused empty by the plugin"; fail=1; }
-echo "$BANK" | grep -q 'out MTouch display 4401 <- 12' || { echo "FAIL: expected the page display to show page 1 bank 2 (12): $(echo "$BANK" | grep '^out ')"; fail=1; }
-echo "$BANK" | grep -q 'out MTouch display 4401 <- 11' || { echo "FAIL: expected the page display at page 1 bank 1 (11)"; fail=1; }
+echo "$BANK" | grep -q 'out MTouch display 4401 <- 1.2' || { echo "FAIL: expected the page display to show page 1 bank 2 (1.2): $(echo "$BANK" | grep '^out ')"; fail=1; }
+echo "$BANK" | grep -q 'out MTouch display 4401 <- 1.1' || { echo "FAIL: expected the page display at page 1 bank 1 (1.1)"; fail=1; }
 echo "$BANK" | grep -q 'lost=0' || { echo "FAIL: bank events lost"; fail=1; }
 echo "--- lights (KB-23): the keys and bars are rendered from the context (every bound executor is empty on the stub console: dark), the textual state names each control, the writes are change-only ---"
 echo "$BANK" | grep -q '^lights: enabled=true renders=[0-9]* flushes=[1-9]' || { echo "FAIL: lights summary: $(echo "$BANK" | grep '^lights:')"; fail=1; }

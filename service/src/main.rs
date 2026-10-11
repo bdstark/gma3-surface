@@ -512,7 +512,7 @@ impl Loop {
                 let v = self.banks.display_value(i, page);
                 if self.displays.get(&s.display) != Some(&v) {
                     self.displays.insert(s.display, v);
-                    surface.output(s.model, mtouch::Output::PageDisplay { id: s.display, data: mtouch::page_display(v) });
+                    surface.output(s.model, mtouch::Output::PageDisplay { id: s.display, data: mtouch::page_bank_display(v) });
                 }
             }
         }
