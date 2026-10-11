@@ -48,6 +48,14 @@ revision gate and the new external-edit window:
 | R6 press right after a bank change | `pbank:up@1500,pfa1:tap@250,pbank:down@600` | `link: bind acknowledged: binding revision 3`, then `event 3 refused [target-unavailable] executor 211 is empty`; `stale=0`, no command | PASS: the tap 250 ms after the bank change reached the plugin against the new binding (bank 2's 211, empty), never `stale-binding` |
 | R5 two controls on one executor (`--pb-go 201`) | `pfa1:down@1500,go:down@400,go:up@400,pfa1:up@400` | `event 3 refused [conflict] execDefault#1/1.201.key|…|Flash is being operated by this session (button on mtouch/PFA1)`; plugin commands `Press Page 1.201`, `Unpress Page 1.201` only; Sequence 2 off afterwards | PASS: the alias never presses a held executor twice; one Press, one Unpress |
 
+## Re-run after review round 2 (2026-10-10)
+
+Control 0.5.0 from `ce91371` (the verification of a frozen release is the plugin's live `deps.observe` read only):
+
+| Run | Script | Result | Verdict |
+| --- | --- | --- | --- |
+| R-live: a button held across a bank change | `pfa1:down@1500,pbank:up@500,pfa1:up@900,pbank:down@400` | `Press Page 1.201` applied; after `PLAYBACK BANK +` the bound window is 211-220 (201 no longer in the binding); the release was verified by the live read of page 1's executor 201 (same object, same pool) and `Unpress Page 1.201` applied; `frozen=1`, nothing unresolved, Sequence 2 off | PASS |
+
 Not verified: the physical M-Touch/M-Play through `run` (their pressure reports and bars: KB-24), Rate/Speed/crossfade
 functions (unqualified on the console half), an assignment changed while a fader was touched (the key-element case is in
 the MCP record and the harness).

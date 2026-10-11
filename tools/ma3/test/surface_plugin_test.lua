@@ -703,6 +703,7 @@ do
     snap.executors = { { available = true, value = { executor = 201, page = 3, empty = false, playbackTarget = true, assigned = { addr = "Sequence 1" }, functions = { keyPress = "Go+", fader = "Master" }, level = { token = "FaderMaster", value = 0 } } } }; return snap end
   for _ = 1, 3 do tickAlive(0.05); drain() end
   send(ctl(60, "touch", { es = 1, d = 1, cg = 7, dev = "m3", c = "Strip1", tgt = { ex = 201, el = "fader" } })); tick(); drain()
+  tick()  -- review round 2: the hold must have APPLIED before the cleanup (an unapplied hold is discarded, not released)
   state.modules.control.instance._adapter:raiseNext("touch", "Keyboard() raised")
   Cleanup(); Cleanup()
   check("a release the backend raised on is kept across the cleanup", state.running == false and state.controlUnresolved and #state.controlUnresolved == 1 and state.controlUnresolved[1].kind == "touch", J(state.controlUnresolved))

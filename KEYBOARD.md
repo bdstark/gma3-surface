@@ -610,7 +610,10 @@ one up, refused empty; the Go key without a profile is unmapped; the summary's f
   cause a false reset while the console follows with its refresh lag. The vendored control 0.5.0 from `3e0e7c4` adds the
   console-side rules (a hold tracked until its release applied, queued downs revalidated, frozen releases on a current
   observation in the same data pool through this plugin's `deps.observe`, same-session conflicts). `cargo test` 82
-  (two new), harness 235, e2e unchanged.
+  (two new), harness 235, e2e unchanged. **Round 2** (control from `ce91371`): the verification is the live `deps.observe`
+  read only (never the cached binding), a hold whose down never applied is discarded at the session's end without a
+  release, and an unresolved release reserves its target against new presses until `recover` applies it; the harness
+  check that raises on a cleanup release now services the touch first (an unapplied hold is discarded, by design).
 
 **Verified live in this repository:** [docs/probes/kb-22-surface-macos-2.5.1.md](docs/probes/kb-22-surface-macos-2.5.1.md)
 (the plugin 0.8.0 on onPC with `control=console`, driven by the release service's `sim` with `--pb-rows 201,201,301`: a
