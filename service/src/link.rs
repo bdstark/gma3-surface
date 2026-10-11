@@ -454,6 +454,51 @@ impl Link {
         ctx.generation
     }
 
+    /// KB-23 (review of PR #8): the context a renderer may light from. The fresh, known context (`context_view`)
+    /// only while it belongs to the binding in effect: no bind in flight (sent, not yet acknowledged: a bank
+    /// change is one until the plugin answers) and, once a bind was acknowledged, a context carrying that revision
+    /// (`current_generation` is Some). Anything else is None, shown as unavailable: the previous binding's context
+    /// never lights the controls of the new one.
+    pub fn lighting_context(&self, now: f64) -> Option<&ConsoleContext> {
+        if self.pending.iter().any(|p| matches!(p.kind, PendingKind::Bind(_))) {
+            return None;
+        }
+        self.current_generation(now)?;
+        self.context_view(now)
+    }
+
+    /// Why `lighting_context` is None while a fresh context exists (for the verbose log); None when it is not blocked
+    /// or there is no fresh context at all.
+    pub fn lighting_block_reason(&self, now: f64) -> Option<String> {
+        let ctx = self.context_view(now)?;
+        if let Some(p) = self.pending.iter().find(|p| matches!(p.kind, PendingKind::Bind(_))) {
+            return Some(format!("bind ev {} in flight", p.ev));
+        }
+        let ctx_br = ctx.body.get("bind").and_then(|b| b.get("br")).and_then(|v| v.as_u64());
+        if let Some(acked) = self.last_br {
+            if ctx_br != Some(acked) {
+                return Some(format!("the context carries binding revision {:?}, the acknowledged one is {}", ctx_br, acked));
+            }
+        }
+        if ctx.generation.is_none() {
+            return Some("the context claims no generation".into());
+        }
+        None
+    }
+
+    #[cfg(test)]
+    pub fn hello_nonce(&self) -> Option<String> {
+        match &self.phase {
+            Phase::Unpaired { nonce, .. } => nonce.clone(),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn pending_bind_ev(&self) -> Option<u64> {
+        self.pending.iter().find(|p| matches!(p.kind, PendingKind::Bind(_))).map(|p| p.ev)
+    }
+
     /// KB-21: the plugin's binding revision as the last context reported it (`bind.br`); motion and downs
     /// carry it so a replaced binding refuses what was produced against the old one.
     pub fn current_binding(&self, now: f64) -> Option<u64> {
@@ -1733,6 +1778,7 @@ mod tests {
         let ctx = |p: &mut FakePlugin, cg: u64, br: u64| p.frame(json!({"t":"context","gen":p.generation,"epoch":1,"known":1,"cg":cg,"enc":{},"slots":[],"ex":[{"n":201,"tgt":1,"fd":"Master","tok":"FaderMaster"}],"page":1,"pool":"Default","display":1,"bind":{"ex":[201],"br":br,"mode":"current"}}));
         link.receive(&ctx(&mut plugin, 1, 1), 20.02);
         assert_eq!(link.current_generation(20.03), Some(1));
+        assert!(link.lighting_context(20.03).is_some(), "KB-23: the context of the acknowledged binding lights");
         let key = CtlTarget::Executor { ex: 201, el: "key", pg: None };
         link.control_event("mtouch", "PFA1", key, CtlKind::Btn { down: true }, 20.05);
         link.tick(20.06);
@@ -1742,11 +1788,13 @@ mod tests {
         // Our bank change: the bind goes out and is acked with revision 2 before any context carries it.
         link.set_binding(BindSpec { ex: vec![211], pg: None }, 20.1);
         link.tick(20.1);
+        assert!(link.context_view(20.11).is_some() && link.lighting_context(20.11).is_none(), "KB-23 review: a bind in flight: the old context is still data but lights nothing");
         let out = plugin.decode(link.take_outgoing());
         let ev = out.iter().find(|v| v["t"] == "bind").unwrap()["ev"].as_u64().unwrap();
         link.receive(&plugin.ctl_ack(ev, true, json!({"br": 2})), 20.12);
         assert_eq!(link.current_binding(20.13), Some(2), "the acked revision is current at once");
         assert_eq!(link.current_generation(20.13), None, "but the generation is unknown until a context of revision 2 arrives");
+        assert!(link.lighting_context(20.13).is_none(), "KB-23 review: acknowledged without its context: still nothing to light from");
         assert!(link.take_binding_changed());
         let unbound_before = link.stats.ctl_unbound;
         link.control_event("mtouch", "PFA2", CtlTarget::Executor { ex: 211, el: "key", pg: None }, CtlKind::Btn { down: true }, 20.15);
@@ -1759,6 +1807,7 @@ mod tests {
         // The context of revision 2 arrives (the same generation number as before): events flow again, stamped br 2.
         link.receive(&ctx(&mut plugin, 1, 2), 20.2);
         assert_eq!(link.current_generation(20.21), Some(1));
+        assert!(link.lighting_context(20.21).is_some(), "KB-23: the context of revision 2 lights again");
         assert!(!link.take_binding_changed(), "the revision was already reported from the ack");
         link.control_event("mtouch", "PFA2", CtlTarget::Executor { ex: 211, el: "key", pg: None }, CtlKind::Btn { down: true }, 20.25);
         link.tick(20.26);

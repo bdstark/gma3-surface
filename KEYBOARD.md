@@ -636,7 +636,7 @@ feature / activation group names parsed from the definition's own path text and 
 with `colorDefined` (a black colour, which Dimmer and Gobo have live, defines none), every assigned executor's
 appearance carries its `BackRGBA` as 0..1 components; colour and appearance stay out of the binding digest; the bridge
 0.18.0 and control 0.5.0 are unchanged; branch `feat/kb23-parameter-colors`, probe `scripts/kb23-probe.mjs`). This
-repository vendors feedback 0.6.0 from `45945bf` (after the MCP live run: UV's out-of-gamut definition colour clamped and flagged; [tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns every LED
+repository vendors feedback 0.6.0 from `9535ded` (PR #27 review round 1: numeric-only hex parses as hex; [tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns every LED
 translation (`service/src/lights.rs`):
 
 - **Colours from verified metadata, never from a label:** the plugin's context carries per attribute slot `fg`, `fn`,
@@ -689,10 +689,16 @@ translation (`service/src/lights.rs`):
 - **Context cadence (plugin 0.9.0):** a change of what the service lights (values, levels, activity, colours, the
   known flag: `feedbackDigest`) resends the context after at most 250 ms (`feedbackMinMs`, coalesced) instead of only
   with the 1 s cadence; the binding generation is untouched by any of it (`counters.feedbackContexts`).
-- **Rust service** (`cargo test` 89, seven new in `lights.rs`): the colour derivation order and the palette reduction,
-  the value indicators (no fabricated single level, mixed pattern, incomplete blink), the parameter strips, the
-  playback states and level colours, staleness only where something was lit, the rebind rule, rate limiting /
-  coalescing and the external bar write; `banks::lights_controls` lists the lights of the present sections.
+- **Rust service** (`cargo test` 90, eight new in `lights.rs` and `main.rs`): the colour derivation order and the
+  palette reduction, the value indicators (no fabricated single level, mixed pattern, incomplete blink), the parameter
+  strips, the playback states and level colours, staleness only where something was lit, the rebind rule, rate limiting
+  / coalescing and the external bar write; a caller-level test that a bank change lights nothing from the previous
+  binding's context until the new one arrives (review round 1); `banks::lights_controls` lists the lights of the
+  present sections.
+- **Binding readiness (review of PR #8):** the lights read `link::lighting_context` (not `context_view`), which is the
+  fresh context only while no bind is in flight and, after a bind ack, a context of the acknowledged revision has
+  arrived (`current_generation` is `Some`); a bank change's pending bind blocks it. The previous binding's context
+  never lights the new mapping; `--verbose` logs why the lights are held unavailable (`lighting_block_reason`).
 
 Harness: `lua tools/ma3/test/surface_plugin_test.lua` 237 checks (2 new: the executor's `col` from the stub sequence's
 appearance, an activity change resending the context within 0.4 s with the generation unchanged); `sh
@@ -714,6 +720,11 @@ G and B, each line naming the definition colour (Red/Green/Blue/Yellow); a two-f
 showed the two end LEDs blinking and the touched strip's key fast-blinking; a PFA tap went blue fast while held and blue
 slow once the console ran its Go+; stopping the plugin switched every lit control to the unavailable pattern (bars all
 ten blinking red / blue, PFDs red slow, blue keys slow) and left the dark ones dark. Every setup change was undone.
+
+**Review of PR #8 (round 1):** (1) the lights were gated at the caller on `link::lighting_context` so a rebind cannot
+show the previous binding's feedback as current, with a caller-level regression and a verbose diagnostic; re-run live
+(the steady scene lights `lit=21`, a bank change blanks the controls only until the matching context arrives). The
+numeric-only hex finding (2) is the console half (GrandMA3MCP PR #27).
 
 **Not verified live:** the physical M-Touch / M-Play rendering of the mixes, the slow blink and blue on playback bars
 (KB-24's hardware pass); Windows/Linux hosts.

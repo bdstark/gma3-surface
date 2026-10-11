@@ -40,3 +40,14 @@ Counters of run D: `lights: enabled=true renders=5556 flushes=4 writes=101 coale
 (`/NoConfirmation`); read back: the four executors empty, bank 1.1, selection 0, programmer empty (70/70 fixtures
 scanned), Sequence 5527 inactive, Sequence 5509 still running on 291 as before. Plugin 2 restarted with the same key.
 The operator's 8-fixture selection that was active before the MCP probe is not restored (it was cleared for that run).
+
+## Re-run after the PR #8 review round 1 (2026-10-10)
+
+Review finding 1 (the lights must gate on binding readiness, not `context_view`): the service now reads
+`link::lighting_context`, which returns the fresh context only when no bind is in flight and, after a bind ack, a
+context of the acknowledged revision has arrived. Re-run on the same set: a steady scene (two sequences assigned to
+101 and 209, Orange) lit as before (`lit=21`: PFA1 blue assigned, PB9 green running with a full yellow bar, the PFDs
+red/green); a `pbank:up`/`pbank:down` storm blanked every control to the unavailable pattern only while each bind was
+in flight, and `--verbose` logged the reason (`bind ev N in flight`, then `the context carries binding revision …, the
+acknowledged one is …`) until the matching context restored them. The assignments were deleted afterwards (101, 209
+read back empty). `cargo test` 90, harness 237.
