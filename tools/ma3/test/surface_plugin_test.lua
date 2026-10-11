@@ -399,6 +399,59 @@ inbox = {}
 send({ t = "hb", held = {} }); tick(); drain()
 
 -------------------------------------------------------------------------------
+-- KB-24: the heartbeat reply carries the loop's load since the previous reply, then the window restarts
+-------------------------------------------------------------------------------
+tick(1.1)
+state.load = nil
+for _ = 1, 5 do tick(0.001) end
+send({ t = "hb", held = {} }); tick()
+local hbLoad = ofType(drain(), "hb")[1]
+check("the heartbeat reply carries a load report", hbLoad and type(hbLoad.load) == "table", J(hbLoad))
+check("the report covers the ticks completed since the previous report (the tick carrying this hb is not in it yet)",
+      hbLoad.load.n == 5 and hbLoad.load.pmax == 0 and hbLoad.load.full == 0, J(hbLoad.load))
+check("tick times are non-negative milliseconds (the stub clock stands still inside a tick: 0)", hbLoad.load.tmax == 0 and hbLoad.load.tavg == 0, J(hbLoad.load))
+-- 32 datagrams queued at once: the tick exhausts its budget, the report says so, the 33rd waits for the next tick.
+for i = 1, 33 do send({ t = "hb", held = {} }) end
+tick()
+check("a tick processes at most the budget (32); the rest waits", #inbox == 1, #inbox)
+-- The 33rd hb is answered on the next tick; its report is the window of one completed tick: the burst tick.
+tick()
+hbLoad = ofType(drain(), "hb")
+hbLoad = hbLoad[#hbLoad]
+check("the next report names the burst tick: at the budget (pmax 32, full 1), one tick", hbLoad.load and hbLoad.load.full == 1 and hbLoad.load.pmax == 32 and hbLoad.load.n == 1, J(hbLoad.load))
+
+-------------------------------------------------------------------------------
+-- KB-24: a burst of continuous-control packets never delays a key release behind it, and the per-session rate
+-- limit still applies to the burst (the flood protection is unchanged by KB-18's ctl traffic)
+-------------------------------------------------------------------------------
+tick(1.1); drain()
+send({ t = "key", ev = 700, k = "Record", d = 1 }); tick(); drain()
+check("a press is held before the burst", state.sessions[sid].holds.Record ~= nil)
+-- 31 ctl deltas (refused: no encoder bar on the stub console, and no binding generation known) then the release:
+-- all 32 fit in one tick, so the release applies on that tick.
+for i = 1, 31 do send({ t = "ctl", ev = 700 + i, k = "rel", dev = "nxk", c = "Rotary1", es = i, cg = 1, gs = 1, tgt = { slot = 1 }, dx = 1 }) end
+send({ t = "key", ev = 740, k = "Record", d = 0 })
+local relBeforeBurst = eventCount("release")
+tick()
+local acks = ofType(drain(), "ack")
+check("the release behind 31 ctl packets applied on the same tick", eventCount("release") == relBeforeBurst + 1 and state.sessions[sid].holds.Record == nil, J({ eventCount("release"), relBeforeBurst }))
+local relAck
+for _, a in ipairs(acks) do if a.ev == 740 then relAck = a end end
+check("the release was acknowledged ok", relAck and relAck.ok == 1, J(relAck))
+-- A larger burst over one second: the per-session limit drops what exceeds 400/s, the key path keeps working.
+tick(1.1); drain()
+local dropped0 = state.counters.rateDropped
+for i = 1, 450 do send({ t = "ctl", ev = 800 + i, k = "rel", dev = "nxk", c = "Rotary1", es = 100 + i, cg = 1, gs = 2, tgt = { slot = 1 }, dx = 1 }) end
+for _ = 1, 16 do tick(0.001) end
+check("the per-session rate limit drops the ctl packets beyond 400/s", state.counters.rateDropped - dropped0 == 50, state.counters.rateDropped - dropped0)
+drain()
+tick(1.1)
+send({ t = "key", ev = 900, k = "Record", d = 1 }); tick()
+local pressAck = ofType(drain(), "ack")[1]
+check("a key press after the burst is admitted and held", pressAck and pressAck.ok == 1 and state.sessions[sid].holds.Record ~= nil, J(pressAck))
+send({ t = "key", ev = 901, k = "Record", d = 0 }); tick(); drain()
+
+-------------------------------------------------------------------------------
 -- Feedback: deltas, full refresh, unknown, stale, identity, epochs
 -------------------------------------------------------------------------------
 tickAlive(1.0)

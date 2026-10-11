@@ -80,6 +80,9 @@ local json   = require("json")
 -- background as six hex digits (`col`). A change of what the service shows (values, levels, activity, colours)
 -- resends the context after at most `feedbackMinMs`, instead of only with the 1 s cadence; the binding
 -- generation is untouched by any of it.
+-- KB-24: the heartbeat reply carries the plugin loop's load since the previous reply (`load`: the longest and the
+-- mean tick in ms, the most datagrams one tick took, how many ticks hit the per-tick budget, ticks): the
+-- measurement harness publishes it next to the service-side latencies. Nothing else changed.
 local VERSION   = "0.10.0"
 -- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
 local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
@@ -705,6 +708,12 @@ local function handleHeartbeat(s, obj, now, revived)
   table.sort(pluginHeld); table.sort(unsynced)
   s.unsyncedHeld = unsynced
   local reply = { t = "hb", held = pluginHeld, unsynced = unsynced, gen = state.gen }
+  -- KB-24: the loop's load since the last heartbeat reply (any session), then the window starts again.
+  local ld = state.load
+  if ld and ld.n > 0 then
+    reply.load = { tmax = math.floor(ld.tmax * 1000 + 0.5) / 1000, tavg = math.floor(ld.tsum / ld.n * 1000 + 0.5) / 1000, pmax = ld.pmax, full = ld.full, n = ld.n }
+    state.load = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0 }
+  end
   if revived then reply.resynced = 1 end
   if releasedNow > 0 then reply.reconciled = releasedNow end
   sendToSession(s, reply)
@@ -1242,6 +1251,11 @@ local function tick(now)
     handleDatagram(data, ip, port, now)
   end
   state.counters.ticks = state.counters.ticks + 1
+  -- KB-24: the load window (datagrams this tick, whether the budget was exhausted).
+  local ld = state.load
+  if not ld then ld = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0 }; state.load = ld end
+  if n > ld.pmax then ld.pmax = n end
+  if n >= DEFAULTS.maxPacketsPerTick then ld.full = ld.full + 1 end
   -- 4: state out.
   local cur = collectState(now)
   state.lastState = cur
@@ -1254,6 +1268,15 @@ local function tick(now)
     for nonce, t in pairs(state.nonces) do if now - t > DEFAULTS.nonceMs / 1000 then state.nonces[nonce] = nil end end
     for ip, t in pairs(state.errReplies) do if now - t > 5 then state.errReplies[ip] = nil end end
   end
+  -- KB-24: how long this tick took (wall clock, ms), for the heartbeat's load report.
+  local okT, t1 = pcall(socket.gettime)
+  if okT and type(t1) == "number" then
+    local ms = (t1 - now) * 1000
+    if ms < 0 then ms = 0 end
+    if ms > ld.tmax then ld.tmax = ms end
+    ld.tsum = ld.tsum + ms
+  end
+  ld.n = ld.n + 1
 end
 state._tick = tick
 

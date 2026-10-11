@@ -109,6 +109,22 @@ pub struct KeyReport {
     pub unsupported: Vec<String>,
 }
 
+/// KB-24: the plugin loop's load over one heartbeat window (plugin 0.10.0): the longest and the mean tick in
+/// milliseconds, the most datagrams one tick processed, the ticks that exhausted the per-tick budget, ticks.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq)]
+pub struct PluginLoad {
+    #[serde(default)]
+    pub tmax: f64,
+    #[serde(default)]
+    pub tavg: f64,
+    #[serde(default)]
+    pub pmax: u64,
+    #[serde(default)]
+    pub full: u64,
+    #[serde(default)]
+    pub n: u64,
+}
+
 /// Packets the plugin sends.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
@@ -183,6 +199,9 @@ pub enum FromPlugin {
         reconciled: Option<u32>,
         #[serde(default, rename = "gen")]
         generation: Option<String>,
+        /// KB-24: the plugin loop's load since its previous heartbeat reply.
+        #[serde(default)]
+        load: Option<PluginLoad>,
     },
     State {
         sid: String,

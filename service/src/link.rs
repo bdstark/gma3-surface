@@ -4,7 +4,7 @@
 //! and sends what `take_outgoing()` returns.
 
 use crate::wire::{self, MAX_FROM_PLUGIN};
-use crate::protocol::{CtlTarget, FromPlugin, KeyReport, ToPlugin, PROTOCOL_VERSION};
+use crate::protocol::{CtlTarget, FromPlugin, KeyReport, PluginLoad, ToPlugin, PROTOCOL_VERSION};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -241,6 +241,14 @@ pub struct ConsoleView<'a> {
     pub items: Option<&'a BTreeMap<String, Value>>,
 }
 
+/// KB-24: a feedback probe: the state item watched, its value when the probe opened, and when.
+#[derive(Debug, Clone)]
+struct FeedbackProbe {
+    item: String,
+    before: Option<Value>,
+    at: f64,
+}
+
 /// One refused event, for the log.
 #[derive(Debug, Clone)]
 pub struct Refusal {
@@ -269,6 +277,17 @@ pub struct Link {
     /// Ack round trips in milliseconds, and press-to-effect samples from the plugin's bench mode.
     pub rtt_ms: Vec<f64>,
     pub effect_ms: Vec<i64>,
+    /// KB-24 measurement samples: ack round trips split by kind (key events; ctl boundaries: touches and
+    /// buttons; motion is never acknowledged), the time queued motion waited before it was sent, the time
+    /// from a probed key event to the console state item changing (`probe_change`), probes that never saw
+    /// a change, and the plugin loop's load reports (heartbeat replies, plugin 0.10.0).
+    pub rtt_key_ms: Vec<f64>,
+    pub rtt_ctl_ms: Vec<f64>,
+    pub motion_queue_ms: Vec<f64>,
+    pub feedback_ms: Vec<f64>,
+    pub feedback_missed: u64,
+    feedback_probe: Option<FeedbackProbe>,
+    pub plugin_load: Vec<PluginLoad>,
     pub refusals: Vec<Refusal>,
     pub log: Vec<String>,
     /// KB-18: per-device event sequence (next value), gestures per control, queued motion.
@@ -308,6 +327,13 @@ impl Link {
             unsynced: Vec::new(),
             rtt_ms: Vec::new(),
             effect_ms: Vec::new(),
+            rtt_key_ms: Vec::new(),
+            rtt_ctl_ms: Vec::new(),
+            motion_queue_ms: Vec::new(),
+            feedback_ms: Vec::new(),
+            feedback_missed: 0,
+            feedback_probe: None,
+            plugin_load: Vec::new(),
             refusals: Vec::new(),
             log: Vec::new(),
             es_next: BTreeMap::new(),
@@ -319,6 +345,34 @@ impl Link {
             bind_sent: false,
             last_br: None,
             binding_changed: false,
+        }
+    }
+
+    /// KB-24: watches a console state item from now on; the first state message (full or delta) in which its
+    /// value differs from the value at this moment records the elapsed time in `feedback_ms`. One probe at a
+    /// time: opening a new one while the previous never saw a change counts that one as missed.
+    pub fn probe_change(&mut self, item: &str, now: f64) {
+        if self.feedback_probe.is_some() {
+            self.feedback_missed += 1;
+        }
+        let before = if self.console.full_seen { self.console.items.get(item).cloned() } else { None };
+        self.feedback_probe = Some(FeedbackProbe { item: item.to_string(), before, at: now });
+    }
+
+    /// KB-24: the probe still open, if any (its age in seconds).
+    pub fn feedback_probe_age(&self, now: f64) -> Option<f64> {
+        self.feedback_probe.as_ref().map(|p| now - p.at)
+    }
+
+    fn check_feedback_probe(&mut self, now: f64) {
+        let Some(p) = &self.feedback_probe else { return };
+        if !self.console.full_seen {
+            return;
+        }
+        let cur = self.console.items.get(&p.item).cloned();
+        if cur != p.before {
+            self.feedback_ms.push((now - p.at) * 1000.0);
+            self.feedback_probe = None;
         }
     }
 
@@ -769,6 +823,7 @@ impl Link {
         let fine = if m.fine { Some(1) } else { None };
         let tk = if m.takeover && m.v.is_some() { Some(1) } else { None };
         self.send_session(|sid, seq| serde_json::to_string(&ToPlugin::Ctl { sid, seq, ev, k, dev: &m.dev, c: &m.c, es, cg: Some(m.cg), gs: Some(m.gs), tgt: m.tgt, dx, v, d: None, fine, tk, br: m.br }).expect("ctl serialises"));
+        self.motion_queue_ms.push((now - m.first_at).max(0.0) * 1000.0);
         self.last_flush.insert((m.dev.clone(), m.c.clone()), now);
     }
 
@@ -994,7 +1049,13 @@ impl Link {
                     let p = self.pending.remove(i);
                     was_ctl = matches!(p.kind, PendingKind::Ctl(_));
                     was_bind = matches!(p.kind, PendingKind::Bind(_));
-                    self.rtt_ms.push((now - p.first_sent) * 1000.0);
+                    let rtt = (now - p.first_sent) * 1000.0;
+                    self.rtt_ms.push(rtt);
+                    match p.kind {
+                        PendingKind::Key { .. } => self.rtt_key_ms.push(rtt),
+                        PendingKind::Ctl(_) => self.rtt_ctl_ms.push(rtt),
+                        PendingKind::Bind(_) => {}
+                    }
                 }
                 if was_bind {
                     if ok == 1 {
@@ -1037,9 +1098,12 @@ impl Link {
                     }
                 }
             }
-            FromPlugin::Hb { sid, seq, held, unsynced, resynced, reconciled, .. } => {
+            FromPlugin::Hb { sid, seq, held, unsynced, resynced, reconciled, load, .. } => {
                 if !self.admit(&sid, seq, now) {
                     return;
+                }
+                if let Some(l) = load {
+                    self.plugin_load.push(l);
                 }
                 if resynced == Some(1) {
                     self.note("session revived by the plugin after a lease expiry; its holds were released, nothing re-pressed".into());
@@ -1070,6 +1134,7 @@ impl Link {
                     self.stats.deltas_ignored += 1;
                     self.console.full_seen = false;
                 }
+                self.check_feedback_probe(now);
             }
             FromPlugin::Context { sid, seq, generation: pgen, epoch, known, cg, rest } => {
                 if !self.admit(&sid, seq, now) {
@@ -1546,6 +1611,89 @@ mod tests {
         let c3: Vec<Value> = plugin.decode(link.take_outgoing());
         let c3 = ctl_packets(&c3);
         assert_ne!(c3[0]["gs"], c[0]["gs"]);
+    }
+
+    // ---- KB-24: continuous-control traffic never delays key releases or boundaries, and the harness samples ----
+
+    #[test]
+    fn a_key_release_and_a_boundary_go_out_at_once_while_motion_saturates_the_per_tick_budget() {
+        let (mut link, mut plugin) = pair(40.0);
+        link.receive(&plugin.context(1, 1, Some(1), json!({})), 40.0);
+        // 40 controls each with queued motion: more than ctl_per_tick (16) can go out per tick.
+        let names: Vec<String> = (0..40).map(|i| format!("Ctl{i}")).collect();
+        for (i, n) in names.iter().enumerate() {
+            link.control_event("mtouch", n, slot((i % 4 + 1) as u8), CtlKind::Rel { dx: 1, fine: false }, 40.0);
+        }
+        link.key_event("Record", true, 40.0);
+        link.tick(40.0);
+        let out = plugin.decode(link.take_outgoing());
+        assert_eq!(ctl_packets(&out).iter().filter(|p| p["k"] == "rel").count(), 16, "the motion budget holds");
+        assert_eq!(out.iter().filter(|p| p["t"] == "key").count(), 1, "the key press is not budgeted behind motion");
+        // Still 24 queued. The release of the key and a strip touch boundary are sent immediately, before the tick,
+        // in the order they happened; the touch flushes only its own control's motion.
+        assert_eq!(link.queued_motion(), 24);
+        link.key_event("Record", false, 40.001);
+        link.control_event("mtouch", "Ctl39", slot(4), CtlKind::Touch { down: true }, 40.001);
+        let out = plugin.decode(link.take_outgoing());
+        let kinds: Vec<String> = out.iter().map(|p| format!("{}:{}", p["t"].as_str().unwrap_or("?"), p.get("k").map(|k| k.to_string()).unwrap_or_default())).collect();
+        assert_eq!(kinds, vec!["key:\"Record\"".to_string(), "ctl:\"rel\"".to_string(), "ctl:\"touch\"".to_string()], "{kinds:?}");
+        assert_eq!(out[0]["d"], 0);
+        assert_eq!(out[1]["c"], "Ctl39", "only the touched control's queued motion is flushed before its boundary");
+        assert_eq!(link.queued_motion(), 23);
+        // The remaining motion drains at the budget on the following ticks, oldest first, none aged within 250 ms.
+        link.tick(40.006);
+        assert_eq!(ctl_packets(&plugin.decode(link.take_outgoing())).len(), 16);
+        link.tick(40.012);
+        assert_eq!(ctl_packets(&plugin.decode(link.take_outgoing())).len(), 7);
+        assert_eq!(link.stats.ctl_aged, 0);
+        assert_eq!(link.queued_motion(), 0);
+        // The harness's samples: every sent motion packet recorded how long it waited.
+        assert_eq!(link.motion_queue_ms.len(), 16 + 1 + 16 + 7);
+        assert!(link.motion_queue_ms.iter().all(|m| *m >= 0.0 && *m < 13.0));
+    }
+
+    #[test]
+    fn measurement_samples_are_split_by_kind_and_a_feedback_probe_times_the_state_change() {
+        let (mut link, mut plugin) = pair(50.0);
+        link.receive(&plugin.context(1, 1, Some(1), json!({})), 50.0);
+        let full = plugin.frame(json!({"t":"state","gen":plugin.generation,"epoch":1,"full":1,"s":{"pending":"none","highlight":0}}));
+        link.receive(&full, 50.0);
+        link.key_event("Record", true, 50.0);
+        link.control_event("nxk", "Rotary1", slot(1), CtlKind::Btn { down: true }, 50.0);
+        let out = plugin.decode(link.take_outgoing());
+        let key_ev = out.iter().find(|p| p["t"] == "key").unwrap()["ev"].as_u64().unwrap();
+        let btn_ev = out.iter().find(|p| p["t"] == "ctl").unwrap()["ev"].as_u64().unwrap();
+        link.probe_change("pending", 50.0);
+        let a = plugin.ack(key_ev, true);
+        link.receive(&a, 50.004);
+        let a = plugin.ack(btn_ev, true);
+        link.receive(&a, 50.010);
+        assert_eq!(link.rtt_key_ms.len(), 1);
+        assert!((link.rtt_key_ms[0] - 4.0).abs() < 0.01);
+        assert_eq!(link.rtt_ctl_ms.len(), 1);
+        assert!((link.rtt_ctl_ms[0] - 10.0).abs() < 0.01);
+        assert_eq!(link.rtt_ms.len(), 2, "the combined series is kept");
+        // A delta that leaves the probed item alone is no sample; the one that changes it is.
+        let d = plugin.frame(json!({"t":"state","gen":plugin.generation,"epoch":1,"full":0,"s":{"highlight":1}}));
+        link.receive(&d, 50.020);
+        assert!(link.feedback_ms.is_empty());
+        assert!(link.feedback_probe_age(50.020).is_some());
+        let d = plugin.frame(json!({"t":"state","gen":plugin.generation,"epoch":1,"full":0,"s":{"pending":"store"}}));
+        link.receive(&d, 50.030);
+        assert_eq!(link.feedback_ms.len(), 1);
+        assert!((link.feedback_ms[0] - 30.0).abs() < 0.01);
+        assert!(link.feedback_probe_age(50.03).is_none());
+        // A probe that never saw a change is counted missed when the next one opens.
+        link.probe_change("pending", 51.0);
+        link.probe_change("pending", 52.0);
+        assert_eq!(link.feedback_missed, 1);
+        // The plugin's load report rides on the heartbeat reply (plugin 0.10.0); an older plugin sends none.
+        let hb = plugin.frame(json!({"t":"hb","held":[],"unsynced":[],"load":{"tmax":1.25,"tavg":0.2,"pmax":3,"full":0,"n":60}}));
+        link.receive(&hb, 52.1);
+        let hb_old = plugin.frame(json!({"t":"hb","held":[],"unsynced":[]}));
+        link.receive(&hb_old, 52.2);
+        assert_eq!(link.plugin_load.len(), 1);
+        assert_eq!(link.plugin_load[0], crate::protocol::PluginLoad { tmax: 1.25, tavg: 0.2, pmax: 3, full: 0, n: 60 });
     }
 
     #[test]

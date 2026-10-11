@@ -15,6 +15,8 @@ When upgrading from protocol 1, update both components and remove key/network op
 
 Protocol and design: [docs/surface-protocol.md](docs/surface-protocol.md).
 Setup, operation and recovery: [docs/operator-guide.md](docs/operator-guide.md).
+Default layouts of the NX-K, M-Touch and M-Play: [docs/device-profiles.md](docs/device-profiles.md);
+the automated-versus-live qualification matrix and thresholds: [docs/qualification-matrix.md](docs/qualification-matrix.md).
 What is qualified and what is not: [docs/deployments.md](docs/deployments.md)
 (macOS beta scope; evidence in [docs/probes](docs/probes) and
 [docs/kb-08-acceptance.md](docs/kb-08-acceptance.md)).

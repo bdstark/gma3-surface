@@ -45,7 +45,7 @@ pub struct Step {
     pub action: Action,
 }
 
-fn key_name(s: &str) -> Result<&'static str> {
+pub fn key_name(s: &str) -> Result<&'static str> {
     nxk::buttons().map(|(n, _)| n).find(|n| n.eq_ignore_ascii_case(s)).ok_or_else(|| anyhow!("unknown NX-K key '{s}'"))
 }
 
