@@ -182,7 +182,7 @@ plugin  → service  welcome { t:"welcome", v:2, sid, nonce, gen, lease, hb, key
 
 - The service sends `hb { t:"hb", sid, seq, held:[...] }` every 250 ms. The
   plugin answers `hb { t:"hb", sid, seq, held:[plugin-held], unsynced:[...] }`;
-  since KB-24 (plugin 0.10.0) the reply also carries `load { tmax, tavg, pmax, full, n }`:
+  since KB-24 (plugin 0.11.0) the reply also carries `load { tmax, tavg, pmax, full, n }`:
   the plugin loop's longest and mean tick in ms, the most datagrams one tick took,
   the ticks that exhausted the 32-per-tick budget and the ticks counted, all since
   the previous reply (to any session; the tick carrying the heartbeat is not in it

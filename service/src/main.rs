@@ -134,7 +134,7 @@ enum Cmd {
         /// Key taps per second ('5'; every tenth tap is a Clear).
         #[arg(long, default_value_t = 4.0)]
         key_rate: f64,
-        /// Detents per second on each of rotaries 1 and 2 (one detent per report).
+        /// Detents per second on each of rotaries 2 and 3 (one detent per report; slot 1 is the strip's).
         #[arg(long, default_value_t = 50.0)]
         motion_rate: f64,
         /// Feedback probes per second: a tap of --probe-key, each followed by a Clear.

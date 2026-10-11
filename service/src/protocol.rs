@@ -109,7 +109,7 @@ pub struct KeyReport {
     pub unsupported: Vec<String>,
 }
 
-/// KB-24: the plugin loop's load over one heartbeat window (plugin 0.10.0): the longest and the mean tick in
+/// KB-24: the plugin loop's load over one heartbeat window (plugin 0.11.0): the longest and the mean tick in
 /// milliseconds, the most datagrams one tick processed, the ticks that exhausted the per-tick budget, ticks.
 #[derive(Debug, Deserialize, Default, Clone, PartialEq)]
 pub struct PluginLoad {

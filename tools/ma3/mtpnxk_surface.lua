@@ -83,7 +83,7 @@ local json   = require("json")
 -- KB-24: the heartbeat reply carries the plugin loop's load since the previous reply (`load`: the longest and the
 -- mean tick in ms, the most datagrams one tick took, how many ticks hit the per-tick budget, ticks): the
 -- measurement harness publishes it next to the service-side latencies. Nothing else changed.
-local VERSION   = "0.10.0"
+local VERSION   = "0.11.0"
 -- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
 local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
 -- Review (PR #6, round 2): the watch list budget covers every supported configuration at once: the ordinary state

@@ -1,6 +1,6 @@
 //! KB-24: the measurement harness (`mtpnxk measure`). A realistic simultaneous workload is played through the
 //! simulated surfaces and the real link against the real plugin: NX-K key taps and a feedback probe (a key whose
-//! press must change a console state item), two rotaries turning, an M-Touch parameter strip dragged, a playback
+//! press must change a console state item), two rotaries (2 and 3) turning, an M-Touch parameter strip (slot 1) dragged, a playback
 //! fader moved and a playback button tapped, all at once, for a number of seconds. The report publishes:
 //!
 //! - **input latency**: ack round trips of key events and of ctl boundaries (touches, buttons), and how long
@@ -11,7 +11,7 @@
 //!   stale and overflowed motion, loss the plugin reported, refusals by code;
 //! - **ordering**: `out-of-order` refusals (the plugin saw a later per-device sequence first) and superseded
 //!   presses, both of which must stay at zero;
-//! - **plugin loop**: the heartbeat's load report (plugin 0.10.0): the longest tick, the most datagrams one tick
+//! - **plugin loop**: the heartbeat's load report (plugin 0.11.0): the longest tick, the most datagrams one tick
 //!   took and the ticks that exhausted the per-tick budget.
 //!
 //! Every figure is judged against the KB-24 thresholds below (loopback host, see docs/qualification-matrix.md);
@@ -51,11 +51,17 @@ pub fn workload(w: &Workload) -> String {
     }
     for t in spread(w.probe_rate, 40) {
         steps.push((t, format!("{}:tap", w.probe_key)));
-        steps.push((t + 125, "Clear:tap".into()));
+        // Record leaves "Store" on the command line: a Clear 400 ms later removes it (long enough for the console's
+        // state read-back, about 170 ms on onPC; Clear also clears the selection and programmer, which refuses the
+        // motion afterwards). A toggling probe (HighLight) needs none, and keeps the selection for the motion part.
+        if w.probe_key == "Record" {
+            steps.push((t + 400, "Clear:tap".into()));
+        }
     }
+    // Rotaries 2 and 3: slot 1 is the strip's (a touched slot refuses another control's motion as `conflict`).
     for t in spread(w.motion_rate, 0) {
-        steps.push((t, "rot1:+1".into()));
-        steps.push((t + 3, "rot2:-1".into()));
+        steps.push((t, "rot2:+1".into()));
+        steps.push((t + 3, "rot3:-1".into()));
     }
     if w.strip {
         steps.push((5, "strip1:t64".into()));
@@ -331,7 +337,7 @@ pub fn report(link: &link::Link, strips: &strips::Strips, banks: &banks::Banks, 
         ("paired".into(), setup.paired.to_string()),
         ("context known at start".into(), setup.context_at_start.to_string()),
         ("warm-up".into(), format!("{:.2} s", setup.warmup_s)),
-        ("workload".into(), format!("{:.0} s: keys {}/s, probe {} ({}) {}/s, rotaries 1+2 at {}/s each, strip {}, playback {}", setup.seconds, setup.key_rate, setup.probe_key, setup.probe_item, setup.probe_rate, setup.motion_rate, if setup.strip { "on" } else { "off" }, if setup.playback { "on" } else { "off" })),
+        ("workload".into(), format!("{:.0} s: keys {}/s, probe {} ({}) {}/s, rotaries 2+3 at {}/s each, strip {}, playback {}", setup.seconds, setup.key_rate, setup.probe_key, setup.probe_item, setup.probe_rate, setup.motion_rate, if setup.strip { "on" } else { "off" }, if setup.playback { "on" } else { "off" })),
     ];
     Report {
         setup: setup_rows,
@@ -368,7 +374,7 @@ impl Report {
         }
         match &self.load {
             Some((tmax, tavg, pmax, full, n)) => out.push_str(&format!("plugin loop: ticks={n} tick max={tmax:.2} ms mean={tavg:.3} ms datagrams/tick max={pmax} ticks at budget={full}\n")),
-            None => out.push_str("plugin loop: no load report (plugin older than 0.10.0, or no heartbeat reply)\n"),
+            None => out.push_str("plugin loop: no load report (plugin older than 0.11.0, or no heartbeat reply)\n"),
         }
         let counters: Vec<String> = self.counters.iter().map(|(k, v)| format!("{k}={v}")).collect();
         out.push_str(&format!("counters: {}\n", counters.join(" ")));
@@ -415,13 +421,14 @@ mod tests {
         let script = workload(&w);
         let steps = crate::sim::parse_script(&script).expect("the generated script parses");
         let last = steps.last().unwrap().at_ms;
-        assert!(last < CONTENT_MS && last >= CONTENT_MS - 40, "content ends just before {CONTENT_MS} ms: {last}");
+        // The last step is the strip lift (CONTENT_MS - 10) or the release of a tap started just before it.
+        assert!(last >= CONTENT_MS - 40 && last < CONTENT_MS + 100, "content ends around {CONTENT_MS} ms: {last}");
         let count = |needle: &str| script.split(',').filter(|s| s.starts_with(needle)).count();
         assert_eq!(count("5:tap"), 20, "4 taps/s over 5 s");
         assert_eq!(count("Record:tap"), 10);
         assert_eq!(count("Clear:tap"), 10, "each probe is cleared");
-        assert_eq!(count("rot1:+1"), 250, "50 detents/s over 5 s");
-        assert_eq!(count("rot2:-1"), 250);
+        assert_eq!(count("rot2:+1"), 250, "50 detents/s over 5 s");
+        assert_eq!(count("rot3:-1"), 250);
         assert_eq!(count("strip1:t"), 1);
         assert_eq!(count("strip1:lift"), 1);
         assert_eq!(count("pb1:t"), 1);
@@ -440,7 +447,11 @@ mod tests {
         let w = Workload { key_rate: 1.0, motion_rate: 10.0, probe_rate: 0.0, probe_key: "Record", strip: false, playback: false };
         let script = workload(&w);
         assert!(!script.contains("strip1") && !script.contains("pb1") && !script.contains("pfa1") && !script.contains("Record"));
-        assert_eq!(script.split(',').filter(|s| s.starts_with("rot1")).count(), 50);
+        assert_eq!(script.split(',').filter(|s| s.starts_with("rot2:")).count(), 50);
+        let w = Workload { key_rate: 0.0, motion_rate: 0.0, probe_rate: 2.0, probe_key: "HighLight", strip: false, playback: false };
+        let script = workload(&w);
+        assert_eq!(script.split(',').filter(|s| s.starts_with("HighLight:tap")).count(), 10);
+        assert!(!script.contains("Clear"), "a toggling probe is not followed by Clear");
     }
 
     #[test]

@@ -280,7 +280,7 @@ pub struct Link {
     /// KB-24 measurement samples: ack round trips split by kind (key events; ctl boundaries: touches and
     /// buttons; motion is never acknowledged), the time queued motion waited before it was sent, the time
     /// from a probed key event to the console state item changing (`probe_change`), probes that never saw
-    /// a change, and the plugin loop's load reports (heartbeat replies, plugin 0.10.0).
+    /// a change, and the plugin loop's load reports (heartbeat replies, plugin 0.11.0).
     pub rtt_key_ms: Vec<f64>,
     pub rtt_ctl_ms: Vec<f64>,
     pub motion_queue_ms: Vec<f64>,
@@ -1687,7 +1687,7 @@ mod tests {
         link.probe_change("pending", 51.0);
         link.probe_change("pending", 52.0);
         assert_eq!(link.feedback_missed, 1);
-        // The plugin's load report rides on the heartbeat reply (plugin 0.10.0); an older plugin sends none.
+        // The plugin's load report rides on the heartbeat reply (plugin 0.11.0); an older plugin sends none.
         let hb = plugin.frame(json!({"t":"hb","held":[],"unsynced":[],"load":{"tmax":1.25,"tavg":0.2,"pmax":3,"full":0,"n":60}}));
         link.receive(&hb, 52.1);
         let hb_old = plugin.frame(json!({"t":"hb","held":[],"unsynced":[]}));

@@ -768,29 +768,33 @@ dragged parameter strip, a moved playback fader, an executor key) with a report 
 queueing, probe-to-state feedback latency, press-to-effect (plugin `bench`), loss/ordering counters, the plugin
 loop's load, and a PASS/FAIL/n.a. verdict per threshold (`--json` for the record; exit 2 on a failure). To carry
 it: the link records `rtt_key_ms` / `rtt_ctl_ms` / `motion_queue_ms` / `feedback_ms` (`probe_change`), and the
-plugin (0.10.0) answers every heartbeat with `load { tmax, tavg, pmax, full, n }`, its loop's longest and mean
+plugin (0.11.0) answers every heartbeat with `load { tmax, tavg, pmax, full, n }`, its loop's longest and mean
 tick, the most datagrams one tick took and the ticks that hit the 32-per-tick budget since the previous reply
-([docs/surface-protocol.md](docs/surface-protocol.md); protocol 1, optional field).
+([docs/surface-protocol.md](docs/surface-protocol.md); protocol 2, optional field; 0.10.0 is the keyless localhost-only transport).
 
 **Continuous control versus key releases (done):** `link.rs` proves that key events and boundaries are sent at
 once while motion saturates the 16-per-tick budget across 40 controls (only the touched control's motion is
 flushed before its boundary; the rest drains in order, nothing aged); the Lua suite proves that a release behind
 31 ctl packets applies on the same plugin tick, that the per-session 400/s limit drops a ctl burst's excess and
-that the key path is admitted afterwards. `cargo test` 97, `lua tools/ma3/test/surface_plugin_test.lua` 247,
+that the key path is admitted afterwards. `cargo test` 95, `lua tools/ma3/test/surface_plugin_test.lua` 243,
 `sh tools/ma3/test/e2e.sh` passed.
 
-**Measured so far:** [docs/probes/kb-24-measure-macos.md](docs/probes/kb-24-measure-macos.md), run 1 against the
-stock-Lua stub (15 s): key ack p95 20.3 ms, boundary ack p95 18.8 ms, motion queue p95 0.0 ms (worst 0.6),
-feedback p95 122 ms with no probe missed, 0 lost / superseded / retransmitted / out-of-order, plugin loop never
-near its budget (7 datagrams per tick at most). Two checks fail as stub artefacts: press-to-effect (the Python
-bridge's frame cadence) and **plugin-reported ctl loss**, a finding: the control module does not commit a motion
-event refused `target-unavailable` to the device's sequence, so the next admitted event reports a gap. Whether it
-shows on onPC decides whether it is fixed upstream (the KB-24 rule: shared-module defects only when qualification
-identifies them).
+**Measured (2026-10-10):** [docs/probes/kb-24-measure-macos.md](docs/probes/kb-24-measure-macos.md). Run 1 against
+the stock-Lua stub passes every service-side check. Runs A–E against onPC 2.5.1 (plugin 0.11.0 reloaded by Macro
+150, `input=keyboard control=console force bench`, fixtures 401+402 on encoder bank 4.1, playback left out) fail the
+proposed thresholds and identify three defects: (1) the plugin loop costs 13 ms per tick idle (max 167 ms) and
+59 ms with motion and keys, so key acks sit at 40–46 ms median; (2) the control queue overflows (`queue-full`, 64
+single-detent intents, 4 applied per tick) at 40 detents/s plus a strip; (3) at 100 detents/s plus a strip the plugin
+saturates (ticks 180–300 ms, 115–135 at the datagram budget) and **key taps are lost** (superseded 101–234, lost
+103–220, retransmits 10–22 %): continuous control does regress key releases there. Admitted motion alone is clean
+(run C2: 2094 packets, nothing refused, lost or retransmitted). The control module reports every refused event as
+loss (confirmed live, zero when everything is admitted). The service side stayed clean in every run (motion queued
+≤ 2 ms, no stale or aged motion). Recommended fixes (service motion interval and session ceiling, queue merging and
+refused-event commit in the control module) are in the record; none is made in this branch.
 
-**Pending (hardware pass, operator at the surfaces):** `measure` against onPC with the plugin 0.10.0 installed
-(the key file was not available to the session; procedure in the record), the physical NX-K rotaries, M-Touch and
+**Pending (hardware pass, operator at the surfaces):** `measure` against onPC with the plugin 0.11.0 installed
+(procedure in the record), the physical NX-K rotaries, M-Touch and
 M-Play through `run` for every KB-16 … KB-23 scenario, two connected surfaces, USB removal, plugin restart, context
 changes and stale feedback on the physical lights, the agreed thresholds, and the records
-`docs/probes/kb-24-hardware-*.md`. Versions: service crate 0.1.0, plugin 0.10.0, protocol 1, module set
+`docs/probes/kb-24-hardware-*.md`. Versions: service crate 0.1.0, plugin 0.11.0, protocol 2, module set
 unchanged (VENDOR.md hashes equal upstream `plugin/modules.lock.json` at `9535ded`).

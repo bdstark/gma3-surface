@@ -7,7 +7,7 @@ files, and nothing on the console is created or changed to make a layout work (t
 assignments, pages, encoder bank and user profile decide what the controls reach).
 
 The console side of every role is the vendored module set (hardkeys 0.10.0, feedback 0.6.0, control 0.5.0;
-[tools/ma3/VENDOR.md](../tools/ma3/VENDOR.md)) behind the `mtpnxk_surface` plugin (0.10.0). A key resolves only
+[tools/ma3/VENDOR.md](../tools/ma3/VENDOR.md)) behind the `mtpnxk_surface` plugin (0.11.0). A key resolves only
 when the user profile's shortcut table has it (the welcome's `unsupported` list names the rest); an executor
 control reaches only what the console has assigned at that number on the bound page; a parameter control reaches
 only the encoder slots the console shows for the current selection and encoder bank. None of this is grandMA3
