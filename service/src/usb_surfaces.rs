@@ -38,6 +38,17 @@ impl StripDevice for mtouch::usb::UsbSurface {
 const RETRY: Duration = Duration::from_secs(2);
 const DISCARD_AFTER_OPEN: Duration = Duration::from_millis(250);
 
+/// Hardware pass: an open attempt slower than this is logged with its duration (opens run on the loop thread, so a
+/// slow open freezes every surface and the link's heartbeats).
+const SLOW_OPEN: Duration = Duration::from_millis(100);
+
+fn note_slow_open(tag: &str, started: Instant, ok: bool) {
+    let took = started.elapsed();
+    if took >= SLOW_OPEN {
+        eprintln!("{tag}: open attempt took {} ms ({}); the loop was blocked meanwhile", took.as_millis(), if ok { "opened" } else { "not attached" });
+    }
+}
+
 /// Hardware-pass finding (2026-10-11): each device reports its own absence once per absence. Before, one flag was
 /// shared and set only by the NX-K, so the M-Play's failure line repeated every retry while the NX-K was attached,
 /// and the M-Touch never reported a failed open.
@@ -97,7 +108,10 @@ impl<K: Surface, M: StripDevice> Combined<K, M> {
         }
         self.next_mplay = Instant::now() + RETRY;
         let Some(open) = self.open_mplay.as_mut() else { return };
-        match open() {
+        let started = Instant::now();
+        let r = open();
+        note_slow_open("mplay", started, r.is_ok());
+        match r {
             Ok(m) => {
                 eprintln!("mplay: {} open; its playback buttons, faders and bank keys are live", m.name());
                 self.discard_mplay_until = Instant::now() + DISCARD_AFTER_OPEN;
@@ -117,7 +131,10 @@ impl<K: Surface, M: StripDevice> Combined<K, M> {
             return;
         }
         self.next_keypad = Instant::now() + RETRY;
-        match (self.open_keypad)() {
+        let started = Instant::now();
+        let r = (self.open_keypad)();
+        note_slow_open("nxk", started, r.is_ok());
+        match r {
             Ok(k) => {
                 eprintln!("nxk: {} open; its keys and rotaries are live", k.name());
                 self.keypad = Some(k);
@@ -138,7 +155,10 @@ impl<K: Surface, M: StripDevice> Combined<K, M> {
             return;
         }
         self.next_mtouch = Instant::now() + RETRY;
-        match open() {
+        let started = Instant::now();
+        let r = open();
+        note_slow_open("mtouch", started, r.is_ok());
+        match r {
             Ok(dev) => {
                 eprintln!("mtouch: {} open; its parameter strips, playback strips and bank keys are live", dev.name());
                 self.mtouch = Some(dev);
@@ -171,7 +191,7 @@ impl<K: Surface, M: StripDevice> Surface for Combined<K, M> {
         match k.poll() {
             Ok(ev) => Ok(ev),
             Err(e) => {
-                eprintln!("nxk: {e:#}; reopening in {} s; its held keys are released", RETRY.as_secs());
+                eprintln!("nxk: {e:#}; its held keys are released; retrying every {} s", RETRY.as_secs());
                 self.keypad = None;
                 self.keypad_lost = true;
                 self.next_keypad = Instant::now() + RETRY;

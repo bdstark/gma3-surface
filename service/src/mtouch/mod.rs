@@ -58,6 +58,14 @@ impl Model {
         }
     }
 
+    /// The prefix of every device-level log line (hardware pass: one prefix per device, as `nxk:` for the NX-K).
+    pub fn tag(self) -> &'static str {
+        match self {
+            Model::MTouch => "mtouch",
+            Model::MPlay => "mplay",
+        }
+    }
+
     pub fn pid(self) -> u16 {
         match self {
             Model::MTouch => PID_MTOUCH,

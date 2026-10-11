@@ -346,7 +346,7 @@ impl Loop {
         let strip_events = match surface.poll_strips() {
             Ok(ev) => ev,
             Err(e) => {
-                eprintln!("strips: {e:#}; ending every touch and releasing the M-Touch's playback buttons");
+                eprintln!("mtouch: {e:#}; its strip touches are ended and its playback buttons released; retrying every 2 s");
                 let outs = self.strips.disconnect();
                 self.emit_strip_outs(outs, now);
                 // Review (PR #6): the M-Touch's held playback buttons are released against their frozen targets too
@@ -394,7 +394,7 @@ impl Loop {
         let mplay_events = match surface.poll_mplay() {
             Ok(ev) => ev,
             Err(e) => {
-                eprintln!("mplay: {e:#}; releasing what it held");
+                eprintln!("mplay: {e:#}; its playback buttons and faders are released; retrying every 2 s");
                 let outs = self.banks.disconnect("mplay");
                 for o in outs {
                     self.emit_bank_out(Some(o), now);
@@ -585,7 +585,14 @@ impl Loop {
     fn run(&mut self, surface: &mut dyn Surface, until: impl Fn(&Loop, &dyn Surface) -> bool) -> Result<()> {
         eprintln!("mtpnxk {}: {} -> plugin at {}", env!("CARGO_PKG_VERSION"), surface.name(), self.sock.peer_addr().map(|a| a.to_string()).unwrap_or_default());
         loop {
-            if let Err(e) = self.step(surface) {
+            let step_started = Instant::now();
+            let stepped = self.step(surface);
+            // Hardware pass: a step longer than the link's heartbeat interval delays every surface and the lease.
+            let took = step_started.elapsed();
+            if took >= Duration::from_millis(250) {
+                eprintln!("loop: one step took {} ms; surfaces and heartbeats were blocked meanwhile", took.as_millis());
+            }
+            if let Err(e) = stepped {
                 // The keypad went away: end every strip touch before the caller reopens the devices.
                 let now = self.now();
                 let outs = self.strips.disconnect();
@@ -672,7 +679,7 @@ mod lights_binding_tests {
 
     #[test]
     fn a_bank_change_lights_nothing_from_the_previous_bindings_context_until_the_new_one_arrives() {
-        let cli = Cli::parse_from(["mtpnxk", "sim"]);
+        let cli = test_cli();
         let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
         lp.lights.cfg.min_interval = 0.0;
         let mut plugin = Plugin { seq: 0 };
@@ -723,7 +730,7 @@ mod lights_binding_tests {
         // Review of PR #8 (round 2): when the plugin refuses the new binding, the surface still maps the new
         // bank, so the previous binding's context must not light the controls (that would show the new bank's
         // controls with the old bank's feedback, or as empty).
-        let cli = Cli::parse_from(["mtpnxk", "sim"]);
+        let cli = test_cli();
         let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
         lp.lights.cfg.min_interval = 0.0;
         let mut plugin = Plugin { seq: 0 };
@@ -812,7 +819,7 @@ mod keypad_loss_tests {
     }
 
     fn test_loop() -> Loop {
-        let cli = Cli::parse_from(["mtpnxk", "sim"]);
+        let cli = test_cli();
         Loop::new(&cli).expect("a loop on an ephemeral socket")
     }
     fn strip1(value: u8, touch: bool) -> mtouch::Event {
@@ -906,6 +913,17 @@ fn percentiles(label: &str, samples: &[f64]) {
     s.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let p = |q: f64| s[((s.len() - 1) as f64 * q).round() as usize];
     println!("{label}: n={} median={:.1} p95={:.1} p99={:.1} worst={:.1} ms", s.len(), p(0.5), p(0.95), p(0.99), s[s.len() - 1]);
+}
+
+/// Hardware-pass finding (2026-10-11): unit tests that build the real loop used the default `--plugin`
+/// (127.0.0.1:9810), so `cargo test` sent hellos as `nxk-host` to a live plugin and replaced the running service's
+/// session ("replaced-by-hello"). Tests point at a local sink that nobody answers.
+#[cfg(test)]
+fn test_cli() -> Cli {
+    let sink = std::net::UdpSocket::bind("127.0.0.1:0").expect("binding a test sink");
+    let port = sink.local_addr().expect("sink address").port();
+    std::mem::forget(sink);
+    Cli::parse_from(["mtpnxk", "--plugin", &format!("127.0.0.1:{port}"), "--id", "mtpnxk-unit-test", "sim"])
 }
 
 fn main() -> Result<()> {
@@ -1084,9 +1102,10 @@ mod local_transport_tests {
         for args in [vec!["mtpnxk", "--key", "abc", "sim"], vec!["mtpnxk", "--key-file", "secret", "sim"], vec!["mtpnxk", "keygen"]] {
             assert!(Cli::try_parse_from(args).is_err());
         }
-        let cli = Cli::parse_from(["mtpnxk", "sim"]);
+        let cli = test_cli();
         let lp = Loop::new(&cli).unwrap();
         assert_eq!(lp.sock.local_addr().unwrap().ip(), std::net::IpAddr::V4(Ipv4Addr::LOCALHOST));
         assert_eq!(lp.sock.peer_addr().unwrap().ip(), std::net::IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_ne!(lp.sock.peer_addr().unwrap().port(), 9810, "tests never address the default plugin port");
     }
 }

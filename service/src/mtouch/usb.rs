@@ -55,7 +55,7 @@ impl UsbSurface {
                     }
                     let Some(c) = ep.wait_next_complete(Duration::from_millis(500)) else { continue };
                     if let Err(e) = c.status {
-                        eprintln!("{}: read failed: {e}; device gone?", model.name());
+                        eprintln!("{}: read failed: {e}; device gone?", model.tag());
                         break;
                     }
                     let data = &c.buffer[..c.actual_len.min(c.buffer.len())];
@@ -75,7 +75,7 @@ impl UsbSurface {
                     let request = out.request();
                     debug_assert!(!FORBIDDEN_REQUESTS.contains(&request), "vendor request {request:02x} is in the EZ-USB firmware range");
                     if FORBIDDEN_REQUESTS.contains(&request) {
-                        eprintln!("{}: refusing vendor request {request:02x} (EZ-USB firmware range)", model.name());
+                        eprintln!("{}: refusing vendor request {request:02x} (EZ-USB firmware range)", model.tag());
                         continue;
                     }
                     let r = out_if
@@ -85,7 +85,7 @@ impl UsbSurface {
                         )
                         .wait();
                     if let Err(e) = r {
-                        eprintln!("{}: write {request:02x} to {:04x} failed: {e}", model.name(), out.index());
+                        eprintln!("{}: write {request:02x} to {:04x} failed: {e}", model.tag(), out.index());
                     }
                 }
             })
