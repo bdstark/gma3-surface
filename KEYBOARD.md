@@ -600,8 +600,14 @@ executor's functions/level/activity, a button down applied as `Press Page 1.201`
 201's fader, refused empty by the stub console; the move waits for pickup; an M-Play pressure button is one down and
 one up, refused empty; the Go key without a profile is unmapped; the summary's fader counters).
 
-**Verified live in this repository:** pending (the `sim` path against onPC with `control=console`, record
-`docs/probes/kb-22-surface-macos-2.5.1.md`).
+**Verified live in this repository:** [docs/probes/kb-22-surface-macos-2.5.1.md](docs/probes/kb-22-surface-macos-2.5.1.md)
+(the plugin 0.8.0 on onPC with `control=console`, driven by the release service's `sim` with `--pb-rows 201,201,301`: a
+PFA tap and two Go-profile taps ran `Press`/`Unpress Page 1.201` and `1.195`; a fader below an unreachable level sent
+nothing; an M-Play pressure button was one down and one up and its fader picked up at the level and placed
+`FaderMaster Page 1.201 At 98.04`; a bank change rebound the touched fader and the lift went to the frozen executor; an
+external `FaderTemp ... At 30` while PB10 was held reset the pickup ("edited elsewhere") and no further position went out;
+a touch above 210's Temp level waited, crossing 0 picked up and `At 0`, `At 39.22`, `At 0` started and ended the Temp
+playback; no refusals, nothing unresolved).
 
 **Not verified live:** the physical M-Touch and M-Play through `run` (KB-24's hardware qualification), the bar display
 on the device, Rate/Speed/crossfade fader functions (unqualified on the console half), Windows/Linux hosts.
