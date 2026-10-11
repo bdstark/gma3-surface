@@ -63,9 +63,9 @@ over the MCP bridge. Second part of the hardware pass ([NX-K record](kb-24-hardw
 | 1 | colour-picker encoders unsupported | open feature: [work item](../work-item-colour-picker-encoders.md) with a handoff note |
 | 2 | misleading reason with the picker open | fixed: feedback 0.7.1 (GrandMA3MCP `1061735`) names the colour picker's encoders, a covering view (bank selector missing) or missing attribute encoders |
 | 3 | parameter bars dark at rest | open, no source found: the encoder bar's value is not readable from Lua on onPC 2.5.1. `GetDMXValue`/`GetDMXUniverse` return nil (DMX output not granted without output hardware); the encoder widgets carry no value (`SHOWVALUE=false`, hidden band faders at 0.0); the encoder bar's fixture-sheet grid returns no cell data; the API list has no output-value function. Defaults would match an idle stage but invent a value under a running playback, so nothing is shown rather than a guess |
-| 4 | bar lag while moving | fixed: local echo while touched (strips: value at the touch plus detents x one click, Percent readouts; playback faders: the fader position once picked up); the read-back takes over at the lift |
-| 5 | red flash on a bank change | fixed: a rebind in flight is dark for up to 1 s; only a rebind that does not resolve (a refused bind) shows the unavailable pattern |
-| 6 | page display `11` | changed to `page.bank` with the display's decimal point (`1.1`); the point segment (bit 7) is to be confirmed on the hardware |
+| 4 | bar lag while moving | fixed and re-tested: local echo while touched (strips: value at the touch plus detents x one click, Percent readouts; playback faders: the fader position once picked up). The first re-test snapped back to the older read-back at the lift; the bar now holds the echo until the read-back agrees within one LED or 1 s, and the operator confirmed it holds, then settles |
+| 5 | red flash on a bank change | fixed and re-tested: the first fix missed the plugin's interim "context unknown" after each bind; any missing context from a live, answering plugin is now a transition, dark for up to 2 s, and only an unresolved one (or a silent plugin) shows the unavailable pattern. The operator confirmed no flash |
+| 6 | page display `11` | fixed and re-tested: `page.bank` with the display's decimal point (`1.1`); the operator confirmed the point lights |
 | 7 | one log line per identical refusal | fixed: logged once, the repeats summarised when anything else is logged or every 2 s |
 
 Fixed during this pass (branch `fix/kb24-hardware-findings`): consistent device log prefixes and one "not attached"
@@ -74,3 +74,6 @@ plugin (they had replaced the running service's session twice).
 
 Not tested yet: unplugging the M-Touch with a strip touched and a playback key held, the dedicated Go/Pause keys
 (`--pb-go`, `--pb-pause`), the M-Play.
+
+Re-test note: switching the encoder bank (Dimmer ↔ Color) lights the four strip bars with the new slots' programmer
+values after the brief dark transition, as designed; attributes with nothing in the programmer stay dark (finding 3).
