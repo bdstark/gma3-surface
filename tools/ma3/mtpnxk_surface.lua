@@ -1335,6 +1335,14 @@ local function loadModules()
             local ok, busy = pcall(h.admission, h, t)
             return ok and busy or nil
           end
+          -- KB-22 review: a frozen playback-button release is applied only on a current observation of its executor;
+          -- when the bound window moved away from it (a bank change), the module asks for this live read.
+          deps.observe = function(pageNo, executor)
+            local f = fb()
+            if not f or type(f.read) ~= "function" then return nil end
+            local r = f:read("executorTarget", { executor = executor, page = pageNo }, now())
+            return (type(r) == "table" and r.available) and r.value or nil
+          end
           -- This plugin's binding (display= and execs=) is fixed for its run, so events carry no binding
           -- revision; the exemption is declared here, explicitly (the module requires the revision by default).
           return mod.new({ owner = pluginName, deps = deps, config = { defaultLeaseMs = DEFAULTS.leaseMs, maxWorkPerService = DEFAULTS.controlWorkPerTick, requireBindingRevision = false } }):init()

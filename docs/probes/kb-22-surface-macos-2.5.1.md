@@ -38,6 +38,16 @@ Also observed:
 - No refusal, loss or unresolved record in any run; both plugins were left running (bridge Plugin 1 `control=console`,
   surface Plugin 2 `input=fake control=console`), the macros that started them deleted.
 
+## Re-run after the PR #7 / #26 review round 1 (2026-10-10)
+
+Plugin 0.8.0 with control 0.5.0 from `3e0e7c4` reinstalled and restarted the same way; the service rebuilt with the
+revision gate and the new external-edit window:
+
+| Run | Script | Result | Verdict |
+| --- | --- | --- | --- |
+| R6 press right after a bank change | `pbank:up@1500,pfa1:tap@250,pbank:down@600` | `link: bind acknowledged: binding revision 3`, then `event 3 refused [target-unavailable] executor 211 is empty`; `stale=0`, no command | PASS: the tap 250 ms after the bank change reached the plugin against the new binding (bank 2's 211, empty), never `stale-binding` |
+| R5 two controls on one executor (`--pb-go 201`) | `pfa1:down@1500,go:down@400,go:up@400,pfa1:up@400` | `event 3 refused [conflict] execDefault#1/1.201.key|…|Flash is being operated by this session (button on mtouch/PFA1)`; plugin commands `Press Page 1.201`, `Unpress Page 1.201` only; Sequence 2 off afterwards | PASS: the alias never presses a held executor twice; one Press, one Unpress |
+
 Not verified: the physical M-Touch/M-Play through `run` (their pressure reports and bars: KB-24), Rate/Speed/crossfade
 functions (unqualified on the console half), an assignment changed while a fader was touched (the key-element case is in
 the MCP record and the harness).

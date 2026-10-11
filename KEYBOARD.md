@@ -600,6 +600,18 @@ executor's functions/level/activity, a button down applied as `Press Page 1.201`
 201's fader, refused empty by the stub console; the move waits for pickup; an M-Play pressure button is one down and
 one up, refused empty; the Go key without a profile is unmapped; the summary's fader counters).
 
+- **Review of PR #7 (round 1):** (6) after a bind ack the link adopts the revision but reports the generation as
+  **unknown** until a context of that revision arrives (`current_generation`): no down or motion combines the new `br`
+  with the old context's `cg` (a new binding can reuse the old generation number); releases still go out; the plugin's
+  context push after a bind keeps the gap to one tick. (7) The external-edit detection no longer restarts with every
+  position: each context is judged once against the positions in effect when the plugin could have read it (the last
+  1.2 s before its arrival and the one before that window); a match confirms our level, no match for longer than the
+  grace since the first unconfirmed position resets the pickup, so continuous reports can neither hide an edit nor
+  cause a false reset while the console follows with its refresh lag. The vendored control 0.5.0 from `3e0e7c4` adds the
+  console-side rules (a hold tracked until its release applied, queued downs revalidated, frozen releases on a current
+  observation in the same data pool through this plugin's `deps.observe`, same-session conflicts). `cargo test` 82
+  (two new), harness 235, e2e unchanged.
+
 **Verified live in this repository:** [docs/probes/kb-22-surface-macos-2.5.1.md](docs/probes/kb-22-surface-macos-2.5.1.md)
 (the plugin 0.8.0 on onPC with `control=console`, driven by the release service's `sim` with `--pb-rows 201,201,301`: a
 PFA tap and two Go-profile taps ran `Press`/`Unpress Page 1.201` and `1.195`; a fader below an unreachable level sent

@@ -329,6 +329,13 @@ struct FaderState {
     since: f64,
     last_sent_at: f64,
     last_sent_v: f64,
+    /// Review (PR #7): the positions sent recently (time, value), so a context's level is compared with what was in
+    /// effect when the plugin read it (its refresh lags up to a second), not only with the newest position.
+    sent: std::collections::VecDeque<(f64, f64)>,
+    /// When the oldest position not yet seen back in a context was sent; None once a context confirmed our level.
+    unconfirmed_since: Option<f64>,
+    /// The context already judged (its arrival time), so each one counts once.
+    judged_at: f64,
     /// What the bar last showed (None = cleared), so writes go out on change only.
     bar: Option<[u8; 9]>,
 }
@@ -577,6 +584,9 @@ impl Banks {
             st.picked_up = false;
             st.last_v = v;
             st.since = now;
+            st.sent.clear();
+            st.unconfirmed_since = None;
+            st.judged_at = f64::NEG_INFINITY;
             self.stats.fader_touches += 1;
             outs.push(Out::Fader { dev, control, target, kind: CtlKind::Touch { down: true } });
             return outs;
@@ -595,13 +605,25 @@ impl Banks {
             return outs;
         }
         let level = hint.filter(|h| h.target).and_then(|h| h.level);
-        // An external edit: a context newer than our last position (by more than one refresh) with the level elsewhere.
+        // An external edit (review of PR #7): each context is judged once against the positions that were in effect
+        // when the plugin could have read it (the last `grace` before its arrival, plus the one before that window).
+        // A match confirms our level; no match for longer than `grace` since the first unconfirmed position means
+        // the console is not following the strip: someone else moved it. Continuous reports never restart the clock.
         if st.picked_up {
             if let (Some(h), Some(l)) = (hint, level) {
-                if h.received_at > st.last_sent_at + grace && (l - st.last_sent_v).abs() > 2.0 * tol {
-                    st.picked_up = false;
-                    self.stats.pickup_resets += 1;
-                    self.log.push(format!("{dev}/{control}: the executor's level moved to {:.0}% while the strip was at {:.0}% (edited elsewhere); pick it up again", l * 100.0, st.last_sent_v * 100.0));
+                if h.received_at > st.judged_at {
+                    st.judged_at = h.received_at;
+                    let window_start = h.received_at - grace;
+                    let before = st.sent.iter().rev().find(|(t, _)| *t < window_start).map(|(_, v)| *v);
+                    let matches = st.sent.iter().filter(|(t, _)| *t >= window_start && *t <= h.received_at).map(|(_, v)| *v).chain(before).any(|v| (v - l).abs() <= 2.0 * tol);
+                    if matches {
+                        st.unconfirmed_since = None;
+                    } else if st.unconfirmed_since.map(|t| h.received_at > t + grace).unwrap_or(false) {
+                        st.picked_up = false;
+                        st.unconfirmed_since = None;
+                        self.stats.pickup_resets += 1;
+                        self.log.push(format!("{dev}/{control}: the executor's level moved to {:.0}% while the strip was at {:.0}% (edited elsewhere); pick it up again", l * 100.0, st.last_sent_v * 100.0));
+                    }
                 }
             }
         }
@@ -618,6 +640,13 @@ impl Banks {
         if st.picked_up {
             st.last_sent_at = now;
             st.last_sent_v = v;
+            st.sent.push_back((now, v));
+            while st.sent.len() > 64 || st.sent.front().map(|(t, _)| now - *t > 4.0 * grace).unwrap_or(false) {
+                st.sent.pop_front();
+            }
+            if st.unconfirmed_since.is_none() {
+                st.unconfirmed_since = Some(now);
+            }
             self.stats.positions += 1;
             outs.push(Out::Fader { dev, control, target, kind: CtlKind::Abs { v, takeover: false } });
             outs.extend(self.bar_out(section, strip, None));
@@ -1031,6 +1060,49 @@ mod tests {
         assert_eq!(b.stats.pickup_resets, 1);
         assert!(b.log.last().unwrap().contains("edited elsewhere"));
         assert_eq!(kinds(&b.fader(MTOUCH, 1, 20, true, Some(1), Some(&edit), 3.8)).len(), 1, "crossing 0.1 picks it up again");
+    }
+
+    /// Review (PR #7): continuous reports do not restart the detection window; a console that follows the strip
+    /// (with its refresh lag) is confirmed by the positions in effect when it was read.
+    #[test]
+    fn continuous_reports_neither_hide_an_external_edit_nor_cause_a_false_reset() {
+        let mut b = present(Banks::new(Config::default()));
+        let h0 = hint(0.0, 0.0);
+        b.fader(MTOUCH, 1, 0, true, Some(1), Some(&h0), 1.0);
+        assert_eq!(kinds(&b.fader(MTOUCH, 1, 10, true, Some(1), Some(&h0), 1.1)).len(), 1, "picked up at the level");
+        // The console follows with up to a second of lag: every 100 ms a report, every second a context showing the
+        // value from about 0.9 s before. No reset.
+        let mut t = 1.2;
+        let mut v = 10u8;
+        let mut hint_at = 1.0;
+        let mut lagging = h0.clone();
+        for _ in 0..40 {
+            if t - hint_at >= 1.0 {
+                hint_at = t;
+                let seen = (v as f64 - 9.0 * 2.0).max(0.0) / 255.0;  // the value of ~0.9 s ago
+                lagging = hint(seen, hint_at);
+            }
+            let o = b.fader(MTOUCH, 1, v, true, Some(1), Some(&lagging), t);
+            assert_eq!(kinds(&o).len(), 1, "t={t}: a following console never resets the pickup");
+            v = v.saturating_add(2);
+            t += 0.1;
+        }
+        assert_eq!(b.stats.pickup_resets, 0);
+        // Now the console stops following: contexts keep reporting 0.1 while the strip moves on at 100 ms.
+        let stuck = |at: f64| hint(0.1, at);
+        let mut reset_at = None;
+        let start = t;
+        for i in 0..40 {
+            let h = stuck(start + (i as f64 * 0.1).floor());  // a context per second, all saying 0.1
+            let o = b.fader(MTOUCH, 1, v, true, Some(1), Some(&h), t);
+            if kinds(&o).is_empty() && reset_at.is_none() {
+                reset_at = Some(t);
+            }
+            v = v.saturating_add(1);
+            t += 0.1;
+        }
+        assert_eq!(b.stats.pickup_resets, 1, "continuous reports did not keep the window open");
+        assert!(reset_at.map(|r| r - start <= 2.5).unwrap_or(false), "reset within a couple of refreshes: {reset_at:?}");
     }
 
     #[test]

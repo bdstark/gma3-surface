@@ -441,7 +441,17 @@ impl Link {
     }
 
     pub fn current_generation(&self, now: f64) -> Option<u64> {
-        self.context_view(now).and_then(|c| c.generation)
+        let ctx = self.context_view(now)?;
+        // Review (PR #7): a bind ack carries the new revision before the context does; until a context of THAT
+        // revision arrives the generation is unknown (a new binding may reuse the old generation number, so the
+        // old context's cg must not be combined with the new br). Releases need no generation and still go out.
+        let ctx_br = ctx.body.get("bind").and_then(|b| b.get("br")).and_then(|v| v.as_u64());
+        if let Some(acked) = self.last_br {
+            if ctx_br != Some(acked) {
+                return None;
+            }
+        }
+        ctx.generation
     }
 
     /// KB-21: the plugin's binding revision as the last context reported it (`bind.br`); motion and downs
@@ -1712,6 +1722,49 @@ mod tests {
         let out = plugin.decode(link.take_outgoing());
         assert!(out.iter().any(|v| v["t"] == "bind" && v["pg"] == json!(2)), "re-sent after the re-pairing");
         assert_eq!(link.stats.binds, 3);
+    }
+
+    /// Review (PR #7): a bind ack carries the new revision before the context does; until a context of that revision
+    /// arrives the generation is unknown, so no down or motion combines the new `br` with the old context's `cg`
+    /// (a new binding can reuse the old generation number). Releases still go out.
+    #[test]
+    fn after_a_bind_ack_events_wait_for_the_context_of_that_revision() {
+        let (mut link, mut plugin) = pair(20.0);
+        let ctx = |p: &mut FakePlugin, cg: u64, br: u64| p.frame(json!({"t":"context","gen":p.generation,"epoch":1,"known":1,"cg":cg,"enc":{},"slots":[],"ex":[{"n":201,"tgt":1,"fd":"Master","tok":"FaderMaster"}],"page":1,"pool":"Default","display":1,"bind":{"ex":[201],"br":br,"mode":"current"}}));
+        link.receive(&ctx(&mut plugin, 1, 1), 20.02);
+        assert_eq!(link.current_generation(20.03), Some(1));
+        let key = CtlTarget::Executor { ex: 201, el: "key", pg: None };
+        link.control_event("mtouch", "PFA1", key, CtlKind::Btn { down: true }, 20.05);
+        link.tick(20.06);
+        let out = plugin.decode(link.take_outgoing());
+        let down = out.iter().find(|v| v["t"] == "ctl" && v["k"] == "btn").unwrap();
+        assert_eq!((down["br"].as_u64(), down["cg"].as_u64()), (Some(1), Some(1)));
+        // Our bank change: the bind goes out and is acked with revision 2 before any context carries it.
+        link.set_binding(BindSpec { ex: vec![211], pg: None }, 20.1);
+        link.tick(20.1);
+        let out = plugin.decode(link.take_outgoing());
+        let ev = out.iter().find(|v| v["t"] == "bind").unwrap()["ev"].as_u64().unwrap();
+        link.receive(&plugin.ctl_ack(ev, true, json!({"br": 2})), 20.12);
+        assert_eq!(link.current_binding(20.13), Some(2), "the acked revision is current at once");
+        assert_eq!(link.current_generation(20.13), None, "but the generation is unknown until a context of revision 2 arrives");
+        assert!(link.take_binding_changed());
+        let unbound_before = link.stats.ctl_unbound;
+        link.control_event("mtouch", "PFA2", CtlTarget::Executor { ex: 211, el: "key", pg: None }, CtlKind::Btn { down: true }, 20.15);
+        link.control_event("mtouch", "PFA1", key, CtlKind::Btn { down: false }, 20.15);
+        link.tick(20.16);
+        let out = plugin.decode(link.take_outgoing());
+        assert!(out.iter().all(|v| !(v["t"] == "ctl" && v["d"] == json!(1))), "no down went out with br 2 and the old cg: {out:?}");
+        assert_eq!(link.stats.ctl_unbound, unbound_before + 1, "the down was dropped as unbound (counted)");
+        assert!(out.iter().any(|v| v["t"] == "ctl" && v["k"] == "btn" && v["d"] == json!(0)), "the release still goes out");
+        // The context of revision 2 arrives (the same generation number as before): events flow again, stamped br 2.
+        link.receive(&ctx(&mut plugin, 1, 2), 20.2);
+        assert_eq!(link.current_generation(20.21), Some(1));
+        assert!(!link.take_binding_changed(), "the revision was already reported from the ack");
+        link.control_event("mtouch", "PFA2", CtlTarget::Executor { ex: 211, el: "key", pg: None }, CtlKind::Btn { down: true }, 20.25);
+        link.tick(20.26);
+        let out = plugin.decode(link.take_outgoing());
+        let down = out.iter().find(|v| v["t"] == "ctl" && v["d"] == json!(1)).unwrap();
+        assert_eq!((down["br"].as_u64(), down["cg"].as_u64()), (Some(2), Some(1)));
     }
 
     #[test]
