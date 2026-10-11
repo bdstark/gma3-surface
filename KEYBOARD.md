@@ -1,5 +1,8 @@
 # KB-07, KB-08 and KB-15 to KB-23 in mtpnxk: the surface consumer and its qualification
 
+
+> Transport update: plugin 0.10.0 / protocol 2 is localhost-only and has no pairing key. Older key, MAC and LAN references below describe historical work, not current setup. See [operator guide](docs/operator-guide.md).
+
 Updated: 2026-10-10 (KB-23 surface half added, see the last section). The feature series KB-01 to KB-09 is defined and tracked in
 [bdstark/GrandMA3MCP `KEYBOARD.md`](https://github.com/bdstark/GrandMA3MCP/blob/main/KEYBOARD.md).
 KB-01 to KB-06 are complete there (macOS, onPC 2.5.1.0) and provide the reusable

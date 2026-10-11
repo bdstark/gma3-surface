@@ -1,5 +1,8 @@
 # KB-08 acceptance record
 
+
+> Transport update: plugin 0.10.0 / protocol 2 is localhost-only and has no pairing key. Older key, MAC and LAN references below describe historical work, not current setup. See [operator guide](operator-guide.md).
+
 Date: 2026-10-09. Closes KB-08 (documentation and qualification) for the
 **macOS beta scope** defined in [deployments.md](deployments.md). KB-08 changed
 documentation only; the Lua plugin, the vendored modules and the Rust service

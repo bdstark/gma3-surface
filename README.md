@@ -8,6 +8,11 @@ M-Play, which share the USB protocol) to **grandMA3 onPC**. Two parts:
 | Surface plugin (Lua) | [tools/ma3](tools/ma3) | Runs inside onPC. Receives key events over UDP, presses console keys through the vendored `gma3_mcp_hardkeys` module, reads console state through `gma3_mcp_feedback` and sends it back for LEDs. |
 | Surface service (Rust) | [service](service) | Cross-platform process that owns the USB device, speaks the surface protocol to the plugin, and renders console state onto the keypad's LEDs. |
 
+The service and onPC plugin run on the **same computer**. Both use IPv4 localhost;
+there is no pairing key to create or configure. Start `Plugin "mtpnxk_surface"`
+in onPC, then `mtpnxk run`. See the setup guide for installation and input modes.
+When upgrading from protocol 1, update both components and remove key/network options.
+
 Protocol and design: [docs/surface-protocol.md](docs/surface-protocol.md).
 Setup, operation and recovery: [docs/operator-guide.md](docs/operator-guide.md).
 What is qualified and what is not: [docs/deployments.md](docs/deployments.md)

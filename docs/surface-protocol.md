@@ -45,7 +45,7 @@ arrived for 1500 ms or when the plugin generation / epoch changed since the
 last full state (section 5).
 
 **Protocol versions.** `v` in `hello`/`welcome` is the surface-protocol
-version (1). `welcome.modules` carries the vendored module versions
+version (2). `welcome.modules` carries the vendored module versions
 (`gma3_mcp_hardkeys` 0.10.0, `gma3_mcp_feedback` 0.3.0, API 1) so the service can
 log what it is paired with. onPC 2.5.1.0 is the only console version the
 readers and routes are verified on (KB-01 to KB-06, macOS); the plugin
@@ -86,43 +86,35 @@ UDP, one JSON object per datagram: at most 512 bytes towards the plugin, at most
 `context` lists up to 96 bound executors; 1024 bytes before). Datagram layout:
 
 ```
-MTX1 <mac> <json>
+MTX2 <json>
 ```
 
-`MTX1` is the magic and version, `<mac>` is SipHash-2-4 of the `<json>`
-bytes under the first 16 bytes of the pairing key, as 16 lower-case hex
-characters, and `<json>` is the exact byte string that was authenticated. No
-canonicalisation is needed: the MAC covers the bytes as sent.
+`MTX2` identifies protocol 2. `<json>` is a UTF-8 JSON object; no MAC or shared
+key is present. Frames with the old `MTX1` prefix are rejected before JSON parsing.
+The hello/welcome `v` field is 2. Update the service and plugin together.
 
-Why SipHash and not HMAC-SHA256: the plugin computes the MAC in pure Lua
-inside onPC, where HMAC-SHA256 was measured at 20 ms per packet (2026-10-09,
-onPC 2.5.1 on macOS), enough to collapse the console frame rate at a few
-dozen packets per second. SipHash-2-4 is a keyed PRF with a 128-bit key and
-a 64-bit tag; forging a tag online is bounded by the per-address throttle
-below, and the key never leaves the two configured endpoints. Both
-implementations are checked against the SipHash paper's reference vector.
+The plugin binds only `127.0.0.1:9810` (the port remains configurable). The service
+binds an ephemeral port on `127.0.0.1` and connects only to `127.0.0.1:<port>` or
+`localhost:<port>` (mapped directly to IPv4 loopback). The plugin rejects other
+source addresses before parsing. The service's connected UDP socket accepts
+responses only from its configured local plugin endpoint.
 
-The plugin binds `127.0.0.1:9810` by default (the service on the same PC).
-`bind=0.0.0.0` (or an interface address) and an optional `allow=<ip>[,<ip>]`
-list open it to the LAN; without `allow`, any source that holds the key is
-accepted.
+### Local access
 
-### Authorization
+There is no application-level authentication, matching the MCP bridge's trust
+model: any process on the local machine can establish a session. Session ids,
+nonces, sequence numbers and leases provide lifecycle and replay handling, not
+user authentication. Sessions remain bound to their original source address and
+port; a service using a new socket must perform a new hello/welcome exchange.
 
-The pairing key is a 32-byte secret configured on both sides (`key=<64 hex>`
-at plugin start, `--key` / `--key-file` / `MTPNXK_KEY` for the service); the
-MAC uses its first 16 bytes, the rest is reserved. A
-packet whose MAC does not verify is dropped before it is parsed; nothing it
-contains is trusted, including its sender or session id. **Possession of the
-key is the authorization; a sender id is a label.** Per source address, after
-50 MAC failures in 10 s the plugin ignores that address for 10 s (bounded
-work under a flood). The plugin without a configured key refuses to start.
+`key=`, `bind=`, `allow=`, `--key`, `--key-file` and `keygen` have been removed.
+`MTPNXK_KEY` is no longer read. Direct LAN deployments are unsupported.
 
 ### Sessions
 
 ```
-service → plugin   hello   { t:"hello", v:1, id, gen, nonce, surface, fw, held:[...] }
-plugin  → service  welcome { t:"welcome", v:1, sid, nonce, gen, lease, hb, keys:{...}, modules, console, seq:0 }
+service → plugin   hello   { t:"hello", v:2, id, gen, nonce, surface, fw, held:[...] }
+plugin  → service  welcome { t:"welcome", v:2, sid, nonce, gen, lease, hb, keys:{...}, modules, console, seq:0 }
 ```
 
 - `id` names the surface (`nxk-<serial or host>`), `gen` is a random 32-bit
@@ -205,8 +197,7 @@ plugin  → service  welcome { t:"welcome", v:1, sid, nonce, gen, lease, hb, key
 ### Validation before any module call
 
 A datagram is rejected, counted and (where a session exists) answered with
-`err` when: it is longer than 512 bytes; the prefix is not `MTX1`; the MAC
-does not verify; the JSON does not parse to an object; `t` is unknown; `sid`
+`err` when: it is longer than 512 bytes; the source is not `127.0.0.1`; the prefix is not `MTX2`; the JSON does not parse to an object; `t` is unknown; `sid`
 is unknown; `seq` is not an increasing integer; a `key` has no known `k` or
 `d` not in {0, 1}; a `wheel` has `w` outside 1..4 or `dx` outside −127..127;
 a `ctl` has `k` outside {rel, abs, touch, btn}, `dev` or `c` empty or longer
@@ -439,7 +430,7 @@ a shortcut in the user profile.
 
 ## 8. Measurable limits and their status
 
-Measured on the target setup (service on the onPC machine or on the LAN,
+Historical protocol-1 measurements (not protocol-2 qualification). Measured on the target setup (service on the onPC machine,
 onPC 2.5.1.0), under load = 10 taps/s from the service plus the full NX-K
 watch list. Report median, p95, p99 and the worst observation, never only a
 mean. (Chosen before measuring at 20 taps/s and revised after the first live

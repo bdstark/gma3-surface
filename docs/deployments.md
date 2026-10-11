@@ -6,12 +6,17 @@ recorded live run on a disposable show at a stated revision; "harness" means
 stock-Lua or Rust tests with stubbed console dependencies; "unqualified" means
 no evidence, whatever the code is expected to do.
 
+Protocol 2 / plugin 0.10.0 removes pairing keys and LAN support. Its localhost-only
+transport is covered by the automated harness; the recorded onPC runs below used
+protocol 1 and do not qualify the new transport live. Repeat connection/lifecycle
+checks on onPC during KB-24.
+
 Two independent consumers exist, and their evidence is kept apart:
 
 | Consumer | What it is | Where its evidence lives |
 | --- | --- | --- |
 | **MCP bridge** (`gma3_mcp_bridge`, Node.js MCP server) | agents driving onPC over loopback TCP; owns its own hardkeys and feedback instances | [bdstark/GrandMA3MCP `docs/compatibility.md`](https://github.com/bdstark/GrandMA3MCP/blob/main/docs/compatibility.md) and its `docs/probes/` (KB-01 to KB-06) |
-| **Surface** (this repository: `mtpnxk_surface` plugin + Rust service + NX-K) | a physical keypad driving onPC over authenticated UDP, LEDs from console state | [KEYBOARD.md](../KEYBOARD.md), [probes/kb-07-live-macos-2.5.1.md](probes/kb-07-live-macos-2.5.1.md), [probes/kb-08-qualification-macos-2.5.1.md](probes/kb-08-qualification-macos-2.5.1.md), [kb-08-acceptance.md](kb-08-acceptance.md) |
+| **Surface** (this repository: `mtpnxk_surface` plugin + Rust service + NX-K) | a physical keypad driving onPC over localhost-only UDP, LEDs from console state | [KEYBOARD.md](../KEYBOARD.md), [probes/kb-07-live-macos-2.5.1.md](probes/kb-07-live-macos-2.5.1.md), [probes/kb-08-qualification-macos-2.5.1.md](probes/kb-08-qualification-macos-2.5.1.md), [kb-08-acceptance.md](kb-08-acceptance.md) |
 
 Bridge support does not imply surface support: the surface vendors the bridge's
 console modules, but its transport, pairing, loop and LED path are its own and
@@ -21,10 +26,10 @@ were qualified only as listed below.
 
 | Console | Host OS | Service host | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| grandMA3 onPC 2.5.1.0 | macOS 26.5.1 (Apple silicon, `bdsmbpm401`) | same machine, `127.0.0.1` | **Qualified (beta)**: plugin import/start/stop/status/recover, pairing, key dispatch for 32 of 46 NX-K keys on the default profile, lifecycle (service stop, cable pull, plugin restart, user switch), feedback freshness, stale indication, allow list; NX-K over nusb with LEDs confirmed by the operator (KB-07). Open: press-to-effect p99 at 10 taps/s not demonstrated (instrument defect), flood limits not met | KB-07 and KB-08 records |
-| grandMA3 onPC 2.5.1.0 | macOS | **separate machine on the LAN** (`bind=0.0.0.0 allow=<ip>`) | Unqualified. The binding and allow list were exercised between the two addresses of one machine only; latency over a real network, a NAT or a second host's clock were not measured | KB-08 L7 |
+| grandMA3 onPC 2.5.1.0 | macOS 26.5.1 (Apple silicon, `bdsmbpm401`) | same machine, `127.0.0.1` | **Qualified (beta)**: plugin import/start/stop/status/recover, pairing, key dispatch for 32 of 46 NX-K keys on the default profile, lifecycle (service stop, cable pull, plugin restart, user switch), feedback freshness and stale indication; NX-K over nusb with LEDs confirmed by the operator (KB-07). Open: press-to-effect p99 at 10 taps/s not demonstrated (instrument defect), flood limits not met | KB-07 and KB-08 records |
+| grandMA3 onPC 2.5.1.0 | macOS | separate machine on the LAN | Unsupported: protocol 2 enforces localhost | Historical KB-08 L7 does not apply |
 | grandMA3 onPC 2.5.1.0 | Windows 11 | any | Unqualified for the surface. The service needs WinUSB bound to the NX-K (Zadig) and that path has not been run; the console modules were probed on Windows only in KB-01 (bridge 0.3.4, exploratory) | MCP KB-01 Windows record |
-| grandMA3 onPC 2.5.1.0 | Linux | any | Unqualified (onPC is not available for Linux; a Linux *service* host against a macOS or Windows console is the LAN case above, also unqualified; a udev rule would be needed for non-root USB access) | — |
+| grandMA3 onPC 2.5.1.0 | Linux | any | Unqualified (onPC is not available for Linux; a Linux *service* host against macOS or Windows onPC would require a remote connection, which protocol 2 refuses; a udev rule would be needed for non-root USB access) | — |
 | other onPC versions | any | any | Unqualified. The plugin reports the console version in `welcome.console` and refuses nothing; routes and readers are verified on 2.5.1.0 only | — |
 | physical grandMA3 consoles | — | — | Unqualified and not planned (no LuaSocket UDP listener qualified there) | — |
 

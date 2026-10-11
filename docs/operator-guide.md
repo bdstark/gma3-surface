@@ -10,11 +10,11 @@ surface plugin and service. Qualified scope: [deployments.md](deployments.md)
 | Component | File(s) | Goes where |
 | --- | --- | --- |
 | Surface plugin entry component | `tools/ma3/mtpnxk_surface.lua` | the onPC user library plugins folder |
-| Vendored console modules (two) | `tools/ma3/gma3_mcp_hardkeys.lua` (0.10.0), `tools/ma3/gma3_mcp_feedback.lua` (0.2.0) | same folder; they are components of the same plugin |
+| Vendored console modules (three) | `tools/ma3/gma3_mcp_hardkeys.lua` (0.10.0), `tools/ma3/gma3_mcp_feedback.lua` (0.2.0) | same folder; they are components of the same plugin |
 | Import wrapper | `tools/ma3/mtpnxk_surface.xml` | same folder |
 | Surface service | `service/` → `mtpnxk` binary | the machine the NX-K is plugged into |
 
-The plugin is one onPC plugin with three components. All three `.lua` files and
+The plugin is one onPC plugin with four components. All four `.lua` files and
 the XML must be copied together; the plugin checks the modules' versions at
 start and refuses to run with a mismatch. Check the files against the hashes in
 [tools/ma3/VENDOR.md](../tools/ma3/VENDOR.md) when packaging.
@@ -31,7 +31,7 @@ devices it can see; the NX-K is `11be:e102`.
 ### 2. Install the plugin in onPC
 
 macOS plugins folder: `~/MALightingTechnology/gma3_library/datapools/plugins`.
-Copy the three `.lua` files and the XML there, then in the onPC command line,
+Copy the four `.lua` files and the XML there, then in the onPC command line,
 with a free Plugin pool slot (example: slot 2):
 
 ```text
@@ -41,36 +41,35 @@ Import Plugin Library "mtpnxk_surface.xml" At Plugin 2
 Save the show to keep the imported plugin. The plugin must be started again
 after every show load.
 
-### 3. Make a pairing key
+### Updating from protocol 1
 
-The pairing key is a 32-byte secret shared by the plugin and the service. It is
-the authorization: whoever holds it can send key events to the console.
+Update the service and `mtpnxk_surface.lua` / XML together. Plugin 0.10.0 uses
+protocol 2 (`MTX2`); older keyed clients and plugins are incompatible. Remove
+`key=`, `bind=` and `allow=` from plugin start commands and remove `--key`,
+`--key-file` or `MTPNXK_KEY` from service launch configuration. Key files are no
+longer used; no replacement credential is needed. LAN connections are no longer supported.
 
-```bash
-./service/target/release/mtpnxk keygen > ~/.mtpnxk.key
-```
+Like the MCP bridge, the surface trusts processes on the local machine. The
+session handshake establishes a connection and tracks state; it does not authenticate a user.
 
-Keep the file private. The service reads it with `--key-file`; the plugin takes
-the same 64 hex characters as `key=…` in its start command. Generate a new key
-to revoke an old one (restart both sides).
-
-### 4. Start the plugin (normal case)
+### 3. Start the plugin (normal case)
 
 ```text
-Plugin "mtpnxk_surface" "key=<64 hex>"
+Plugin "mtpnxk_surface"
 ```
 
-Defaults: listens on `127.0.0.1:9810` (service on the same machine), input on
+The listener is fixed to `127.0.0.1` (port 9810 by default); run the service on the same
+machine. No pairing key is needed. Defaults: input on
 the keyboard backend, display 1. The start log (System Monitor / command-line
 history) lists every NX-K key with the method and backend that would press it
 (`key 1: NUM1 via shortcut (keyboard, shortcut-table)`), ending with
 `keys: 32 supported, 12 unsupported` on the default US profile, then
-`listening on 127.0.0.1:9810 (v0.2.0, protocol 1, gen …)`.
+`listening on 127.0.0.1:9810 (v0.10.0, protocol 2, gen …)`.
 
-### 4a. Quickey dispatch (KB-15, the preferred path once set up)
+### 3a. Quickey dispatch (KB-15, the preferred path once set up)
 
 ```text
-Plugin "mtpnxk_surface" "key=<64 hex> bank=900/1.178-189 input=mixed"
+Plugin "mtpnxk_surface" "bank=900/1.178-189 input=mixed"
 ```
 
 `bank=<quickey>/<page>.<first>-<last>` is the operator's decision to create show
@@ -105,23 +104,22 @@ Options, appended to the same quoted string:
 | Option | Meaning |
 | --- | --- |
 | `port=9811` | another UDP port |
-| `bind=0.0.0.0 allow=192.168.1.20` | accept the service from the LAN; `allow` is a comma-separated list of source addresses (without it any source holding the key is accepted). Unqualified deployment, see deployments.md |
-| `input=mixed`, `input=quickey` | Quickey dispatch through the bank (section 4a); need `bank=` once |
-| `bank=900/1.178-189`, `bankcodes=…`, `route=…` | section 4a |
+| `input=mixed`, `input=quickey` | Quickey dispatch through the bank (section 3a); need `bank=` once |
+| `bank=900/1.178-189`, `bankcodes=…`, `route=…` | section 3a |
 | `input=off` | feedback only: LEDs follow the console, no key is ever pressed |
 | `input=fake` | lifecycle testing: events are recorded and acknowledged, no key is pressed |
 | `bench` | report press-to-effect timing for digit taps (measurement only) |
 | `force` | start even though the MCP bridge reports input enabled (see "Exclusive input") |
 
-### 5. Start the service
+### 4. Start the service
 
 With the NX-K plugged in:
 
 ```bash
-./service/target/release/mtpnxk --key-file ~/.mtpnxk.key run
+./service/target/release/mtpnxk run
 ```
 
-`--plugin host:port` points at a plugin that is not on `127.0.0.1:9810`;
+`--plugin 127.0.0.1:<port>` selects a different local plugin port (`localhost` is also accepted); remote addresses are refused;
 `--verbose` prints pairing, refusals and losses; `--id` names the surface in the
 plugin's log (default `nxk-<hostname>`). The service pairs within a frame of
 starting, keeps pairing every 2 s while the plugin is down, and reopens the
@@ -303,7 +301,7 @@ records (if any) are adopted as above.
    Delete Plugin 2 /NoConfirmation
    Import Plugin Library "mtpnxk_surface.xml" At Plugin 2
    ReloadAllPlugins
-   Plugin "mtpnxk_surface" "key=<64 hex>"
+   Plugin "mtpnxk_surface"
    ```
 
    `ReloadAllPlugins` is needed on 2.5.1: delete and re-import alone can keep

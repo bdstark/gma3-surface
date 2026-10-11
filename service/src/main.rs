@@ -1,7 +1,7 @@
 //! mtpnxk: bridges an Obsidian/Elation NX-K keypad to the mtpnxk_surface plugin inside grandMA3
-//! onPC over an authenticated UDP link. Protocol and design: docs/surface-protocol.md.
+//! onPC over a localhost-only UDP link. Protocol and design: docs/surface-protocol.md.
 
-mod auth;
+mod wire;
 mod banks;
 mod leds;
 mod lights;
@@ -19,21 +19,15 @@ use nxk::usb::Surface;
 use nxk::Event;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
-use std::net::UdpSocket;
+use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::time::{Duration, Instant};
 
 #[derive(Parser, Debug)]
 #[command(name = "mtpnxk", version, about = "NX-K keypad to grandMA3 onPC surface plugin")]
 struct Cli {
-    /// Plugin address (host:port); the plugin binds 127.0.0.1:9810 by default.
+    /// Local plugin endpoint (127.0.0.1:port or localhost:port); remote addresses are refused.
     #[arg(long, default_value = "127.0.0.1:9810", global = true)]
     plugin: String,
-    /// Pairing key: 64 hex characters (the plugin's key=...). Or set MTPNXK_KEY.
-    #[arg(long, env = "MTPNXK_KEY", global = true, hide_env_values = true)]
-    key: Option<String>,
-    /// Read the pairing key from this file instead.
-    #[arg(long, global = true)]
-    key_file: Option<std::path::PathBuf>,
     /// Surface id reported to the plugin.
     #[arg(long, global = true)]
     id: Option<String>,
@@ -147,19 +141,17 @@ enum Cmd {
         #[arg(long, default_value_t = 300)]
         hold_ms: u64,
     },
-    /// Print a fresh random pairing key.
-    Keygen,
 }
 
-fn load_key(cli: &Cli) -> Result<auth::Key> {
-    let hex = if let Some(p) = &cli.key_file {
-        std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?
-    } else if let Some(k) = &cli.key {
-        k.clone()
-    } else {
-        return Err(anyhow!("a pairing key is required: --key <64 hex>, --key-file <path> or MTPNXK_KEY"));
-    };
-    auth::Key::from_hex(&hex).map_err(|e| anyhow!(e))
+// Resolve no arbitrary hostname: only the fixed IPv4 loopback endpoint is supported.
+fn plugin_address(value: &str) -> Result<SocketAddrV4> {
+    let (host, port) = value.rsplit_once(':').ok_or_else(|| anyhow!("--plugin must be localhost:<port> or 127.0.0.1:<port>"))?;
+    if host != "127.0.0.1" && host != "localhost" {
+        return Err(anyhow!("the surface plugin is localhost-only; use 127.0.0.1:<port>"));
+    }
+    let port: u16 = port.parse().context("plugin port must be 1..65535")?;
+    if port == 0 { return Err(anyhow!("plugin port must be 1..65535")); }
+    Ok(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
 }
 
 fn surface_id(cli: &Cli) -> String {
@@ -204,9 +196,8 @@ struct Loop {
 
 impl Loop {
     fn new(cli: &Cli) -> Result<Loop> {
-        let key = load_key(cli)?;
-        let sock = UdpSocket::bind("0.0.0.0:0").context("binding a UDP socket")?;
-        sock.connect(&cli.plugin).with_context(|| format!("resolving the plugin address {}", cli.plugin))?;
+        let sock = UdpSocket::bind("127.0.0.1:0").context("binding a UDP socket")?;
+        sock.connect(plugin_address(&cli.plugin)?).with_context(|| format!("resolving the plugin address {}", cli.plugin))?;
         sock.set_nonblocking(true)?;
         let cfg = link::Config { id: surface_id(cli), ..link::Config::default() };
         let started = Instant::now();
@@ -245,7 +236,7 @@ impl Loop {
         if lights_on {
             eprintln!("lights: on (--lights/--lights-interval {} ms): parameter values on the blue strip bars, playback assignment/running/pressed/level on the keys and RGB bars, an unavailable pattern while the context is stale", cli.lights_interval);
         }
-        let link = link::Link::new(cfg, key, 0.0);
+        let link = link::Link::new(cfg, 0.0);
         Ok(Loop { link, leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots,
                   strips: strips::Strips::new(strip_cfg), strips_log_seen: 0, pushed_wheels: BTreeSet::new(),
                   banks, banks_log_seen: 0, displays: BTreeMap::new(), bar_writes: Vec::new(),
@@ -616,7 +607,6 @@ mod lights_binding_tests {
     }
 
     struct Plugin {
-        key: auth::Key,
         seq: u64,
     }
     impl Plugin {
@@ -624,7 +614,7 @@ mod lights_binding_tests {
             self.seq += 1;
             v["sid"] = json!("feedfacefeedface");
             v["seq"] = json!(self.seq);
-            auth::frame(&self.key, &v.to_string())
+            wire::frame(&v.to_string())
         }
         fn context(&mut self, br: u64, ex: Value, bind_ex: Vec<u32>) -> Vec<u8> {
             self.frame(json!({"t":"context","gen":"1-deadbeef","epoch":1,"known":1,"cg":1,"enc":{},"slots":[],"ex":ex,"page":1,"pool":"Default","display":1,"bind":{"ex":bind_ex,"br":br,"mode":"current"}}))
@@ -637,16 +627,16 @@ mod lights_binding_tests {
 
     #[test]
     fn a_bank_change_lights_nothing_from_the_previous_bindings_context_until_the_new_one_arrives() {
-        let cli = Cli::parse_from(["mtpnxk", "--key", &"ab".repeat(32), "sim"]);
+        let cli = Cli::parse_from(["mtpnxk", "sim"]);
         let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
         lp.lights.cfg.min_interval = 0.0;
-        let mut plugin = Plugin { key: auth::Key::from_hex(&"ab".repeat(32)).unwrap(), seq: 0 };
+        let mut plugin = Plugin { seq: 0 };
         let mut lamp = Lamp { strips: VecDeque::new(), outputs: Vec::new() };
         // Pair: the hello goes out in the first step; the welcome answers its nonce.
         lp.step(&mut lamp).unwrap();
         let nonce = lp.link.hello_nonce().expect("a hello was sent");
-        let welcome = json!({"t":"welcome","v":1,"sid":"feedfacefeedface","nonce":nonce,"gen":"1-deadbeef","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"modules":{},"input":"fake","epoch":1,"control":1,"controlBackend":"console","context":1,"seq":0});
-        lp.link.receive(&auth::frame(&plugin.key, &welcome.to_string()), lp.now());
+        let welcome = json!({"t":"welcome","v":2,"sid":"feedfacefeedface","nonce":nonce,"gen":"1-deadbeef","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"modules":{},"input":"fake","epoch":1,"control":1,"controlBackend":"console","context":1,"seq":0});
+        lp.link.receive(&wire::frame(&welcome.to_string()), lp.now());
         lp.step(&mut lamp).unwrap(); // the bank window's bind goes out
         let ev = lp.link.pending_bind_ev().expect("the bind is in flight");
         assert!(lp.link.lighting_context(lp.now()).is_none());
@@ -688,15 +678,15 @@ mod lights_binding_tests {
         // Review of PR #8 (round 2): when the plugin refuses the new binding, the surface still maps the new
         // bank, so the previous binding's context must not light the controls (that would show the new bank's
         // controls with the old bank's feedback, or as empty).
-        let cli = Cli::parse_from(["mtpnxk", "--key", &"ab".repeat(32), "sim"]);
+        let cli = Cli::parse_from(["mtpnxk", "sim"]);
         let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
         lp.lights.cfg.min_interval = 0.0;
-        let mut plugin = Plugin { key: auth::Key::from_hex(&"ab".repeat(32)).unwrap(), seq: 0 };
+        let mut plugin = Plugin { seq: 0 };
         let mut lamp = Lamp { strips: VecDeque::new(), outputs: Vec::new() };
         lp.step(&mut lamp).unwrap();
         let nonce = lp.link.hello_nonce().expect("a hello was sent");
-        let welcome = json!({"t":"welcome","v":1,"sid":"feedfacefeedface","nonce":nonce,"gen":"1-deadbeef","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"modules":{},"input":"fake","epoch":1,"control":1,"controlBackend":"console","context":1,"seq":0});
-        lp.link.receive(&auth::frame(&plugin.key, &welcome.to_string()), lp.now());
+        let welcome = json!({"t":"welcome","v":2,"sid":"feedfacefeedface","nonce":nonce,"gen":"1-deadbeef","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"modules":{},"input":"fake","epoch":1,"control":1,"controlBackend":"console","context":1,"seq":0});
+        lp.link.receive(&wire::frame(&welcome.to_string()), lp.now());
         lp.step(&mut lamp).unwrap();
         let ev = lp.link.pending_bind_ev().expect("the bind is in flight");
         lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":1,"br":1})), lp.now());
@@ -777,7 +767,7 @@ mod keypad_loss_tests {
     }
 
     fn test_loop() -> Loop {
-        let cli = Cli::parse_from(["mtpnxk", "--key", &"ab".repeat(32), "sim"]);
+        let cli = Cli::parse_from(["mtpnxk", "sim"]);
         Loop::new(&cli).expect("a loop on an ephemeral socket")
     }
     fn strip1(value: u8, touch: bool) -> mtouch::Event {
@@ -876,11 +866,6 @@ fn percentiles(label: &str, samples: &[f64]) {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.cmd {
-        Cmd::Keygen => {
-            let k: [u8; 32] = rand::random();
-            println!("{}", hex::encode(k));
-            Ok(())
-        }
         Cmd::List => {
             for line in nxk::usb::list()? {
                 println!("{line}");
@@ -1003,5 +988,26 @@ fn print_summary(link: &link::Link, strips: &strips::Strips) {
     }
     for r in &link.refusals {
         println!("refused ev {}: [{}] {}", r.ev, r.code, r.why);
+    }
+}
+
+#[cfg(test)]
+mod local_transport_tests {
+    use super::*;
+    #[test]
+    fn only_fixed_local_endpoints_are_accepted() {
+        for endpoint in ["127.0.0.1:9810", "localhost:9811"] {
+            assert_eq!(*plugin_address(endpoint).unwrap().ip(), Ipv4Addr::LOCALHOST);
+        }
+        for endpoint in ["0.0.0.0:9810", "192.168.1.20:9810", "example.com:9810", "[::1]:9810", "127.0.0.1:0", "localhost:65536"] {
+            assert!(plugin_address(endpoint).is_err(), "accepted {endpoint}");
+        }
+        for args in [vec!["mtpnxk", "--key", "abc", "sim"], vec!["mtpnxk", "--key-file", "secret", "sim"], vec!["mtpnxk", "keygen"]] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        let cli = Cli::parse_from(["mtpnxk", "sim"]);
+        let lp = Loop::new(&cli).unwrap();
+        assert_eq!(lp.sock.local_addr().unwrap().ip(), std::net::IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(lp.sock.peer_addr().unwrap().ip(), std::net::IpAddr::V4(Ipv4Addr::LOCALHOST));
     }
 }

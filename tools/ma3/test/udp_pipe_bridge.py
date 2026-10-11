@@ -2,7 +2,7 @@
 """Puts pipe_console.lua (the real surface plugin under stock Lua) behind a real UDP port so the
 Rust service can be run against it end to end without onPC or LuaSocket. Standard library only.
 
-    python3 tools/ma3/test/udp_pipe_bridge.py --port 9810 --plugin-arg "key=<hex> input=fake bench"
+    python3 tools/ma3/test/udp_pipe_bridge.py --port 9810 --plugin-arg "input=fake bench"
 
 Stops after --seconds, or on SIGINT. Prints the plugin's log lines prefixed with "plugin:".
 """

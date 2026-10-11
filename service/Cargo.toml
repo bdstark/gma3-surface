@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
-clap = { version = "4.6.7", features = ["derive", "env"] }
+clap = { version = "4.6.7", features = ["derive"] }
 futures-lite = "2.6.1"
 hex = "0.4.3"
 nusb = "0.2"

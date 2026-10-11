@@ -1,5 +1,8 @@
 > **Superseded 2026-10-09.** This note describes the Pico W direction, now archived
 > under `legacy/pico`. The current design is `docs/surface-protocol.md` and the
+
+> Transport update: plugin 0.10.0 / protocol 2 is localhost-only and has no pairing key. Older key, MAC and LAN references below describe historical work, not current setup. See [operator guide](operator-guide.md).
+
 > status is in `KEYBOARD.md`; the surface consumer is the Rust service in `service/`.
 
 # State of play, 2026-10-08 (updated after the LED session and the Lua decision)

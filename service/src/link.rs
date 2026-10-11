@@ -3,7 +3,7 @@
 //! freshness rules. Pure: no sockets, no clock. The caller feeds datagrams and the time in seconds
 //! and sends what `take_outgoing()` returns.
 
-use crate::auth::{self, Key, MAX_FROM_PLUGIN};
+use crate::wire::{self, MAX_FROM_PLUGIN};
 use crate::protocol::{CtlTarget, FromPlugin, KeyReport, ToPlugin, PROTOCOL_VERSION};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -251,7 +251,6 @@ pub struct Refusal {
 
 pub struct Link {
     cfg: Config,
-    key: Key,
     pub generation: u32,
     phase: Phase,
     ev_next: u64,
@@ -291,10 +290,9 @@ fn nonce() -> String {
 }
 
 impl Link {
-    pub fn new(cfg: Config, key: Key, now: f64) -> Link {
+    pub fn new(cfg: Config, now: f64) -> Link {
         Link {
             cfg,
-            key,
             generation: rand::random::<u32>(),
             phase: Phase::Unpaired { next_hello: now, nonce: None },
             ev_next: 1,
@@ -377,7 +375,7 @@ impl Link {
     }
 
     fn send_json(&mut self, json: String) {
-        self.outgoing.push(auth::frame(&self.key, &json));
+        self.outgoing.push(wire::frame(&json));
         self.stats.sent += 1;
     }
 
@@ -921,7 +919,7 @@ impl Link {
     /// One datagram from the socket.
     pub fn receive(&mut self, data: &[u8], now: f64) {
         self.stats.received += 1;
-        let text = match auth::unframe(&self.key, data, MAX_FROM_PLUGIN) {
+        let text = match wire::unframe(data, MAX_FROM_PLUGIN) {
             Ok(t) => t,
             Err(e) => {
                 self.stats.rejected += 1;
@@ -1156,7 +1154,6 @@ mod tests {
 
     /// A plugin stand-in: decodes what the link sent and answers like mtpnxk_surface.lua would.
     struct FakePlugin {
-        key: Key,
         sid: String,
         seq: u64,
         generation: String,
@@ -1164,13 +1161,13 @@ mod tests {
     }
 
     impl FakePlugin {
-        fn new(key: Key) -> FakePlugin {
-            FakePlugin { key, sid: "feedfacefeedface".into(), seq: 0, generation: "1-deadbeef".into(), seen: Vec::new() }
+        fn new() -> FakePlugin {
+            FakePlugin { sid: "feedfacefeedface".into(), seq: 0, generation: "1-deadbeef".into(), seen: Vec::new() }
         }
         fn decode(&mut self, frames: Vec<Vec<u8>>) -> Vec<Value> {
             let mut out = Vec::new();
             for f in frames {
-                let text = auth::unframe(&self.key, &f, 512).expect("link frames verify");
+                let text = wire::unframe(&f, 512).expect("link frames verify");
                 let v: Value = serde_json::from_str(text).unwrap();
                 self.seen.push(v.clone());
                 out.push(v);
@@ -1181,17 +1178,17 @@ mod tests {
             self.seq += 1;
             v["sid"] = json!(self.sid);
             v["seq"] = json!(self.seq);
-            auth::frame(&self.key, &v.to_string())
+            wire::frame(&v.to_string())
         }
         fn welcome(&mut self, nonce: &str) -> Vec<u8> {
-            let v = json!({"t":"welcome","v":1,"sid":self.sid,"nonce":nonce,"gen":self.generation,"lease":2000,"hb":250,"keys":{"ok":["Record","5"],"unsupported":["Bank"]},"modules":{"gma3_mcp_hardkeys":"0.5.0"},"input":"keyboard","epoch":1,"control":1,"controlBackend":"fake","seq":0});
+            let v = json!({"t":"welcome","v":2,"sid":self.sid,"nonce":nonce,"gen":self.generation,"lease":2000,"hb":250,"keys":{"ok":["Record","5"],"unsupported":["Bank"]},"modules":{"gma3_mcp_hardkeys":"0.5.0"},"input":"keyboard","epoch":1,"control":1,"controlBackend":"fake","seq":0});
             self.seq = 0;
-            auth::frame(&self.key, &v.to_string())
+            wire::frame(&v.to_string())
         }
         fn welcome_without_control(&mut self, nonce: &str) -> Vec<u8> {
-            let v = json!({"t":"welcome","v":1,"sid":self.sid,"nonce":nonce,"gen":self.generation,"lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"input":"keyboard","epoch":1,"seq":0});
+            let v = json!({"t":"welcome","v":2,"sid":self.sid,"nonce":nonce,"gen":self.generation,"lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"input":"keyboard","epoch":1,"seq":0});
             self.seq = 0;
-            auth::frame(&self.key, &v.to_string())
+            wire::frame(&v.to_string())
         }
         fn ctl_ack(&mut self, ev: u64, ok: bool, extra: Value) -> Vec<u8> {
             let mut v = json!({"t":"ack","ev":ev,"ok":if ok {1} else {0}});
@@ -1212,9 +1209,8 @@ mod tests {
     }
 
     fn pair(now: f64) -> (Link, FakePlugin) {
-        let key = Key::from_hex(&"0123456789abcdef".repeat(4)).unwrap();
-        let mut link = Link::new(Config { id: "nxk-test".into(), ..Config::default() }, key.clone(), now);
-        let mut plugin = FakePlugin::new(key);
+        let mut link = Link::new(Config { id: "nxk-test".into(), ..Config::default() }, now);
+        let mut plugin = FakePlugin::new();
         link.tick(now);
         let hello = plugin.decode(link.take_outgoing());
         assert_eq!(hello.len(), 1);
@@ -1230,9 +1226,8 @@ mod tests {
 
     #[test]
     fn pairs_and_rejects_a_welcome_with_the_wrong_nonce() {
-        let key = Key::from_hex(&"00".repeat(32)).unwrap();
-        let mut link = Link::new(Config::default(), key.clone(), 0.0);
-        let mut plugin = FakePlugin::new(key);
+        let mut link = Link::new(Config::default(), 0.0);
+        let mut plugin = FakePlugin::new();
         link.tick(0.0);
         plugin.decode(link.take_outgoing());
         let bad = plugin.welcome("not-our-nonce");
@@ -1327,7 +1322,7 @@ mod tests {
         let reply = plugin.frame(json!({"t":"hb","held":["Record"],"unsynced":["Clear"]}));
         link.receive(&reply, 0.31);
         assert_eq!(link.unsynced, vec!["Clear"]);
-        let stale = auth::frame(&plugin.key, &json!({"t":"hb","sid":plugin.sid,"seq":1,"held":[]}).to_string());
+        let stale = wire::frame(&json!({"t":"hb","sid":plugin.sid,"seq":1,"held":[]}).to_string());
         link.receive(&stale, 0.32);
         assert_eq!(link.stats.old_seq, 1);
         assert_eq!(link.plugin_held, vec!["Record"], "stale packet ignored");
@@ -1373,7 +1368,7 @@ mod tests {
     fn no_session_error_triggers_a_new_hello_and_unpaired_events_are_dropped() {
         let (mut link, mut plugin) = pair(0.0);
         let sid = plugin.sid.clone();
-        let err = auth::frame(&plugin.key, &json!({"t":"err","e":"no-session","sid":sid,"seq":0}).to_string());
+        let err = wire::frame(&json!({"t":"err","e":"no-session","sid":sid,"seq":0}).to_string());
         link.receive(&err, 0.5);
         assert!(link.session().is_none());
         assert_eq!(link.stats.no_session, 1);
@@ -1390,15 +1385,13 @@ mod tests {
     }
 
     #[test]
-    fn tampered_and_foreign_packets_are_rejected() {
+    fn legacy_and_foreign_session_packets_are_rejected() {
         let (mut link, mut plugin) = pair(0.0);
-        let other = Key::from_hex(&"ff".repeat(32)).unwrap();
-        let forged = auth::frame(&other, &json!({"t":"hb","sid":plugin.sid,"seq":5}).to_string());
+
+        let forged = b"MTX1 0000000000000000 {}".to_vec();
         link.receive(&forged, 0.1);
         let foreign = plugin.frame(json!({"t":"hb","held":[]}));
-        let mut foreign_sid = foreign.clone();
-        let _ = &mut foreign_sid;
-        link.receive(&auth::frame(&plugin.key, &json!({"t":"hb","sid":"0000000000000000","seq":9,"held":[]}).to_string()), 0.2);
+        link.receive(&wire::frame(&json!({"t":"hb","sid":"0000000000000000","seq":9,"held":[]}).to_string()), 0.2);
         assert_eq!(link.stats.rejected, 2);
         link.receive(&foreign, 0.3);
         assert_eq!(link.stats.rejected, 2);
@@ -1651,9 +1644,8 @@ mod tests {
 
     #[test]
     fn a_plugin_without_control_drops_ctl_events_and_a_repair_clears_gestures() {
-        let key = Key::from_hex(&"0123456789abcdef".repeat(4)).unwrap();
-        let mut link = Link::new(Config { id: "nxk-test".into(), ..Config::default() }, key.clone(), 60.0);
-        let mut plugin = FakePlugin::new(key);
+        let mut link = Link::new(Config { id: "nxk-test".into(), ..Config::default() }, 60.0);
+        let mut plugin = FakePlugin::new();
         link.tick(60.0);
         let hello = plugin.decode(link.take_outgoing());
         let nonce = hello[0]["nonce"].as_str().unwrap().to_string();
@@ -1718,8 +1710,8 @@ mod tests {
         link.control_event("mtouch", "StripS", slot(1), CtlKind::Abs { v: 0.9, takeover: false }, 80.201);
         assert_eq!(link.stats.ctl_coalesced, 2);
         // The per-control queue is bounded: beyond motion_per_control the oldest position of that control is dropped and counted.
-        let mut link2 = Link::new(Config { id: "nxk-test".into(), motion_per_control: 3, ..Config::default() }, Key::from_hex(&"0123456789abcdef".repeat(4)).unwrap(), 90.0);
-        let mut plugin2 = FakePlugin::new(Key::from_hex(&"0123456789abcdef".repeat(4)).unwrap());
+        let mut link2 = Link::new(Config { id: "nxk-test".into(), motion_per_control: 3, ..Config::default() }, 90.0);
+        let mut plugin2 = FakePlugin::new();
         link2.tick(90.0);
         let hello = plugin2.decode(link2.take_outgoing());
         let nonce = hello[0]["nonce"].as_str().unwrap().to_string();
@@ -1739,9 +1731,8 @@ mod tests {
     // ---- KB-21: executor binding, revisions, page-bound targets ----
     #[test]
     fn a_bind_goes_out_after_pairing_and_again_after_a_repairing_and_its_ack_names_the_revision() {
-        let key = Key::from_hex(&"0123456789abcdef".repeat(4)).unwrap();
-        let mut link = Link::new(Config { id: "nxk-test".into(), ..Config::default() }, key.clone(), 0.0);
-        let mut plugin = FakePlugin::new(key);
+        let mut link = Link::new(Config { id: "nxk-test".into(), ..Config::default() }, 0.0);
+        let mut plugin = FakePlugin::new();
         link.set_binding(BindSpec { ex: vec![101, 201, 301], pg: None }, 0.0);
         link.tick(0.0);
         let hello = plugin.decode(link.take_outgoing());

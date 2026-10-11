@@ -1,29 +1,33 @@
 # mtpnxk service
 
 Cross-platform Rust process that owns the NX-K keypad over USB and talks to the
-`mtpnxk_surface` plugin inside grandMA3 onPC over an authenticated UDP link
+`mtpnxk_surface` plugin inside grandMA3 onPC over a localhost-only UDP link
 ([docs/surface-protocol.md](../docs/surface-protocol.md)).
 
 ```bash
 cargo build --release
-./target/release/mtpnxk keygen                      # a fresh 64-hex pairing key
-./target/release/mtpnxk --key-file ~/.mtpnxk.key run # drive the USB keypad (or --key <hex>)
-./target/release/mtpnxk --key <hex> sim --script "Record:down,5:tap@50,Record:up@300,Enter:tap"
-./target/release/mtpnxk --key <hex> bench --taps 200 --rate 20
+./target/release/mtpnxk run # drive the USB keypad
+./target/release/mtpnxk sim --script "Record:down,5:tap@50,Record:up@300,Enter:tap"
+./target/release/mtpnxk bench --taps 200 --rate 20
 ./target/release/mtpnxk list                        # USB devices
 ./target/release/mtpnxk mtouch-listen --seconds 240 # KB-16: decode an M-Touch / M-Play (--pid f808|f80c)
 ./target/release/mtpnxk mtouch-led-test             # KB-16: walk every LED, bar and display by eye
 ```
 
-`--plugin host:port` (default `127.0.0.1:9810`) names the plugin; `--key-file`
-or `MTPNXK_KEY` can carry the key instead of the command line; `--verbose`
-prints pairing, refusals and losses as they happen.
+`--plugin 127.0.0.1:<port>` (default `127.0.0.1:9810`) selects the local plugin;
+`localhost:<port>` is also accepted. Other addresses are refused. The service
+binds its own UDP socket to `127.0.0.1`; run it on the onPC machine.
+`--verbose` prints connection events, refusals and losses.
 
-On the console side the plugin is started with the same key:
+Start the console plugin without credentials:
 
+```text
+Plugin "mtpnxk_surface"
 ```
-Plugin "mtpnxk_surface" "key=<hex>"
-```
+
+Protocol 2 (`MTX2`) requires plugin 0.10.0 and the matching service. Update both
+together; remove old key options and network overrides. There is no key generation
+or application-level authentication. Local processes are trusted, as with the MCP bridge.
 
 ## What it does
 
@@ -32,8 +36,8 @@ Plugin "mtpnxk_surface" "key=<hex>"
   request. USB access is [nusb](https://crates.io/crates/nusb): no libusb.
   Windows needs the WinUSB driver bound to the keypad (Zadig); macOS and
   Linux need nothing (Linux may need a udev rule for non-root access).
-- `link`: pairing (hello/welcome with nonce), a SipHash-2-4 MAC on every
-  datagram, strictly increasing sequence numbers, event ids retransmitted until
+- `link`: connection setup (hello/welcome with nonce), versioned JSON
+  datagrams, strictly increasing sequence numbers, event ids retransmitted until
   acknowledged (4 × 60 ms, then counted lost; a press stops being retransmitted
   once its release is sent), heartbeats with the physically held keys,
   a 1.5 s watchdog, re-pairing after 4 s of silence or a `no-session` error,
@@ -57,7 +61,7 @@ Plugin "mtpnxk_surface" "key=<hex>"
   scripted tap run that prints ack round-trip percentiles and, when the plugin
   was started with `bench`, press-to-effect percentiles.
 
-`cargo test` runs the 45 unit tests, including a fake plugin that exercises the
+`cargo test` runs the unit tests, including a fake plugin that exercises the
 link's retransmission, loss, freshness and re-pairing paths and 17 M-Touch /
 M-Play regressions against the documented captures. Operator setup and
 recovery: [docs/operator-guide.md](../docs/operator-guide.md); qualified

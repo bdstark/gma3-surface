@@ -6,23 +6,23 @@
 -- sends it back for the surface's LEDs. Protocol, pairing and limits: docs/surface-protocol.md.
 --
 -- Command line:
---   Plugin "mtpnxk_surface" "key=<64 hex>"                 start on 127.0.0.1:9810 (input on the keyboard backend)
---   Plugin "mtpnxk_surface" "key=... port=9811 bind=0.0.0.0 allow=192.168.75.10"
---   Plugin "mtpnxk_surface" "key=... input=off"            feedback only, no console key is ever pressed
---   Plugin "mtpnxk_surface" "key=... input=fake"           lifecycle testing: events recorded, no key pressed
---   Plugin "mtpnxk_surface" "key=... bank=900/1.180-191 input=mixed"
+--   Plugin "mtpnxk_surface"                 start on 127.0.0.1:9810 (input on the keyboard backend)
+--   Plugin "mtpnxk_surface" "port=9811"
+--   Plugin "mtpnxk_surface" "input=off"            feedback only, no console key is ever pressed
+--   Plugin "mtpnxk_surface" "input=fake"           lifecycle testing: events recorded, no key pressed
+--   Plugin "mtpnxk_surface" "bank=900/1.180-191 input=mixed"
 --                                                          KB-15: provision the owned Quickey bank (one
 --                                                          Quickey per KB-10 qualified code, 12 reserved
 --                                                          executors) and press the qualified keys as
 --                                                          executor presses of those Quickeys; every other
 --                                                          key through Keyboard() (explicit per-key table)
---   Plugin "mtpnxk_surface" "key=... bank=... input=quickey"  Quickeys only: unqualified keys are refused
---   Plugin "mtpnxk_surface" "key=... input=mixed route=Undo:quickkey,2:shortcut"
+--   Plugin "mtpnxk_surface" "bank=... input=quickey"  Quickeys only: unqualified keys are refused
+--   Plugin "mtpnxk_surface" "input=mixed route=Undo:quickkey,2:shortcut"
 --                                                          per-key override of the dispatch method; an
 --                                                          override the backend cannot serve refuses the start
---   Plugin "mtpnxk_surface" "key=... bankcodes=hardkeys"   provision every command-area code (94 Quickeys)
---   Plugin "mtpnxk_surface" "key=... force"                start even though the MCP bridge has input enabled
---   Plugin "mtpnxk_surface" "key=... bench"                report press-to-effect timing for NUM taps
+--   Plugin "mtpnxk_surface" "bankcodes=hardkeys"   provision every command-area code (94 Quickeys)
+--   Plugin "mtpnxk_surface" "force"                start even though the MCP bridge has input enabled
+--   Plugin "mtpnxk_surface" "bench"                report press-to-effect timing for NUM taps
 --   Plugin "mtpnxk_surface" "stop" | "status" | "recover"   (recover: re-attempt unresolved key releases)
 --   Plugin "mtpnxk_surface" "bank status" | "bank verify" | "bank teardown"
 --                                                          (teardown: delete the verified owned Quickeys and
@@ -30,8 +30,8 @@
 --                                                          Quickey record is live)
 --
 -- Rules this plugin keeps (KEYBOARD.md KB-07, docs/surface-protocol.md):
---   * every datagram is authenticated (SipHash-2-4 under the pairing key) before it is parsed; a sender
---     id is a label, the key is the authorization;
+--   * the listener is fixed to 127.0.0.1; remote sources are rejected before parsing. Like the MCP
+--     bridge, local processes are trusted; there is no application-level authentication;
 --   * sessions have fresh random ids, strictly increasing sequence numbers, event-id deduplication,
 --     a 2 s lease renewed by any valid packet and a 10 s forget time;
 --   * heartbeats release lost releases and never press anything; nothing is replayed after a restart;
@@ -80,7 +80,7 @@ local json   = require("json")
 -- background as six hex digits (`col`). A change of what the service shows (values, levels, activity, colours)
 -- resends the context after at most `feedbackMinMs`, instead of only with the 1 s cadence; the binding
 -- generation is untouched by any of it.
-local VERSION   = "0.9.0"
+local VERSION   = "0.10.0"
 -- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
 local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
 -- Review (PR #6, round 2): the watch list budget covers every supported configuration at once: the ordinary state
@@ -89,8 +89,8 @@ local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows 
 local STATE_READERS = 9
 local CONTEXT_ITEMS = 4
 local MAX_WATCH_ITEMS = STATE_READERS + 2 * MAX_BOUND_EXECUTORS + CONTEXT_ITEMS + MAX_BOUND_EXECUTORS
-local PROTOCOL  = 1
-local MAGIC     = "MTX1"
+local PROTOCOL  = 2
+local MAGIC     = "MTX2"
 local DEFAULTS = {
   host = "127.0.0.1", port = 9810,
   leaseMs = 2000,        -- hardkeys session lease, renewed by every valid packet
@@ -103,7 +103,6 @@ local DEFAULTS = {
   maxPacketsPerSecond = 400,  -- per session
   evWindow = 64,         -- event ids remembered per session for deduplication
   nonceMs = 60000,       -- hello nonces remembered this long
-  authFailLimit = 50, authFailWindowMs = 10000, authIgnoreMs = 10000,
   errReplyMs = 500,      -- at most one err reply per source address per this interval
   maxHolds = 12, maxHoldMs = 60000,
   display = 1,
@@ -133,51 +132,6 @@ local function logerr(f, ...)
   if type(ErrEcho) == "function" then pcall(ErrEcho, line) elseif type(Echo) == "function" then pcall(Echo, line) end
   if type(ErrPrintf) == "function" then pcall(ErrPrintf, line) elseif type(Printf) == "function" then pcall(Printf, line) end
   if state.log then state.log[#state.log + 1] = line; if #state.log > 200 then table.remove(state.log, 1) end end
-end
-
--------------------------------------------------------------------------------
--- SipHash-2-4 (pure Lua 5.3+, 64-bit integer arithmetic wraps as the algorithm needs). The MAC of a
--- datagram is SipHash-2-4 of the JSON bytes under the first 16 bytes of the pairing key, as 16 hex
--- characters. HMAC-SHA256 was measured at 20 ms per call in onPC's Lua (2026-10-09); SipHash costs
--- about 1 ms there. Checked against the SipHash paper's reference vectors in the harness.
--------------------------------------------------------------------------------
-local function rotl(x, b) return (x << b) | (x >> (64 - b)) end
-
-local function siphash24(k0, k1, msg)
-  local v0 = k0 ~ 0x736f6d6570736575
-  local v1 = k1 ~ 0x646f72616e646f6d
-  local v2 = k0 ~ 0x6c7967656e657261
-  local v3 = k1 ~ 0x7465646279746573
-  local function round()
-    v0 = v0 + v1; v1 = rotl(v1, 13); v1 = v1 ~ v0; v0 = rotl(v0, 32)
-    v2 = v2 + v3; v3 = rotl(v3, 16); v3 = v3 ~ v2
-    v0 = v0 + v3; v3 = rotl(v3, 21); v3 = v3 ~ v0
-    v2 = v2 + v1; v1 = rotl(v1, 17); v1 = v1 ~ v2; v2 = rotl(v2, 32)
-  end
-  local len = #msg
-  local nblocks = len // 8
-  for i = 0, nblocks - 1 do
-    local m = string.unpack("<i8", msg, i * 8 + 1)
-    v3 = v3 ~ m; round(); round(); v0 = v0 ~ m
-  end
-  local last = (len & 0xff) << 56
-  for i = 1, len - nblocks * 8 do last = last | (msg:byte(nblocks * 8 + i) << ((i - 1) * 8)) end
-  v3 = v3 ~ last; round(); round(); v0 = v0 ~ last
-  v2 = v2 ~ 0xff
-  round(); round(); round(); round()
-  return v0 ~ v1 ~ v2 ~ v3
-end
-
-local function toHex(s) return (s:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
-local function fromHex(s)
-  if type(s) ~= "string" or #s % 2 ~= 0 or s:find("[^%x]") then return nil end
-  return (s:gsub("%x%x", function(h) return string.char(tonumber(h, 16)) end))
-end
-
--- key: the 32-byte pairing key (its first 16 bytes are the SipHash key). Returns 16 hex characters.
-local function mac(key, text)
-  local k0, k1 = string.unpack("<i8i8", key)
-  return string.format("%016x", siphash24(k0, k1, text))
 end
 
 -------------------------------------------------------------------------------
@@ -277,10 +231,8 @@ local function parseArgument(argument)
     elseif l == "bench" then opts.bench = true
     elseif k then
       k = k:lower()
-      if k == "key" then opts.key = v
+      if k == "key" or k == "bind" or k == "allow" then return nil, k .. "= is no longer supported: the plugin is localhost-only and needs no pairing key"
       elseif k == "port" then opts.port = tonumber(v); if not opts.port or opts.port < 1 or opts.port > 65535 then return nil, "port must be 1..65535" end
-      elseif k == "bind" then opts.host = v
-      elseif k == "allow" then opts.allow = {}; for ip in v:gmatch("[^,]+") do opts.allow[ip] = true end
       elseif k == "input" then
         local m = v:lower()
         if m == "quickkey" or m == "qk" then m = "quickey" end
@@ -332,20 +284,18 @@ end
 -------------------------------------------------------------------------------
 -- Encoding and sending
 -------------------------------------------------------------------------------
-local function encodePacket(key, obj)
+local function encodePacket(obj)
   local text = json.encode(obj)
-  return MAGIC .. " " .. mac(key, text) .. " " .. text
+  return MAGIC .. " " .. text
 end
 state._encodePacket = encodePacket
 
--- Returns the parsed object or nil, reason. The MAC is verified on the exact bytes before parsing.
-local function decodePacket(key, data, maxLen)
+-- Returns the parsed object or nil, reason. The caller checks the loopback source first.
+local function decodePacket(data, maxLen)
   if type(data) ~= "string" then return nil, "not a string" end
   if #data > (maxLen or DEFAULTS.maxDatagram) then return nil, "oversized" end
   if data:sub(1, 5) ~= MAGIC .. " " then return nil, "bad-magic" end
-  local given, text = data:match("^MTX1 (%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x) (.*)$")
-  if not given then return nil, "bad-frame" end
-  if mac(key, text) ~= given:lower() then return nil, "bad-mac" end
+  local text = data:sub(6)
   local ok, obj = pcall(json.decode, text)
   if not ok or type(obj) ~= "table" then return nil, "bad-json" end
   if type(obj.t) ~= "string" then return nil, "no-type" end
@@ -354,7 +304,7 @@ end
 state._decodePacket = decodePacket
 
 local function sendTo(ip, port, obj)
-  local data = encodePacket(state.key, obj)
+  local data = encodePacket(obj)
   state.counters.sent = state.counters.sent + 1
   local ok, err = pcall(function() return state.sock:sendto(data, ip, port) end)
   if not ok or err == nil then state.counters.sendErrors = state.counters.sendErrors + 1 end
@@ -821,15 +771,6 @@ local HANDLERS = {
   bye = function(s, _, now) closeSession(s, now, "bye"); return nil end,
 }
 
--- Auth-failure throttle per source address: bounded work under a flood of bad datagrams.
-local function authFailed(ip, now)
-  local f = state.authFail[ip]
-  if not f or now - f.since > DEFAULTS.authFailWindowMs / 1000 then f = { since = now, count = 0 }; state.authFail[ip] = f end
-  f.count = f.count + 1
-  if f.count >= DEFAULTS.authFailLimit then f.ignoreUntil = now + DEFAULTS.authIgnoreMs / 1000; f.count = 0; f.since = now
-    log("ignoring %s for %d ms after repeated authentication failures", ip, DEFAULTS.authIgnoreMs) end
-end
-
 local function sendErr(ip, port, e, sid, now)
   local last = state.errReplies[ip]
   if last and now - last < DEFAULTS.errReplyMs / 1000 then return end
@@ -841,13 +782,10 @@ local function handleDatagram(data, ip, port, now)
   local c = state.counters
   c.received = c.received + 1
   if type(data) ~= "string" or #data > DEFAULTS.maxDatagram then c.oversized = c.oversized + 1; return "oversized" end
-  if state.allow and not state.allow[ip] then c.notAllowed = c.notAllowed + 1; return "not-allowed" end
-  local f = state.authFail[ip]
-  if f and f.ignoreUntil and now < f.ignoreUntil then c.ignored = c.ignored + 1; return "ignored" end
-  local obj, why = decodePacket(state.key, data)
+  if ip ~= "127.0.0.1" then c.notAllowed = c.notAllowed + 1; return "not-local" end
+  local obj, why = decodePacket(data)
   if not obj then
     c.rejected = c.rejected + 1
-    if why == "bad-mac" or why == "bad-frame" or why == "bad-magic" then authFailed(ip, now) end
     return why
   end
   if obj.t == "hello" then
@@ -859,15 +797,13 @@ local function handleDatagram(data, ip, port, now)
   local s = state.sessions[obj.sid]
   if not s then c.noSession = c.noSession + 1; sendErr(ip, port, "no-session", obj.sid, now); return "no-session" end
   if s.ip ~= ip or s.port ~= port then
-    -- A valid MAC from another address with a known sid: the service moved (DHCP) or a replay from
-    -- elsewhere. The sequence check below still applies; the address follows the newest packet.
-    c.addressChanged = c.addressChanged + 1
+    c.rejected = c.rejected + 1
+    return "wrong-peer"
   end
   local handler = HANDLERS[obj.t]
   if not handler then c.rejected = c.rejected + 1; return "unknown-type" end
   local ok, revived = admitPacket(s, obj, now)
   if not ok then return revived end
-  s.ip, s.port = ip, port
   local err = handler(s, obj, now, revived)
   if err then c.rejected = c.rejected + 1; return err end
   return obj.t
@@ -1316,7 +1252,6 @@ local function tick(now)
   if now - (state.lastSweep or 0) > 5 then
     state.lastSweep = now
     for nonce, t in pairs(state.nonces) do if now - t > DEFAULTS.nonceMs / 1000 then state.nonces[nonce] = nil end end
-    for ip, f in pairs(state.authFail) do if (not f.ignoreUntil or now > f.ignoreUntil) and now - f.since > DEFAULTS.authFailWindowMs / 1000 then state.authFail[ip] = nil end end
     for ip, t in pairs(state.errReplies) do if now - t > 5 then state.errReplies[ip] = nil end end
   end
 end
@@ -1332,9 +1267,9 @@ local function now()
 end
 
 local function resetCounters()
-  state.counters = { received = 0, sent = 0, sendErrors = 0, rejected = 0, oversized = 0, notAllowed = 0, ignored = 0, noSession = 0,
+  state.counters = { received = 0, sent = 0, sendErrors = 0, rejected = 0, oversized = 0, notAllowed = 0, noSession = 0,
                      oldSeq = 0, rateDropped = 0, dupEvents = 0, superseded = 0, refused = 0, presses = 0, releases = 0, wheels = 0, lostReleases = 0,
-                     replayedHello = 0, addressChanged = 0, fullStates = 0, deltaStates = 0, contexts = 0, ticks = 0,
+                     replayedHello = 0, fullStates = 0, deltaStates = 0, contexts = 0, ticks = 0,
                      ctl = 0, ctlRefused = 0, ctlLost = 0, ctlCoalesced = 0, ctlApplied = 0, ctlStaleDropped = 0, ctlExpired = 0 }
 end
 
@@ -1707,19 +1642,15 @@ local function serverMain()
 end
 
 local function start(opts)
-  local key = fromHex(opts.key or "")
-  if not key or #key ~= 32 then logerr("a 32-byte pairing key is required: key=<64 hex characters>"); return false end
-  state.key = key
-  state.host = opts.host or DEFAULTS.host
+  state.host = DEFAULTS.host  -- fixed loopback: no unauthenticated LAN listener
   state.port = opts.port or DEFAULTS.port
-  state.allow = opts.allow
   state.display = opts.display or DEFAULTS.display
   state.execs = opts.execs or {}
   state.execsArg = opts.execs or {}  -- the argument's list (its KB-06 state items); state.execs follows the service's bind
   state.execPage = nil  -- KB-21: set by the service's bind (an explicit page), never by an argument
   state.bench = opts.bench == true
   state.benchWatch = {}
-  state.sessions, state.byId, state.nonces, state.authFail, state.errReplies = {}, {}, {}, {}, {}
+  state.sessions, state.byId, state.nonces, state.errReplies = {}, {}, {}, {}
   state.log = state.log or {}
   state.lastState = nil
   resetCounters()
@@ -1893,7 +1824,6 @@ local function Cleanup()
 end
 
 -- Exposed for the harness (stock Lua, stubbed socket): the pure functions and the loop pieces.
-state._siphash24, state._mac, state._toHex, state._fromHex = siphash24, mac, toHex, fromHex
 state._parseArgument, state._NXK_KEYS, state._DEFAULTS, state._VERSION = parseArgument, NXK_KEYS, DEFAULTS, VERSION
 state._describe, state._enableInput, state._enableControl = describe, enableInput, enableControl
 

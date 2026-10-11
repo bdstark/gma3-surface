@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Packets the service sends. `sid`/`seq` are filled in by the link for everything but `hello`.
 #[derive(Debug, Serialize)]
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn plugin_packets_parse() {
-        let w: FromPlugin = serde_json::from_str(r#"{"t":"welcome","v":1,"sid":"abcd","nonce":"n","gen":"1-00000001","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":["Bank"]},"modules":{"gma3_mcp_hardkeys":"0.5.0"},"seq":1}"#).unwrap();
+        let w: FromPlugin = serde_json::from_str(r#"{"t":"welcome","v":2,"sid":"abcd","nonce":"n","gen":"1-00000001","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":["Bank"]},"modules":{"gma3_mcp_hardkeys":"0.5.0"},"seq":1}"#).unwrap();
         match w {
             FromPlugin::Welcome { sid, keys, lease, .. } => {
                 assert_eq!(sid, "abcd");
@@ -331,7 +331,7 @@ mod tests {
         assert!(text.contains(r#""tgt":{"ex":201,"el":"fader"}"#) && text.contains(r#""d":0"#) && !text.contains(r#""cg""#), "{text}");
         let a: FromPlugin = serde_json::from_str(r#"{"t":"ack","sid":"s","seq":5,"ev":8,"ok":1,"lost":2,"coalesced":1}"#).unwrap();
         match a { FromPlugin::Ack { lost, coalesced, .. } => { assert_eq!(lost, Some(2)); assert_eq!(coalesced, Some(1)); } _ => panic!() }
-        let w: FromPlugin = serde_json::from_str(r#"{"t":"welcome","v":1,"sid":"a","nonce":"n","gen":"1-1","lease":2000,"hb":250,"control":1,"controlBackend":"fake","seq":0}"#).unwrap();
+        let w: FromPlugin = serde_json::from_str(r#"{"t":"welcome","v":2,"sid":"a","nonce":"n","gen":"1-1","lease":2000,"hb":250,"control":1,"controlBackend":"fake","seq":0}"#).unwrap();
         match w { FromPlugin::Welcome { control, control_backend, .. } => { assert_eq!(control, Some(1)); assert_eq!(control_backend.as_deref(), Some("fake")); } _ => panic!() }
     }
 }
