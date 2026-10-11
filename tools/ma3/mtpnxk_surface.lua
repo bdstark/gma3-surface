@@ -114,6 +114,7 @@ local DEFAULTS = {
   controlWorkPerTick = 8,  -- KB-18: continuous-control intents applied per loop iteration (KB-24: 8, merged intents)
   maxCtlDelta = 4096,
   benchMs = 500,         -- how long bench mode waits for a NUM tap to show on the command line
+  refreshMs = 300,         -- KB-24 hardware pass: how long an executor whose key was pressed is re-read every tick
   readsPerService = 24,    -- KB-21: a bound bank window is up to 96 targets (KB-24: 24 reads per tick; 8 left the state readers behind ~100 watch items, a command-line keyword took 200-600 ms to read back)
 }
 
@@ -681,6 +682,12 @@ local function handleCtl(s, obj, now)
   end
   if (r.lost or 0) > 0 then state.counters.ctlLost = state.counters.ctlLost + r.lost end
   if r.coalesced then state.counters.ctlCoalesced = state.counters.ctlCoalesced + 1 end
+  -- KB-24 hardware pass: a playback key on an executor changes what that executor reports (running, stopped); read it
+  -- every tick for refreshMs instead of waiting for its turn in the feedback round robin (feedback 0.8.0 refresh).
+  if kind == "button" and target.executor ~= nil then
+    state.refreshExec = state.refreshExec or {}
+    state.refreshExec[tostring(target.executor) .. "|" .. tostring(target.page)] = { executor = target.executor, page = target.page, untilT = now + DEFAULTS.refreshMs / 1000 }
+  end
   local extra = { lost = (r.lost or 0) > 0 and r.lost or nil, lu = r.lostUncertain and 1 or nil, coalesced = r.coalesced and 1 or nil, superseded = r.superseded, queued = r.queued, noop = r.noop and 1 or nil, boundary = r.boundary and 1 or nil, evicted = r.evicted }
   ackEvent(s, ev, true, extra)
   return nil
@@ -1236,6 +1243,19 @@ local function serviceModules(now)
       if res.dropped and (res.dropped.staleGeneration > 0) then state.counters.ctlStaleDropped = state.counters.ctlStaleDropped + res.dropped.staleGeneration end
       if res.dropped and (res.dropped.expired > 0) then state.counters.ctlExpired = state.counters.ctlExpired + res.dropped.expired end
       state.counters.ctlApplied = state.counters.ctlApplied + (res.applied or 0)
+    end
+  end
+  -- KB-24 hardware pass: after the backend applied the keys, re-read the executors they pressed.
+  if state.refreshExec and next(state.refreshExec) then
+    local f = fb()
+    if f and type(f.refresh) == "function" then
+      for k, x in pairs(state.refreshExec) do
+        local ok = pcall(f.refresh, f, "executorTarget", { executor = x.executor, page = x.page }, now)
+        state.counters.execRefreshes = (state.counters.execRefreshes or 0) + 1
+        if not ok or now >= x.untilT then state.refreshExec[k] = nil end
+      end
+    else
+      state.refreshExec = nil
     end
   end
   return released
