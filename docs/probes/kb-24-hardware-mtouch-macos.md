@@ -141,5 +141,22 @@ The plugin re-reads an executor every tick for 300 ms after a playback key on it
 
 The release side's tail is gone (all 74–150 ms): the read path is fast. Presses still spread 84–347 ms through the
 same read path, so the remaining press time is the console's own time to report the sequence running after `Press`
-(stopping it is reported almost at once); the refresh cannot shorten that. Not yet measured: the MCP bridge's share
-of the plugin thread (a run with the bridge stopped).
+(stopping it is reported almost at once); the refresh cannot shorten that.
+
+### The MCP bridge's share of the plugin thread
+
+Both plugins run their loops on grandMA3's one Lua plugin thread. To see whether the bridge (Plugin 1, idle: no MCP
+client watching anything) costs the surface latency, the same measurements were taken with it running and with
+`Plugin 1 "stop"`. The idle tick comes from a 10 s `measure` run under a separate session id (`--id bridge-test`);
+the key timing from taps of PFA 1 (executor 101, StartShow 1, Flash).
+
+| | bridge on | bridge off |
+| --- | --- | --- |
+| surface plugin idle tick, mean / max | 16.8 / 164 ms | 20.1 / 168 ms |
+| down → running, median / worst | 218 / 347 ms (n=11) | 187 / 263 ms (n=13) |
+| up → stopped, median / worst | 96 / 150 ms (n=11) | 101 / 120 ms (n=13) |
+
+The surface's own tick does not get cheaper without the bridge, and releases are unchanged. Presses are somewhat
+faster without it (median −31 ms, worst −84 ms), within what two small samples can show. Conclusion: an idle bridge
+costs the surface little; latency alone does not justify merging the two plugins into one. The tick is dominated by
+the surface plugin's own state/context collection (71-73 %), which is where further gains are.
