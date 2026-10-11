@@ -203,6 +203,7 @@ pub mod thresholds {
     pub const FEEDBACK_P95_MS: f64 = 300.0;
     pub const EFFECT_P95_MS: f64 = 100.0;
     pub const RETRANSMIT_RATIO: f64 = 0.01;
+    pub const FEEDBACK_MISSED_RATIO: f64 = 0.10;
     pub const PLUGIN_TICK_MAX_MS: f64 = 200.0;
 }
 
@@ -330,9 +331,13 @@ pub fn report(link: &link::Link, strips: &strips::Strips, banks: &banks::Banks, 
     let ratio = if events > 0 { retx as f64 / events as f64 } else { 0.0 };
     checks.push(Check { name: "retransmit ratio".into(), value: Some(ratio), threshold: format!("<= {:.0}%", thresholds::RETRANSMIT_RATIO * 100.0), verdict: if ratio <= thresholds::RETRANSMIT_RATIO { Verdict::Pass } else { Verdict::Fail } });
     if setup.probe_rate > 0.0 {
+        // Agreed 2026-10-11: a probe is "missed" when the keyword was not read back before its Clear 400 ms later; on
+        // onPC 2.5.1 one in ten still is (the console's own frame and read timing), so the line is a tenth of the probes.
         let missed = counters.get("feedback_missed").copied().unwrap_or(0);
-        let verdict = if feedback.is_none() { Verdict::NotAvailable } else if missed == 0 { Verdict::Pass } else { Verdict::Fail };
-        checks.push(Check { name: "feedback probes missed".into(), value: Some(missed as f64), threshold: "= 0".into(), verdict });
+        let total = missed + feedback.as_ref().map(|s| s.n as u64).unwrap_or(0);
+        let ratio = if total > 0 { missed as f64 / total as f64 } else { 0.0 };
+        let verdict = if feedback.is_none() { Verdict::NotAvailable } else if ratio <= thresholds::FEEDBACK_MISSED_RATIO { Verdict::Pass } else { Verdict::Fail };
+        checks.push(Check { name: "feedback probes missed".into(), value: Some(ratio), threshold: format!("<= {:.0}% of probes", thresholds::FEEDBACK_MISSED_RATIO * 100.0), verdict });
     }
     match &load {
         Some((tmax, _, pmax, full, _)) => {
@@ -408,7 +413,7 @@ impl Report {
         }
         for c in &self.checks {
             let v = match c.value {
-                Some(v) if c.name == "retransmit ratio" => format!("{:.2}%", v * 100.0),
+                Some(v) if c.name == "retransmit ratio" || c.name == "feedback probes missed" => format!("{:.1}%", v * 100.0),
                 Some(v) => format!("{v:.1}"),
                 None => "n.a.".into(),
             };

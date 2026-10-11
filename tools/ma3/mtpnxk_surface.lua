@@ -568,6 +568,7 @@ local function handleKey(s, obj, now)
     end
     s.holds[name] = r.id
     state.counters.presses = state.counters.presses + 1
+    state.collectNextTick = true  -- KB-24: read the console state on the next tick (the key's effect), not at the cadence
     if r.duplicate then ackEvent(s, ev, true, { hold = r.id, duplicate = 1 }) else ackEvent(s, ev, true, { hold = r.id }) end
     if state.bench and logical:match("^NUM%d$") then
       local before = nil
@@ -586,6 +587,7 @@ local function handleKey(s, obj, now)
       return nil
     end
     state.counters.releases = state.counters.releases + 1
+    state.collectNextTick = true
     if r.state == "unresolved" then
       logerr("session %s: release of %s (%s) unresolved: %s", s.sid, name, hid, tostring(r.unresolved and r.unresolved.reason))
       ackEvent(s, ev, false, { code = "unresolved", why = tostring(r.unresolved and r.unresolved.reason), hold = hid })
@@ -1282,14 +1284,16 @@ local function tick(now)
   if n >= DEFAULTS.maxPacketsPerTick then ld.full = ld.full + 1 end
   local tC = clockMs()
   -- 4: state out (at most every stateEveryMs; the bench timing watches every tick).
+  if state.collectNextTick and not state.collectNow then state.collectNow, state.collectNextTick = true, nil end
   if state.lastCollectAt == nil or now - state.lastCollectAt >= DEFAULTS.stateEveryMs / 1000 or state.collectNow then
     state.lastCollectAt, state.collectNow = now, nil
     local cur = collectState(now)
     state.lastState = cur
     sendStates(now)
   end
-  -- The context is still collected every tick: the binding revision the KB-21/KB-22 tests expect in the tick of a
-  -- bind is refreshed on this path (gating it lagged the revision by a bind); an open KB-24 item.
+  -- The context is still collected every tick: gating it to the state cadence shifted the binding revision the
+  -- KB-21/KB-22 tests expect in the tick of a bind (the module's first snapshot sets revision 1 on this path, and the
+  -- bind path and the context path flip the key when they run in a different order); an open KB-24 item.
   sendContexts(now, collectContext(now))
   serviceBench(now)
   -- Housekeeping (cheap, bounded).

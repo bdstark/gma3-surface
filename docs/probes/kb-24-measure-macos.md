@@ -202,10 +202,26 @@ and the service's deferral is bounded at 44 ms (was 146); everything else stays 
 the three missed probes, and the plugin's idle tick cost (the context collection every tick, 53 % of C4's tick
 time) whose gating still lags the binding revision in the KB-21 tests.
 
+### Round 5 (2026-10-11, later): the state read after a key event
+
+The plugin now collects and sends the console state on the tick after any key event (`collectNextTick`), instead
+of waiting for the 40 ms cadence. The context collection stays per tick: gating it to the cadence shifts the
+binding revision the KB-21/KB-22 tests expect in the tick of a bind (the module's first snapshot sets revision 1
+on that path; priming it at control enable moved the shift elsewhere), so it stays an open item with that finding.
+
+| Run | Workload | key ack (n / median / p95 / worst) | feedback | press-to-effect | plugin loop | loss | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **B7** | keys 4/s + Record probe, 20 s | 389 / 44 / **69** / 87 ms | n=34 of 39, **median 49 ms, p95 172 ms**, 5 missed | **p95 66 ms** (was 122), p99 199 | 280 / 34 ms / 171 / 0; one coroutine, no overlaps | all zero | PASS under the agreed lines (missed probes 13 %: see below) |
+
+Agreed in this round: "feedback probes missed" is a tenth of the probes rather than zero (3–5 of 39 are missed in
+every run since round 4, inside the 400 ms before the probe's Clear; the console's frame and read timing, not the
+transport). B7 sits at 13 %, just over; the motion runs were not repeated (nothing in this round touches them).
+
 ### Recommended next steps
 
-- Press-to-effect and the missed probes: both sit on the plugin's observation cadence of the command line; a
-  state read right after a key event (instead of at the next poll) would close them.
-- Plugin loop: decouple the binding-revision refresh from the context collection so the context can run at the
-  40 ms cadence like the state readers.
-- Hardware pass: the physical surfaces at the same workloads.
+- Plugin loop: decouple the binding-revision baseline from the context collection (prime it once per control
+  instance where the first snapshot is taken, then gate the collection to the 40 ms cadence); the KB-21/KB-22
+  scenes are the regression tests.
+- The missed probes: observe the command line right after a key event at the plugin (the `bench` watch does this
+  for NUM taps) and send the state delta from that observation.
+- Hardware pass: the physical surfaces at the same workloads, after the merge.

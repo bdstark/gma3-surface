@@ -806,6 +806,12 @@ anomaly did not reproduce (one coroutine, no overlapping ticks, coherent sums): 
 surviving a plugin restart, now replaced. Open: press-to-effect p95 122 ms against 100, three missed probes, the context
 collection every tick.
 
+**Round 5 (2026-10-11, later):** the plugin reads and sends the console state on the tick after any key event;
+press-to-effect p95 fell from 122 to 66 ms (B7), feedback 49 ms median / 172 ms p95. The "probes missed" line was
+agreed at a tenth of the probes (3–5 of 39 are missed in every run since round 4; B7 is at 13 %). The context
+collection stays per tick: gating it shifts the binding revision the KB-21/KB-22 tests expect, with the finding
+recorded; the hardware pass is deferred until the merge.
+
 **Pending (hardware pass, operator at the surfaces):** `measure` against onPC with the plugin 0.11.0 installed
 (procedure in the record), the physical NX-K rotaries, M-Touch and
 M-Play through `run` for every KB-16 … KB-23 scenario, two connected surfaces, USB removal, plugin restart, context
