@@ -613,7 +613,9 @@ one up, refused empty; the Go key without a profile is unmapped; the summary's f
   (two new), harness 235, e2e unchanged. **Round 2** (control from `ce91371`): the verification is the live `deps.observe`
   read only (never the cached binding), a hold whose down never applied is discarded at the session's end without a
   release, and an unresolved release reserves its target against new presses until `recover` applies it; the harness
-  check that raises on a cleanup release now services the touch first (an unapplied hold is discarded, by design).
+  check that raises on a cleanup release now services the touch first (an unapplied hold is discarded, by design). **Round 3** (control from `d77888d`): the gesture bound cancels an expired gesture's queued intents before
+  the queue is serviced; reservations compare the executor's stable address (pool, page, number, element), so a changed
+  key function or a reassignment cannot open an executor with a release pending on it.
 
 **Verified live in this repository:** [docs/probes/kb-22-surface-macos-2.5.1.md](docs/probes/kb-22-surface-macos-2.5.1.md)
 (the plugin 0.8.0 on onPC with `control=console`, driven by the release service's `sim` with `--pb-rows 201,201,301`: a
