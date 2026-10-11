@@ -168,10 +168,44 @@ What run 3 establishes:
    other way. The service-side figures (acks, queueing, loss) are wall-clock and unaffected; the plugin's tick
    figures are indicative until this is understood.
 
+### Round 4 (2026-10-11, later): the next improvements, and the scheduling anomaly answered
+
+| Change | Where | What |
+| --- | --- | --- |
+| merge before resolving | `gma3_mcp_control` 0.7.0 (upstream `9402f78`, pinned `3dd82b2`) | a relative delta that can merge into a queued intent of its control (same target, generation, revision, gesture, fine; no boundary or other intent of the control after it; the intent younger than `earlyMergeMs` = 100 ms) is merged right after the ordering and rate checks, skipping the binding lookup and target resolution |
+| priority reads | `gma3_mcp_feedback` 0.7.0 (`priorityStateReads = 1` in the surface plugin) | due non-executor items (state readers, pool, page, encoder bank and slots) are read before the executor targets, inside at most half the read budget and with their own round robin, so executors and late items never starve |
+| ceiling window | service `link.rs` `motion_window` 0.1 s | the 100 packets/s ceiling is enforced per 100 ms (10 packets): a burst defers for tens of ms instead of up to a second's worth |
+| scheduling diagnostics | plugin 0.11.0 load report `co`, `ovl` | distinct coroutines that ticked in the window and ticks that began inside another |
+
+Same setup as runs 2 and 3 (Macro 150 reload, fixtures 401+402 on bank 4.1 for the motion runs, playback left out,
+`ClearAll` afterwards). Agreed in this round: motion queue p95 10 → 15 ms (the 25 ms per-control interval makes
+10–12 ms the norm when nothing is saturated).
+
+| Run | Workload | key ack (n / median / p95 / worst) | boundary ack p95 | motion queue (p95 / worst) | feedback | plugin loop (ticks / mean / max / at budget) | loss and ordering | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **B6** | keys 4/s + Record probe, 20 s | 389 / 46 / **71** / 84 ms | — | — | n=36 of 39, **median 55 ms, p95 165 ms**, 3 missed | 263 / 36 ms / 180 / 0 | all zero | FAIL only on press-to-effect p95 122 ms (threshold 100) and 3 missed probes |
+| **C4** | rotaries 2+3 at 20/s + strip, no keys | — | 36 ms | 9.7 / 16 ms | — | 1490 / 22 ms / 173 / 0 | all zero | **PASS** |
+| **E3** | rotaries 20/s + strip + keys 4/s | 239 / 49 / **69** / 82 ms | 46 ms | 11.0 / 23 ms | — | 294 / 55 ms / 190 / 0 | all zero | PASS under the agreed 15 ms line |
+| **D3** | rotaries 50/s + strip + keys 4/s | 239 / 48 / **71** / 91 ms | 47 ms | 30 / **44 ms** (was 146) | — | 271 / 58 ms / **175** / **0** (was 27 at budget) | all zero (1134 deltas merged) | FAIL only on motion queue p95 (deferral under the ceiling, by design) |
+
+Scheduling: every window of every run reported **one coroutine and zero overlapping ticks**, and the phase sums
+are now consistent with the wall clock (B6: 9.5 s of tick time in 20 s). The earlier anomaly (tick counts and phase
+sums above wall time) was therefore not re-entrancy or a stale loop. It coincided with the windows in which an older
+plugin's `state.load` table (without the new fields) survived a restart in the shared state; the round-4 plugin
+replaces such a table, and the figures have been coherent since. The plugin's tick figures can be read as real
+again, with the 167–190 ms spikes a recurring console-side cost even idle.
+
+What round 4 adds: a keyword change is read back in 55 ms median and 165 ms p95 (was 200 / 509 ms, and 11 missed
+probes are now 3); at 100 detents/s plus a strip plus keys the plugin never hits its datagram budget (was 27 ticks)
+and the service's deferral is bounded at 44 ms (was 146); everything else stays clean. Open: press-to-effect p95
+122 ms against 100 (the plugin's `bench` observation of the command line, one frame late in a fifth of the taps),
+the three missed probes, and the plugin's idle tick cost (the context collection every tick, 53 % of C4's tick
+time) whose gating still lags the binding revision in the KB-21 tests.
+
 ### Recommended next steps
 
-- Feedback: measure the read cost per watch item and consider a smaller executor window or a per-item priority
-  (state readers before executor items) so that a keyword or LED change is read back within 300 ms.
-- Plugin loop: collect the context at a bounded cadence too, once the binding-revision refresh is decoupled from
-  it (the KB-21 tests expect the revision in the tick of the bind), and understand the tick-count anomaly above.
+- Press-to-effect and the missed probes: both sit on the plugin's observation cadence of the command line; a
+  state read right after a key event (instead of at the next poll) would close them.
+- Plugin loop: decouple the binding-revision refresh from the context collection so the context can run at the
+  40 ms cadence like the state readers.
 - Hardware pass: the physical surfaces at the same workloads.

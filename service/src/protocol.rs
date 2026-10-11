@@ -131,6 +131,11 @@ pub struct PluginLoad {
     pub spkt: f64,
     #[serde(default)]
     pub sstate: f64,
+    /// Scheduling diagnostics: distinct coroutines that ticked in the window, ticks that began inside another.
+    #[serde(default)]
+    pub co: u64,
+    #[serde(default)]
+    pub ovl: u64,
 }
 
 /// Packets the plugin sends.

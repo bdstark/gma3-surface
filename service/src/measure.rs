@@ -198,7 +198,7 @@ pub mod thresholds {
     pub const KEY_ACK_P95_MS: f64 = 80.0;
     pub const KEY_ACK_WORST_MS: f64 = 300.0;
     pub const CTL_ACK_P95_MS: f64 = 80.0;
-    pub const MOTION_QUEUE_P95_MS: f64 = 10.0;
+    pub const MOTION_QUEUE_P95_MS: f64 = 15.0; // agreed 2026-10-11: the 25 ms per-control interval makes 10-12 ms p95 the norm
     pub const MOTION_QUEUE_WORST_MS: f64 = 50.0;
     pub const FEEDBACK_P95_MS: f64 = 300.0;
     pub const EFFECT_P95_MS: f64 = 100.0;
@@ -214,6 +214,8 @@ pub struct Report {
     pub load: Option<(f64, f64, u64, u64, u64)>,
     /// Where the plugin's tick time went over the run (ms): module servicing, datagrams, state/context.
     pub load_phases: Option<(f64, f64, f64)>,
+    /// Scheduling diagnostics over the run: the most distinct coroutines in one window, overlapping ticks.
+    pub load_sched: Option<(u64, u64)>,
     pub checks: Vec<Check>,
 }
 
@@ -286,6 +288,7 @@ pub fn report(link: &link::Link, strips: &strips::Strips, banks: &banks::Banks, 
         let full: u64 = loads.iter().map(|l| l.full).sum();
         Some((tmax, tavg, pmax, full, n))
     };
+    let load_sched = if loads.is_empty() { None } else { Some((loads.iter().map(|l| l.co).max().unwrap_or(0), loads.iter().map(|l| l.ovl).sum())) };
     let load_phases = if loads.is_empty() { None } else { Some((loads.iter().map(|l| l.smod).sum(), loads.iter().map(|l| l.spkt).sum(), loads.iter().map(|l| l.sstate).sum())) };
 
     let mut checks = Vec::new();
@@ -362,6 +365,7 @@ pub fn report(link: &link::Link, strips: &strips::Strips, banks: &banks::Banks, 
         refusals,
         load,
         load_phases,
+        load_sched,
         checks,
     }
 }
@@ -386,6 +390,9 @@ impl Report {
         match &self.load {
             Some((tmax, tavg, pmax, full, n)) => {
                 out.push_str(&format!("plugin loop: ticks={n} tick max={tmax:.2} ms mean={tavg:.3} ms datagrams/tick max={pmax} ticks at budget={full}\n"));
+                if let Some((co, ovl)) = self.load_sched {
+                    out.push_str(&format!("plugin loop scheduling: coroutines per window max={co} overlapping ticks={ovl}\n"));
+                }
                 if let Some((m, p, s)) = self.load_phases {
                     let total = (m + p + s).max(0.001);
                     out.push_str(&format!("plugin loop phases: modules {:.0}% ({m:.0} ms) datagrams {:.0}% ({p:.0} ms) state/context {:.0}% ({s:.0} ms)\n", m / total * 100.0, p / total * 100.0, s / total * 100.0));
@@ -419,7 +426,7 @@ impl Report {
         json!({
             "setup": self.setup.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect::<serde_json::Map<_, _>>(),
             "metrics": self.metrics.iter().map(|(k, v)| (k.clone(), s(v))).collect::<serde_json::Map<_, _>>(),
-            "plugin_loop": self.load.map(|(tmax, tavg, pmax, full, n)| json!({ "ticks": n, "tick_max_ms": tmax, "tick_mean_ms": tavg, "datagrams_per_tick_max": pmax, "ticks_at_budget": full, "phases_ms": self.load_phases.map(|(m, p, s)| json!({ "modules": m, "datagrams": p, "state_context": s })) })),
+            "plugin_loop": self.load.map(|(tmax, tavg, pmax, full, n)| json!({ "ticks": n, "tick_max_ms": tmax, "tick_mean_ms": tavg, "datagrams_per_tick_max": pmax, "ticks_at_budget": full, "phases_ms": self.load_phases.map(|(m, p, s)| json!({ "modules": m, "datagrams": p, "state_context": s })), "scheduling": self.load_sched.map(|(co, ovl)| json!({ "coroutines_max": co, "overlapping_ticks": ovl })) })),
             "counters": self.counters,
             "refusals_last_100": self.refusals,
             "checks": self.checks.iter().map(|c| json!({ "name": c.name, "value": c.value, "threshold": c.threshold, "verdict": match c.verdict { Verdict::Pass => "pass", Verdict::Fail => "fail", Verdict::NotAvailable => "n.a." } })).collect::<Vec<_>>(),

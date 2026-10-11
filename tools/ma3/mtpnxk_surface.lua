@@ -714,8 +714,10 @@ local function handleHeartbeat(s, obj, now, revived)
   local ld = state.load
   if ld and ld.n > 0 then
     local r3 = function(v) return math.floor((v or 0) * 1000 + 0.5) / 1000 end
-    reply.load = { tmax = r3(ld.tmax), tavg = r3(ld.tsum / ld.n), pmax = ld.pmax, full = ld.full, n = ld.n, smod = r3(ld.smod), spkt = r3(ld.spkt), sstate = r3(ld.sstate) }
-    state.load = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0, smod = 0, spkt = 0, sstate = 0 }
+    local cos = 0
+    for _ in pairs(ld.cos or {}) do cos = cos + 1 end
+    reply.load = { tmax = r3(ld.tmax), tavg = r3(ld.tsum / ld.n), pmax = ld.pmax, full = ld.full, n = ld.n, smod = r3(ld.smod), spkt = r3(ld.spkt), sstate = r3(ld.sstate), co = cos, ovl = ld.ovl or 0 }
+    state.load = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0, smod = 0, spkt = 0, sstate = 0, cos = {}, ovl = 0 }
   end
   if revived then reply.resynced = 1 end
   if releasedNow > 0 then reply.reconciled = releasedNow end
@@ -775,7 +777,7 @@ local function handleBind(s, obj, now)
   -- with) goes out on the next tick instead of at the next periodic refresh: a press right after a bank change is
   -- not refused stale-binding for up to a second.
   for _, sess in pairs(state.sessions) do if sess.state == "active" then sess.lastContextAt = nil end end
-  state.collectNow = true  -- KB-24: the context of the new binding goes out on this tick, not at the next cadence
+  state.collectNow = true  -- KB-24: the state readers go out on this tick too
   return nil
 end
 
@@ -1246,6 +1248,16 @@ end
 
 local function tick(now)
   state.lastTickAt = now
+  -- KB-24: the load window (see the heartbeat reply) and two diagnostics for the console's scheduling: how many
+  -- distinct coroutines ticked in the window (more than one means a stale loop is alive) and how often a tick began
+  -- while another had not ended (re-entrant resumption).
+  local ld = state.load
+  -- (the state table survives a plugin restart: a window left by an older plugin without these fields is replaced)
+  if not ld or ld.cos == nil then ld = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0, smod = 0, spkt = 0, sstate = 0, cos = {}, ovl = 0 }; state.load = ld end
+  local co = coroutine.running()
+  ld.cos[tostring(co)] = true
+  if state.inTick then ld.ovl = ld.ovl + 1 end
+  state.inTick = true
   -- 1 + 2: deadlines and feedback before any packet.
   local tA = clockMs()
   local released = serviceModules(now)
@@ -1264,10 +1276,8 @@ local function tick(now)
     handleDatagram(data, ip, port, now)
   end
   state.counters.ticks = state.counters.ticks + 1
-  -- KB-24: the load window (datagrams this tick, whether the budget was exhausted) and where the tick's time went
-  -- (smod: module servicing incl. the feedback reads, spkt: datagrams, sstate: state and context collection and sends).
-  local ld = state.load
-  if not ld then ld = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0, smod = 0, spkt = 0, sstate = 0 }; state.load = ld end
+  -- KB-24: datagrams this tick, whether the budget was exhausted; where the tick's time went (smod: module servicing
+  -- incl. the feedback reads, spkt: datagrams, sstate: state and context collection and sends).
   if n > ld.pmax then ld.pmax = n end
   if n >= DEFAULTS.maxPacketsPerTick then ld.full = ld.full + 1 end
   local tC = clockMs()
@@ -1278,6 +1288,8 @@ local function tick(now)
     state.lastState = cur
     sendStates(now)
   end
+  -- The context is still collected every tick: the binding revision the KB-21/KB-22 tests expect in the tick of a
+  -- bind is refreshed on this path (gating it lagged the revision by a bind); an open KB-24 item.
   sendContexts(now, collectContext(now))
   serviceBench(now)
   -- Housekeeping (cheap, bounded).
@@ -1299,6 +1311,7 @@ local function tick(now)
     ld.smod = ld.smod + math.max(0, tB - tA); ld.spkt = ld.spkt + math.max(0, tC - tB); ld.sstate = ld.sstate + math.max(0, tD - tC)
   end
   ld.n = ld.n + 1
+  state.inTick = false
 end
 state._tick = tick
 
@@ -1361,7 +1374,7 @@ local function loadModules()
           return mod.new({ owner = pluginName, deps = deps, config = { defaultLeaseMs = DEFAULTS.leaseMs, maxWorkPerService = DEFAULTS.controlWorkPerTick, requireBindingRevision = false } }):init()
         end
         -- KB-21: a surface binds every bank window at once (M-Touch 30, M-Play 60 executors), above the module's default bound.
-        local cfg = { maxReadsPerService = DEFAULTS.readsPerService }
+        local cfg = { maxReadsPerService = DEFAULTS.readsPerService, priorityStateReads = 1 }  -- KB-24: state items before executors
         -- Review (PR #6): the watch list holds the state items, execs= readers and up to 96 targets: above the module's 64.
         if entry.key == "feedback" then cfg.maxExecutors = MAX_BOUND_EXECUTORS; cfg.maxItems = MAX_WATCH_ITEMS end
         return mod.new({ owner = pluginName, deps = deps, config = cfg }):init()

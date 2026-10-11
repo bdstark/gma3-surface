@@ -7,7 +7,7 @@ for the console, host and firmware it names. Vocabulary as in [deployments.md](d
 *harness*, *unqualified*.
 
 Revision of this matrix: service branch `feat/kb24-device-profiles`; vendored modules hardkeys 0.10.0 /
-feedback 0.6.0 / control 0.6.0 at `e4aa80a` ([VENDOR.md](../tools/ma3/VENDOR.md)); plugin `mtpnxk_surface`
+feedback 0.7.0 / control 0.7.0 at `3dd82b2` ([VENDOR.md](../tools/ma3/VENDOR.md)); plugin `mtpnxk_surface`
 0.11.0 (adds the heartbeat load report; 0.10.0 / protocol 2 is the localhost-only transport without a pairing key; the field is optional).
 
 ## Automated suites (what each run establishes)
@@ -72,7 +72,7 @@ and claims nothing.
 | --- | --- | --- | --- |
 | key ack p95 / worst | surface key event sent → plugin ack received (service clock) | ≤ 80 ms / ≤ 300 ms | **agreed 2026-10-11**: the plugin tick on 2.5.1 is 13 ms idle and acks sit at 43–47 ms median, 65–73 ms p95 (runs B2–B5); measured plus margin; the retransmit spacing (120 ms) must stay exceptional |
 | ctl boundary ack p95 | strip touch / button boundary sent → ack | ≤ 80 ms | as keys (measured 44–50 ms p95) |
-| motion queue p95 / worst | a rotary/strip/fader motion queued → sent (never acknowledged, so the service side only) | ≤ 10 ms / ≤ 50 ms | under the 25 ms per-control interval (merging meanwhile) and the 1 ms loop; holds for unsaturated use (C3, E2). Above the per-session ceiling (100 packets/s) deferral is the mechanism and these lines are exceeded by design (D2: 25 / 146 ms, nothing aged); the 250 ms age bound must never be approached |
+| motion queue p95 / worst | a rotary/strip/fader motion queued → sent (never acknowledged, so the service side only) | ≤ 15 ms / ≤ 50 ms | under the 25 ms per-control interval (merging meanwhile) and the 1 ms loop; holds for unsaturated use (C3, E2). Above the per-session ceiling (100 packets/s) deferral is the mechanism and these lines are exceeded by design (D2: 25 / 146 ms, nothing aged); the 250 ms age bound must never be approached |
 | feedback p95 | probe key press → first state message in which the probed item changed | ≤ 300 ms | the plugin reads state every frame and sends deltas; a full state at least every second is not the path |
 | press-to-effect p95 | plugin `bench`: NUM key event → command-line change (plugin clock) | ≤ 100 ms | KB-08's open item; needs the plugin started with `bench` |
 | lost, superseded, plugin-reported ctl loss, aged, stale, overflow, rejected, link downs, deltas ignored | counters over the run | 0 | any loss on loopback is a defect |
@@ -89,6 +89,7 @@ and claims nothing.
 | stub (stock Lua, Python 16 ms bridge), 15 s, defaults | 2026-10-10 | every service-side check passes; two **stub artefacts** fail: press-to-effect p95 242 ms (the stub's frame cadence, not a console), plugin-reported ctl loss 372 (every motion is refused `target-unavailable` by a console without an encoder bar, and a refused event is not committed to the control module's per-device sequence, so the next admitted event reports a gap) | [report](probes/kb-24-measure-stub-macos.json) |
 | onPC 2.5.1 loopback, plugin 0.11.0 (keyless protocol 2), runs A–E | 2026-10-10 | **FAIL against the proposed thresholds**: admitted motion is clean (run C2: 0 refused/lost/retransmitted, boundaries 23 ms median), but the plugin loop costs 13 ms per tick idle (max 167 ms) and 59 ms with motion and keys, key acks sit at 40–46 ms median, the control queue overflows (`queue-full`) at 40 detents/s plus a strip, and at 100 detents/s the plugin saturates (ticks 180–300 ms) and key taps are lost (superseded 101–234, lost 103–220). The refused-event loss accounting is confirmed live | [record](probes/kb-24-measure-macos.md), `probes/kb-24-measure-onpc-macos-2.5.1-run*.json` |
 | onPC 2.5.1 loopback, plugin 0.11.0 + control 0.6.0, after the fixes (runs B2–B5, C3, E2, D2) | 2026-10-11 | **keys and admitted motion pass**: C3 passes every check; E2 and D2 lose nothing (0 lost / superseded / refused / retransmitted at 40 and 100 detents/s with keys; before: 103 lost, 101 superseded, 1957 `queue-full`); key acks 65–69 ms p95 against 80. **Open**: feedback read-back p95 509 ms (11 of 39 probes missed; median 60 ms), plugin tick spikes 266–275 ms, D2 at the datagram budget in 27 ticks and motion deferred by the ceiling (25 / 146 ms) | same record, `…-run{B2,B3,B4,B5,C3,E2,D2}-*.json` |
+| onPC 2.5.1 loopback, plugin 0.11.0 + control 0.7.0 + feedback 0.7.0, round 4 (B6, C4, E3, D3) | 2026-10-11 | **C4 and E3 pass**; D3 (100 detents/s + strip + keys) fails only the motion-queue line by design under the ceiling (44 ms worst, was 146; the plugin never at its datagram budget, was 27 ticks); B6: feedback median 55 ms, p95 165 ms (was 60 / 509), 3 probes missed (was 11), press-to-effect p95 122 ms against 100. Scheduling diagnostics: one coroutine, no overlapping ticks, coherent phase sums | same record, `…-run{B6,C4,E3,D3}-*-round4.json` |
 
 The onPC runs confirmed the second artefact as a defect of the vendored control module's accounting and
 identified two more (the control queue overflowing at realistic rates, the plugin loop saturating at 100 detents/s

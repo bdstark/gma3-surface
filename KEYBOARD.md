@@ -747,8 +747,9 @@ Windows/Linux hosts.
 
 ## KB-24 — Device profiles and end-to-end qualification (surface half, documentation and harness: 2026-10-10)
 
-The console half is the MCP repository's note (ENCODERS.md "KB-24 results"): control 0.6.0 (the two module defects
-the qualification found, fixed 2026-10-11), the set hardkeys 0.10.0 / feedback 0.6.0 / control 0.6.0 at `e4aa80a`.
+The console half is the MCP repository's note (ENCODERS.md "KB-24 results"): control 0.6.0 and 0.7.0, feedback 0.7.0
+(the module defects the qualification found and the improvements that followed, 2026-10-11), the set hardkeys
+0.10.0 / feedback 0.7.0 / control 0.7.0 at `3dd82b2`.
 This half has two parts; the first is done, the second needs the operator at the surfaces.
 
 **Documentation (done):**
@@ -794,6 +795,16 @@ key and boundary ack p95 80 ms, worst 300 ms, plugin tick max 200 ms; every zero
 feedback read-back of a command-line keyword (median 60 ms, p95 509 ms, 11 of 39 probes missed), plugin tick spikes
 of 266–275 ms under motion, and the load report's tick count exceeding the wall clock under traffic (the plugin's
 own figures are indicative until understood). The service side stayed clean in every run (nothing stale or aged).
+
+**Round 4 (2026-10-11, later):** control 0.7.0 merges a delta into a queued intent of its control before resolving the
+target (within 100 ms of the intent), feedback 0.7.0 reads the state items before the executor targets (`priorityStateReads`,
+half the budget, own round robin), the service enforces its ceiling per 100 ms, and the load report carries scheduling
+diagnostics. Re-measured: feedback median 55 ms / p95 165 ms (was 60 / 509, 3 probes missed instead of 11); at 100
+detents/s plus a strip plus keys the plugin never hits its datagram budget and the deferral is bounded at 44 ms (was
+146); the admitted-motion and mixed runs pass (motion queue p95 agreed at 15 ms for the 25 ms interval). The scheduling
+anomaly did not reproduce (one coroutine, no overlapping ticks, coherent sums): it coincided with a stale load table
+surviving a plugin restart, now replaced. Open: press-to-effect p95 122 ms against 100, three missed probes, the context
+collection every tick.
 
 **Pending (hardware pass, operator at the surfaces):** `measure` against onPC with the plugin 0.11.0 installed
 (procedure in the record), the physical NX-K rotaries, M-Touch and

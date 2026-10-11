@@ -31,6 +31,8 @@ pub struct Config {
     /// KB-24: the most motion packets sent per second per session; beyond it motion keeps merging (never dropped
     /// here; the age bound still applies).
     pub motion_per_second: usize,
+    /// KB-24: the ceiling is enforced over this window (seconds); a short window smooths the deferral.
+    pub motion_window: f64,
     /// KB-18: motion packets sent per tick.
     pub ctl_per_tick: usize,
     /// KB-18: a relative gesture without a touch ends after this idle time (the next delta is a new gesture).
@@ -55,6 +57,7 @@ impl Default for Config {
             motion_min_interval: 0.025, // KB-24: one packet per control per 25 ms (deltas merge losslessly meanwhile)
             ctl_per_tick: 16,
             motion_per_second: 100, // KB-24: per-session ceiling on motion packets, under the plugin's measured capacity
+            motion_window: 0.1,     // enforced per 100 ms (10 packets), so a burst defers for tens of ms, not hundreds
             gesture_idle: 0.3,
             motion_per_control: 64,
         }
@@ -867,10 +870,11 @@ impl Link {
         }
         let cg = self.current_generation(now);
         // KB-24: the per-session ceiling: how many motion packets may still go out in this second.
-        while self.motion_sent_at.front().map(|t| now - t >= 1.0).unwrap_or(false) {
+        while self.motion_sent_at.front().map(|t| now - t >= self.cfg.motion_window).unwrap_or(false) {
             self.motion_sent_at.pop_front();
         }
-        let budget = self.cfg.motion_per_second.saturating_sub(self.motion_sent_at.len()).min(self.cfg.ctl_per_tick);
+        let per_window = ((self.cfg.motion_per_second as f64) * self.cfg.motion_window).round().max(1.0) as usize;
+        let budget = per_window.saturating_sub(self.motion_sent_at.len()).min(self.cfg.ctl_per_tick);
         let mut sent = 0usize;
         let mut waiting: BTreeSet<(String, String)> = BTreeSet::new();
         let mut keep: Vec<Motion> = Vec::new();
@@ -1656,6 +1660,7 @@ mod tests {
     #[test]
     fn a_key_release_and_a_boundary_go_out_at_once_while_motion_saturates_the_per_tick_budget() {
         let (mut link, mut plugin) = pair(40.0);
+        link.cfg.motion_per_second = 10_000; // this scene is about the per-tick budget, not the per-session ceiling
         link.receive(&plugin.context(1, 1, Some(1), json!({})), 40.0);
         // 40 controls each with queued motion: more than ctl_per_tick (16) can go out per tick.
         let names: Vec<String> = (0..40).map(|i| format!("Ctl{i}")).collect();
@@ -1706,8 +1711,8 @@ mod tests {
             link.tick(t);
             sent_total += ctl_packets(&plugin.decode(link.take_outgoing())).len();
         }
-        assert!(sent_total <= 100, "ceiling: {sent_total} packets in 300 ms");
-        assert!(sent_total >= 80, "the budget is used: {sent_total}");
+        assert!(sent_total <= 30, "ceiling: {sent_total} packets in 300 ms (10 per 100 ms window)");
+        assert!(sent_total >= 24, "the budget is used: {sent_total}");
         assert_eq!(link.stats.ctl_aged, 0, "deferred motion merged, nothing aged within 250 ms");
         assert_eq!(link.stats.ctl_overflow, 0);
         // Every detent is accounted for: sent packets carry the merged deltas, the rest is still queued.
@@ -1762,7 +1767,7 @@ mod tests {
         let hb_old = plugin.frame(json!({"t":"hb","held":[],"unsynced":[]}));
         link.receive(&hb_old, 52.2);
         assert_eq!(link.plugin_load.len(), 1);
-        assert_eq!(link.plugin_load[0], crate::protocol::PluginLoad { tmax: 1.25, tavg: 0.2, pmax: 3, full: 0, n: 60, smod: 0.0, spkt: 0.0, sstate: 0.0 });
+        assert_eq!(link.plugin_load[0], crate::protocol::PluginLoad { tmax: 1.25, tavg: 0.2, pmax: 3, full: 0, n: 60, smod: 0.0, spkt: 0.0, sstate: 0.0, co: 0, ovl: 0 });
     }
 
     #[test]
