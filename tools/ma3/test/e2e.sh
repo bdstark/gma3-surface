@@ -41,6 +41,12 @@ echo "$BANK" | grep -q 'refused ev [0-9]*: \[target-unavailable\] executor 101 i
 echo "$BANK" | grep -q 'out MTouch display 4401 <- 12' || { echo "FAIL: expected the page display to show page 1 bank 2 (12): $(echo "$BANK" | grep '^out ')"; fail=1; }
 echo "$BANK" | grep -q 'out MTouch display 4401 <- 11' || { echo "FAIL: expected the page display at page 1 bank 1 (11)"; fail=1; }
 echo "$BANK" | grep -q 'lost=0' || { echo "FAIL: bank events lost"; fail=1; }
+echo "--- lights (KB-23): the keys and bars are rendered from the context (every bound executor is empty on the stub console: dark), the textual state names each control, the writes are change-only ---"
+echo "$BANK" | grep -q '^lights: enabled=true renders=[0-9]* flushes=[1-9]' || { echo "FAIL: lights summary: $(echo "$BANK" | grep '^lights:')"; fail=1; }
+echo "$BANK" | grep -q 'light: M-Touch PFA1 ex101: empty, dark' || { echo "FAIL: expected PFA1's light described as empty and dark: $(echo "$BANK" | grep 'light: M-Touch PFA1')"; fail=1; }
+echo "$BANK" | grep -q 'light: M-Touch PB1 ex201: empty, dark' || { echo "FAIL: expected PB1's bar described as empty and dark"; fail=1; }
+echo "$BANK" | grep -q 'out MTouch led 4201 <- 0000' || { echo "FAIL: expected the PFA1 key written dark once"; fail=1; }
+[ "$(echo "$BANK" | grep -c 'out MTouch led 4201 <- ')" -le 2 ] || { echo "FAIL: PFA1 written more than twice (bank 1 -> 2 -> 1): $(echo "$BANK" | grep -c 'out MTouch led 4201 <- ')"; fail=1; }
 grep -q 'bind: 30 executor(s) following the console' "$LOG" || { echo "FAIL: the plugin did not log the service's bind (the simulated M-Touch alone: 30 executors)"; fail=1; }
 echo "--- abandoned session (no bye): the plugin's lease must release the held key ---"
 "$BIN" --plugin 127.0.0.1:$PORT --key "$KEY" sim --script "Record:down" --seconds 1 --abandon > /dev/null 2>&1

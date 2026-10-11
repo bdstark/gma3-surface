@@ -36,7 +36,7 @@ pub const DISPLAY_MTOUCH: u16 = 0x4401;
 pub const DISPLAY_MPLAY_LEFT: u16 = 0x9F01;
 pub const DISPLAY_MPLAY_RIGHT: u16 = 0x9E01;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Model {
     MTouch,
     MPlay,
@@ -455,6 +455,23 @@ pub fn bar_level(n: u8, colour: BarColour, blink: bool) -> [u8; 9] {
     let (g, r, b) = colour.lanes();
     let lane = |on: bool| if on { mask } else { 0 };
     fader_bar(lane(g), lane(r), lane(b), (g && blink, r && blink, b && blink))
+}
+
+/// A bar payload as text for logs and tests: the lit LED count per lane (green/red/blue) with `*` for a blinking
+/// lane, `-` for a dark bar; a non-contiguous mask is printed as its bits.
+pub fn fader_bar_text(data: &[u8; 9]) -> String {
+    let word = |i: usize| u32::from_le_bytes([data[i * 3], data[i * 3 + 1], data[i * 3 + 2], 0]);
+    let lane = |name: &str, w: u32| -> Option<String> {
+        let mask = w & 0x3FF;
+        if mask == 0 {
+            return None;
+        }
+        let blink = if w & BAR_BLINK != 0 { "*" } else { "" };
+        let n = mask.count_ones();
+        if mask == (1u32 << n) - 1 { Some(format!("{name}{n}{blink}")) } else { Some(format!("{name}{mask:#012b}{blink}")) }
+    };
+    let parts: Vec<String> = [("G", word(0)), ("R", word(1)), ("B", word(2))].iter().filter_map(|(n, w)| lane(n, *w)).collect();
+    if parts.is_empty() { "-".into() } else { parts.join(" ") }
 }
 
 /// 7-segment codes for 0..9, bit 0 = a (top) .. bit 6 = g (middle) (section 4.3).

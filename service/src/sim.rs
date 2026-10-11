@@ -328,7 +328,7 @@ impl Surface for SimKeypad {
             match &out {
                 mtouch::Output::PageDisplay { id, data } => println!("out {model:?} display {id:04x} <- {}", mtouch::page_display_text(data)),
                 mtouch::Output::LedKey { id, value } => println!("out {model:?} led {id:04x} <- {value:04x}"),
-                mtouch::Output::FaderBar { id, .. } => println!("out {model:?} bar {id:04x}"),
+                mtouch::Output::FaderBar { id, data } => println!("out {model:?} bar {id:04x} <- {}", mtouch::fader_bar_text(data)),
             }
         }
         self.outputs.push((model, out));

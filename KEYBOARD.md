@@ -1,6 +1,6 @@
-# KB-07, KB-08 and KB-15 to KB-22 in mtpnxk: the surface consumer and its qualification
+# KB-07, KB-08 and KB-15 to KB-23 in mtpnxk: the surface consumer and its qualification
 
-Updated: 2026-10-10 (KB-22 surface half added, see the last section). The feature series KB-01 to KB-09 is defined and tracked in
+Updated: 2026-10-10 (KB-23 surface half added, see the last section). The feature series KB-01 to KB-09 is defined and tracked in
 [bdstark/GrandMA3MCP `KEYBOARD.md`](https://github.com/bdstark/GrandMA3MCP/blob/main/KEYBOARD.md).
 KB-01 to KB-06 are complete there (macOS, onPC 2.5.1.0) and provide the reusable
 console modules this repository vendors. KB-07 (the surface consumer) and KB-08
@@ -628,3 +628,116 @@ playback; no refusals, nothing unresolved).
 
 **Not verified live:** the physical M-Touch and M-Play through `run` (KB-24's hardware qualification), the bar display
 on the device, Rate/Speed/crossfade fader functions (unqualified on the console half), Windows/Linux hosts.
+
+## KB-23 — Parameter colors and playback feedback (surface half, 2026-10-10)
+
+The console half is in the MCP repository (`gma3_mcp_feedback` 0.6.0: every attribute slot carries the feature group /
+feature / activation group names parsed from the definition's own path text and the definition's `Color` as numbers
+with `colorDefined` (a black colour, which Dimmer and Gobo have live, defines none), every assigned executor's
+appearance carries its `BackRGBA` as 0..1 components; colour and appearance stay out of the binding digest; the bridge
+0.18.0 and control 0.5.0 are unchanged; branch `feat/kb23-parameter-colors`, probe `scripts/kb23-probe.mjs`). This
+repository vendors feedback 0.6.0 from `9535ded` (PR #27 review round 1: numeric-only hex parses as hex; [tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns every LED
+translation (`service/src/lights.rs`):
+
+- **Colours from verified metadata, never from a label:** the plugin's context carries per attribute slot `fg`, `fn`,
+  `ag` (feature group, feature, activation group) and `col` (the definition's colour, six hex digits, only when the
+  show defines one) and per executor `col` (the appearance background). The service's `param_colour` takes the
+  definition's colour first, then a documented override table on the attribute's **system name** (`ColorRGB_UV` ->
+  violet shown as magenta, `_RY` amber -> yellow, `_W` -> white, `_R/_G/_B`, `_C/_M/_Y`), then the feature-group
+  category scheme for non-colour parameters (Dimmer white, Position cyan, Gobo magenta, Beam yellow, Focus cyan,
+  Control red, Shapers blue, Video green), else a neutral blue. The band label (`label`, translated) is textual only.
+  These colours identify the parameter; nothing claims the fixture's emitted colour or UV light.
+- **The M-Touch's parameter strips are blue-only hardware** (key 0x61n1, bar 0x61n2; KB-16 record, the
+  `mtouch-protocol-reuse` tables): the parameter colour cannot be shown on them. It is carried textually (the `light:`
+  lines of `sim`, the `--verbose` `lights:` lines) and the scheme renders on RGB-capable bars, which none of the default
+  layouts puts a parameter on (KB-24's optional M-Play parameter strips would). The blue bar shows the **value**:
+  n of ten LEDs for a single, completely read value (`val` value, `vc` 1; at least one LED above zero, never ten below
+  full); a blinking level for an incompletely read value (`vc` 0: the readable fixtures' agreement only); the two END
+  LEDs blinking for **mixed** values (the context's `abs` holds the first fixture's value there, and it is never shown
+  as a level); dark for empty, none, unavailable and no selection. The strip's key is lit while the slot is adjustable
+  (`avail` available or mixed) and fast-blinks while touched.
+- **Playback feedback keeps assignment, running, pressed, pickup and stale apart:** the blue PFA/PFB keys (M-Touch,
+  single colour) show assigned (on), running (slow blink), pressed (fast blink); the red/green pressure keys (the
+  M-Touch PFD of the fader row, every M-Play button) show assigned red, running green, pressed fast-blinking in the
+  current colour; the RGB bar shows the configured fader function's **level** (`lvl`) in the **assignment colour**
+  (the appearance background reduced to the bar's 3-bit palette: a lane counts when it carries at least half of the
+  brightest one, so orange `FF7F00` is yellow; too dark or no appearance -> neutral green). The KB-22 pickup span
+  (yellow, blinking) keeps the bar while a touched fader waits; the renderer's cache follows that write and repaints the
+  level once the span is cleared.
+- **Stale is a distinct unavailable state:** without a fresh, known context (unpaired, link down, the plugin silent
+  for 1.5 s, the generation unknown after a bind) every light that was lit from the last fresh context switches to the
+  unavailable pattern: bars all ten LEDs blinking (red on RGB bars, blue on the parameter bars), red/green keys red
+  slow-blinking, blue keys slow-blinking; a dark light stays dark (no write). No level or colour survives into
+  staleness, and nothing is lit from a device report.
+- **Bindings and colours change together:** a rebind (bank change, new generation) with no context for it yet is the
+  same unknown state, and the first context of the new binding paints mapping and colour from one snapshot: no old
+  colour identifies a newly mapped control (`a_new_mapping_without_its_context_carries_no_old_colour`).
+- **Rate-limited, coalesced, never in the input path:** the loop handles reports, releases and link traffic first and
+  renders the lights last; writes go out on change only and at most every `--lights-interval` (50 ms) per flush, a
+  change in between waits for the next flush with the latest state (`coalesced` counts them). Each device's USB writer
+  thread is unchanged (one control OUT at a time, input on its own reader thread). `--lights off` writes nothing but the
+  KB-22 pickup span.
+- **Textual state so colour is never the only cue:** `sim` prints one `light:` line per control at the end (`strip1
+  slot1: ColorRGB_R "R" Color/RGB [ColorRGB] colour=Red (Definition; the strip's bar is blue-only) avail=available
+  value=50% single (5/10)`, `M-Touch PB1 ex201: Sequence "Main" Go+/Master level=100% running colour=Yellow (Definition)
+  -> Running`) and the `lights:` counters; `run --verbose` prints the lines whenever they change; `sim`'s `out ... bar`
+  echo decodes the lanes (`G5`, `R10*`).
+- **Per-device colour qualification:** what KB-16 saw on hardware is red, green, fast red and off on the pressure
+  keys, red and green fills, blinking and clearing on the RGB bars, blue on the base-channel bars and keys. The mixes
+  this scheme uses (yellow, cyan, magenta, white), blue on playback bars and the slow blink were **not** shown on
+  hardware yet; they are documented approximations until KB-24's hardware pass (`docs/mtouch-protocol-reuse.md`).
+- **Context cadence (plugin 0.9.0):** a change of what the service lights (values, levels, activity, colours, the
+  known flag: `feedbackDigest`) resends the context after at most 250 ms (`feedbackMinMs`, coalesced) instead of only
+  with the 1 s cadence; the binding generation is untouched by any of it (`counters.feedbackContexts`).
+- **Rust service** (`cargo test` 90, eight new in `lights.rs` and `main.rs`): the colour derivation order and the
+  palette reduction, the value indicators (no fabricated single level, mixed pattern, incomplete blink), the parameter
+  strips, the playback states and level colours, staleness only where something was lit, the rebind rule, rate limiting
+  / coalescing and the external bar write; a caller-level test that a bank change lights nothing from the previous
+  binding's context until the new one arrives (review round 1); `banks::lights_controls` lists the lights of the
+  present sections.
+- **Binding readiness (review of PR #8):** the lights read `link::lighting_context` (not `context_view`), which is the
+  fresh context only while no bind is in flight and, after a bind ack, a context of the acknowledged revision has
+  arrived (`current_generation` is `Some`); a bank change's pending bind blocks it. The previous binding's context
+  never lights the new mapping; `--verbose` logs why the lights are held unavailable (`lighting_block_reason`).
+
+Harness: `lua tools/ma3/test/surface_plugin_test.lua` 237 checks (2 new: the executor's `col` from the stub sequence's
+appearance, an activity change resending the context within 0.4 s with the generation unchanged); `sh
+tools/ma3/test/e2e.sh` checks the lights summary, the textual lines (every bound executor empty on the stub console:
+dark) and that the PFA1 key is written dark once per binding.
+
+**Verified live on the console half:** the MCP probe (`node scripts/kb23-probe.mjs run`, 10/10 on 2026-10-10, record
+`docs/probes/kb-23-colours-macos-2.5.1.md` there) established what this renderer's colours rest on: the show's
+definitions colour R `1,0,0`, G, B, RY ("Amber") `1,0.5,0` and W; Dimmer/Pan/Gobo1 are black (category scheme); UV's
+colour is out of gamut (`0.1744,-0.1443,1,1`, clamped by the module; the name override shows it as violet/magenta
+anyway); appearances arrive as hex `FF7F00FF` ("Orange" -> yellow lanes). Both plugins (bridge with feedback 0.6.0,
+`mtpnxk_surface` 0.9.0) are installed and running on `mcp-test-disposable`.
+
+**Verified live in this repository:** [docs/probes/kb-23-surface-macos-2.5.1.md](docs/probes/kb-23-surface-macos-2.5.1.md)
+(the plugin 0.9.0 on onPC with `control=console`, driven by the release service's `sim`): at rest the assigned keys lit
+blue, the fader rows' PFDs red, the running executor's PFD green with its bar at ten LEDs in the yellow lanes (Orange
+appearance); on the RGB page the strips' blue bars showed 5/10 for `ColorRGB_R` at 50 and 10/10 for the group-activated
+G and B, each line naming the definition colour (Red/Green/Blue/Yellow); a two-fixture selection with different R values
+showed the two end LEDs blinking and the touched strip's key fast-blinking; a PFA tap went blue fast while held and blue
+slow once the console ran its Go+; stopping the plugin switched every lit control to the unavailable pattern (bars all
+ten blinking red / blue, PFDs red slow, blue keys slow) and left the dark ones dark. Every setup change was undone.
+
+**Review of PR #8 (round 1):** (1) the lights were gated at the caller on `link::lighting_context` so a rebind cannot
+show the previous binding's feedback as current, with a caller-level regression and a verbose diagnostic; re-run live
+(the steady scene lights `lit=21`, a bank change blanks the controls only until the matching context arrives). The
+numeric-only hex finding (2) is the console half (GrandMA3MCP PR #27).
+
+**Review of PR #8 (round 2):** a REFUSED bind (the plugin keeps its previous binding while the surface already maps the
+new bank) left the old revision current, so `lighting_context` returned the old context and lit the new bank's controls
+from the old bank's feedback (or showed them empty). `lighting_context` now also requires the context's reported
+binding (`plugin_binding`) to equal the binding the surface asked for (`desired_bind`): a refused or not-yet-confirmed
+bind keeps the lights unavailable until the plugin reports the requested binding (or the surface rolls back to a bound
+one). A link-level test and the caller-level test (the bind refused) cover it; `cargo test` 92. A live bind refusal
+cannot be induced with the normal 30-executor window (it needs the plugin's watch budget exceeded), so the path is
+test-covered, not live-reproduced.
+
+- **Rust service** (`cargo test` 92): two new tests for the refused-bind readiness; the lighting gate and its verbose
+  diagnostic (`lighting_block_reason`) name the binding mismatch.
+
+**Not verified live:** the refused-bind readiness path (test-covered; a live refusal needs the watch budget exceeded);
+the physical M-Touch / M-Play rendering of the mixes, the slow blink and blue on playback bars (KB-24's hardware pass);
+Windows/Linux hosts.

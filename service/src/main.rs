@@ -4,6 +4,7 @@
 mod auth;
 mod banks;
 mod leds;
+mod lights;
 mod link;
 mod mtouch;
 mod nxk;
@@ -87,6 +88,14 @@ struct Cli {
     /// KB-22: the executor the `Pause (||/Back)` key presses (as --pb-go). Unmapped without it.
     #[arg(long, global = true, value_parser = clap::value_parser!(u32).range(1..=999))]
     pb_pause: Option<u32>,
+    /// KB-23: `on` lights the M-Touch / M-Play keys and bars from the console context (parameter values on the
+    /// blue strip bars, playback assignment / running / pressed / level in the appearance colour, an unavailable
+    /// pattern while the context is stale); `off` writes no light but the KB-22 pickup span.
+    #[arg(long, default_value = "on", global = true)]
+    lights: String,
+    /// KB-23: the minimum interval between two flushes of light writes, in milliseconds (coalescing bound).
+    #[arg(long, default_value_t = 50, global = true, value_parser = clap::value_parser!(u64).range(1..=1000))]
+    lights_interval: u64,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -183,6 +192,11 @@ struct Loop {
     displays: BTreeMap<u16, Option<u16>>,
     /// KB-22: fader bar writes produced while handling reports (flushed after the LEDs).
     bar_writes: Vec<(mtouch::Model, mtouch::Output)>,
+    /// KB-23: the M-Touch / M-Play lights renderer (keys and bars from the console context).
+    lights: lights::Lights,
+    lights_lines_seen: Vec<String>,
+    lights_block_seen: Option<String>,
+    present: BTreeMap<mtouch::Model, bool>,
     /// The fine flag handed to the strips converter by the last strip report (what a stale Bank would corrupt).
     #[cfg(test)]
     last_strip_fine: Option<bool>,
@@ -223,10 +237,19 @@ impl Loop {
             eprintln!("{} (--pb-page/--pb-rows/--pb-ext-row/--banks; faders pick up within {} of the executor's level, --pb-pickup; Go/Pause keys {})", banks.summary(None), cli.pb_pickup,
                       match (cli.pb_go, cli.pb_pause) { (None, None) => "unmapped (--pb-go/--pb-pause)".to_string(), (g, p) => format!("go={} pause={}", g.map(|n| n.to_string()).unwrap_or_else(|| "-".into()), p.map(|n| n.to_string()).unwrap_or_else(|| "-".into())) });
         }
+        let lights_on = match cli.lights.to_ascii_lowercase().as_str() {
+            "on" | "yes" => true,
+            "off" | "no" => false,
+            other => return Err(anyhow!("--lights {other}: expected on or off")),
+        };
+        if lights_on {
+            eprintln!("lights: on (--lights/--lights-interval {} ms): parameter values on the blue strip bars, playback assignment/running/pressed/level on the keys and RGB bars, an unavailable pattern while the context is stale", cli.lights_interval);
+        }
         let link = link::Link::new(cfg, key, 0.0);
         Ok(Loop { link, leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots,
                   strips: strips::Strips::new(strip_cfg), strips_log_seen: 0, pushed_wheels: BTreeSet::new(),
                   banks, banks_log_seen: 0, displays: BTreeMap::new(), bar_writes: Vec::new(),
+                  lights: lights::Lights::new(lights::Config { enabled: lights_on, min_interval: cli.lights_interval as f64 / 1000.0 }), lights_lines_seen: Vec::new(), lights_block_seen: None, present: BTreeMap::new(),
                   #[cfg(test)]
                   last_strip_fine: None })
     }
@@ -355,8 +378,14 @@ impl Loop {
             }
         }
         // KB-21: only attached devices' bank windows are bound (an absent M-Play's 60 executors are not watched).
-        self.banks.set_present(mtouch::Model::MTouch, surface.device_present(mtouch::Model::MTouch));
-        self.banks.set_present(mtouch::Model::MPlay, surface.device_present(mtouch::Model::MPlay));
+        for model in [mtouch::Model::MTouch, mtouch::Model::MPlay] {
+            let present = surface.device_present(model);
+            self.banks.set_present(model, present);
+            // KB-23: a device that (re)appeared gets every light rewritten.
+            if self.present.insert(model, present) != Some(present) && present {
+                self.lights.invalidate(model);
+            }
+        }
         if self.banks.take_rebind() && self.banks.cfg.enabled {
             self.link.set_binding(self.banks.targets(), now);
         }
@@ -397,7 +426,42 @@ impl Loop {
         }
         // KB-22: the pickup display of the playback faders' bars (banks emits a write on change only).
         for (model, out) in std::mem::take(&mut self.bar_writes) {
+            self.lights.note_external(model, &out);
             surface.output(model, out);
+        }
+        // KB-23: the keys and bars from the console context, change-only and rate-limited; input and releases were
+        // handled above, so a flush never delays them.
+        {
+            // Review of PR #8: the context must belong to the binding in effect (no bind in flight, the acknowledged
+            // revision's context arrived); the previous binding's context never lights the new mapping.
+            let ctx = self.link.lighting_context(now).map(|c| &c.body);
+            let strips_present = surface.device_present(mtouch::Model::MTouch);
+            let strips = if self.strips.cfg.mode != strips::Mode::Off {
+                Some(lights::ParamStrips { present: strips_present, base_slot: self.strips.cfg.base_slot, touching: [self.strips.touching(1), self.strips.touching(2), self.strips.touching(3), self.strips.touching(4)] })
+            } else {
+                None
+            };
+            let playback = self.banks.lights_controls();
+            let writes = self.lights.render(&lights::Scene { ctx, strips, playback: &playback }, now);
+            for (model, out) in writes {
+                surface.output(model, out);
+            }
+            if self.verbose {
+                let reason = self.link.lighting_block_reason(now);
+                if reason != self.lights_block_seen {
+                    match &reason {
+                        Some(r) => eprintln!("lights: unavailable although a context exists: {r}"),
+                        None => eprintln!("lights: the context lights again"),
+                    }
+                    self.lights_block_seen = reason;
+                }
+            }
+            if self.verbose && self.lights.lines != self.lights_lines_seen {
+                for l in &self.lights.lines {
+                    eprintln!("lights: {l}");
+                }
+                self.lights_lines_seen = self.lights.lines.clone();
+            }
         }
         // KB-21: the page displays show "page then bank" (blank while the page is unknown); written on change only.
         if self.banks.cfg.enabled {
@@ -519,6 +583,143 @@ const ROTARIES: [&str; 4] = ["Rotary1", "Rotary2", "Rotary3", "Rotary4"];
 /// Rotary `wheel` (1-4) means encoder slot `base + wheel - 1` of the bound display (KB-19 `--rotary-slots`).
 fn link_target(wheel: u8, base: u8) -> protocol::CtlTarget {
     protocol::CtlTarget::Slot { slot: base.clamp(1, 5) + wheel.clamp(1, 4) - 1 }
+}
+
+/// KB-23 (review of PR #8): the lights are gated on the binding's readiness at the caller, not only in the renderer.
+#[cfg(test)]
+mod lights_binding_tests {
+    use super::*;
+    use serde_json::{json, Value};
+    use std::collections::VecDeque;
+
+    struct Lamp {
+        strips: VecDeque<mtouch::Event>,
+        outputs: Vec<(mtouch::Model, mtouch::Output)>,
+    }
+    impl Surface for Lamp {
+        fn poll(&mut self) -> Result<Vec<Event>> {
+            Ok(Vec::new())
+        }
+        fn led(&mut self, _id: u16, _value: u16) {}
+        fn name(&self) -> String {
+            "lamp".into()
+        }
+        fn poll_strips(&mut self) -> Result<Vec<mtouch::Event>> {
+            Ok(self.strips.pop_front().into_iter().collect())
+        }
+        fn device_present(&self, model: mtouch::Model) -> bool {
+            model == mtouch::Model::MTouch
+        }
+        fn output(&mut self, model: mtouch::Model, out: mtouch::Output) {
+            self.outputs.push((model, out));
+        }
+    }
+
+    struct Plugin {
+        key: auth::Key,
+        seq: u64,
+    }
+    impl Plugin {
+        fn frame(&mut self, mut v: Value) -> Vec<u8> {
+            self.seq += 1;
+            v["sid"] = json!("feedfacefeedface");
+            v["seq"] = json!(self.seq);
+            auth::frame(&self.key, &v.to_string())
+        }
+        fn context(&mut self, br: u64, ex: Value, bind_ex: Vec<u32>) -> Vec<u8> {
+            self.frame(json!({"t":"context","gen":"1-deadbeef","epoch":1,"known":1,"cg":1,"enc":{},"slots":[],"ex":ex,"page":1,"pool":"Default","display":1,"bind":{"ex":bind_ex,"br":br,"mode":"current"}}))
+        }
+    }
+
+    fn key_writes(outs: &[(mtouch::Model, mtouch::Output)], id: u16) -> Vec<u16> {
+        outs.iter().filter_map(|(_, o)| match o { mtouch::Output::LedKey { id: i, value } if *i == id => Some(*value), _ => None }).collect()
+    }
+
+    #[test]
+    fn a_bank_change_lights_nothing_from_the_previous_bindings_context_until_the_new_one_arrives() {
+        let cli = Cli::parse_from(["mtpnxk", "--key", &"ab".repeat(32), "sim"]);
+        let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
+        lp.lights.cfg.min_interval = 0.0;
+        let mut plugin = Plugin { key: auth::Key::from_hex(&"ab".repeat(32)).unwrap(), seq: 0 };
+        let mut lamp = Lamp { strips: VecDeque::new(), outputs: Vec::new() };
+        // Pair: the hello goes out in the first step; the welcome answers its nonce.
+        lp.step(&mut lamp).unwrap();
+        let nonce = lp.link.hello_nonce().expect("a hello was sent");
+        let welcome = json!({"t":"welcome","v":1,"sid":"feedfacefeedface","nonce":nonce,"gen":"1-deadbeef","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"modules":{},"input":"fake","epoch":1,"control":1,"controlBackend":"console","context":1,"seq":0});
+        lp.link.receive(&auth::frame(&plugin.key, &welcome.to_string()), lp.now());
+        lp.step(&mut lamp).unwrap(); // the bank window's bind goes out
+        let ev = lp.link.pending_bind_ev().expect("the bind is in flight");
+        assert!(lp.link.lighting_context(lp.now()).is_none());
+        lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":1,"br":1})), lp.now());
+        // The plugin reports the binding it was asked for (the whole bank-1 window); the feedback list names 101.
+        let w1 = lp.banks.targets().ex;
+        { let now = lp.now(); let m = plugin.context(1, json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Go+","fd":"Master","lvl":100,"act":0,"col":"ff0000"}]), w1.clone()); lp.link.receive(&m, now); }
+        lp.step(&mut lamp).unwrap();
+        assert_eq!(key_writes(&lamp.outputs, 0x4201).last(), Some(&mtouch::LedKey::off().blue().value()), "PFA1 lit: executor 101 assigned ({:?})", lamp.outputs.len());
+        assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex101") && l.contains("Assigned")), "{:?}", lp.lights.lines);
+        // Our bank change: the strip now means 111; the bind for it is in flight. The old context (101 assigned) is
+        // still the link's data, but it must not light PFA1 as 111's state.
+        lamp.outputs.clear();
+        lamp.strips.push_back(mtouch::Event::KeyDown { id: 0x4111, name: "PLAYBACK BANK Up (+)" });
+        lp.step(&mut lamp).unwrap();
+        assert!(lp.link.context_view(lp.now()).is_some(), "the previous context is still held as data");
+        assert!(lp.link.lighting_context(lp.now()).is_none(), "but nothing lights from it while the bind is in flight");
+        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![mtouch::LedKey::off().blue().slow().value()], "PFA1 switches to the unavailable pattern, not 101's assigned state: {:?}", lamp.outputs);
+        assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111") && l.contains("unavailable")), "{:?}", lp.lights.lines);
+        // The ack (revision 2) without its context: still unavailable, nothing rewritten.
+        let ev = lp.link.pending_bind_ev().expect("the new bind is in flight");
+        lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":1,"br":2})), lp.now());
+        lamp.outputs.clear();
+        lp.step(&mut lamp).unwrap();
+        assert!(lp.link.lighting_context(lp.now()).is_none());
+        assert!(key_writes(&lamp.outputs, 0x4201).is_empty(), "{:?}", lamp.outputs);
+        // The context of revision 2 reports the new (bank-2) binding and lists 111 empty: PFA1 goes dark; 101's red never reached the new mapping.
+        let w2 = lp.banks.targets().ex;
+        assert_ne!(w1, w2, "the bank change moved the bound window");
+        { let now = lp.now(); let m = plugin.context(2, json!([{"n":111,"empty":1,"tgt":0}]), w2); lp.link.receive(&m, now); }
+        lamp.outputs.clear();
+        lp.step(&mut lamp).unwrap();
+        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![0], "{:?}", lamp.outputs);
+        assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111: empty, dark")), "{:?}", lp.lights.lines);
+    }
+
+    #[test]
+    fn a_refused_bank_change_keeps_the_lights_unavailable_not_the_old_context() {
+        // Review of PR #8 (round 2): when the plugin refuses the new binding, the surface still maps the new
+        // bank, so the previous binding's context must not light the controls (that would show the new bank's
+        // controls with the old bank's feedback, or as empty).
+        let cli = Cli::parse_from(["mtpnxk", "--key", &"ab".repeat(32), "sim"]);
+        let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
+        lp.lights.cfg.min_interval = 0.0;
+        let mut plugin = Plugin { key: auth::Key::from_hex(&"ab".repeat(32)).unwrap(), seq: 0 };
+        let mut lamp = Lamp { strips: VecDeque::new(), outputs: Vec::new() };
+        lp.step(&mut lamp).unwrap();
+        let nonce = lp.link.hello_nonce().expect("a hello was sent");
+        let welcome = json!({"t":"welcome","v":1,"sid":"feedfacefeedface","nonce":nonce,"gen":"1-deadbeef","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"modules":{},"input":"fake","epoch":1,"control":1,"controlBackend":"console","context":1,"seq":0});
+        lp.link.receive(&auth::frame(&plugin.key, &welcome.to_string()), lp.now());
+        lp.step(&mut lamp).unwrap();
+        let ev = lp.link.pending_bind_ev().expect("the bind is in flight");
+        lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":1,"br":1})), lp.now());
+        let w1 = lp.banks.targets().ex;
+        { let now = lp.now(); let m = plugin.context(1, json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Go+","fd":"Master","lvl":100,"act":0,"col":"ff0000"}]), w1.clone()); lp.link.receive(&m, now); }
+        lp.step(&mut lamp).unwrap();
+        assert_eq!(key_writes(&lamp.outputs, 0x4201).last(), Some(&mtouch::LedKey::off().blue().value()), "PFA1 lit for 101");
+        // Bank change: PFA1 now maps to 111; the bind for it goes out.
+        lamp.outputs.clear();
+        lamp.strips.push_back(mtouch::Event::KeyDown { id: 0x4111, name: "PLAYBACK BANK Up (+)" });
+        lp.step(&mut lamp).unwrap();
+        let ev = lp.link.pending_bind_ev().expect("the new bind is in flight");
+        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![mtouch::LedKey::off().blue().slow().value()], "unavailable while in flight");
+        // The plugin REFUSES the new binding and keeps [101..110]; it resends its unchanged context.
+        lamp.outputs.clear();
+        lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":0,"code":"bad-bind","why":"cannot watch in full"})), lp.now());
+        // The plugin kept its bank-1 binding (w1); the surface already maps bank 2.
+        { let now = lp.now(); let m = plugin.context(1, json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Go+","fd":"Master","lvl":100,"act":0,"col":"ff0000"}]), w1.clone()); lp.link.receive(&m, now); }
+        lp.step(&mut lamp).unwrap();
+        assert!(lp.link.lighting_context(lp.now()).is_none(), "the refused bind must not re-enable lighting from the old context");
+        assert!(key_writes(&lamp.outputs, 0x4201).iter().all(|&v| v != mtouch::LedKey::off().blue().value() && v != 0), "PFA1 is neither 101's assigned nor dark: {:?}", lamp.outputs);
+        assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111") && l.contains("unavailable")), "PFA1 is shown unavailable, mapped to 111: {:?}", lp.lights.lines);
+    }
 }
 
 #[cfg(test)]
@@ -724,6 +925,11 @@ fn main() -> Result<()> {
             })?;
             print_summary(&lp.link, &lp.strips);
             println!("{}", lp.banks.summary(lp.link.console_page(lp.now())));
+            // KB-23: the textual state of every light (colour is never the only cue) and the renderer's counters.
+            println!("{}", lp.lights.summary());
+            for l in &lp.lights.lines {
+                println!("light: {l}");
+            }
             Ok(())
         }
         Cmd::Bench { taps, rate } => {

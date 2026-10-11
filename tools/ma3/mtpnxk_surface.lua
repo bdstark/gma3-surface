@@ -74,7 +74,13 @@ local json   = require("json")
 -- `unsupported` by that backend at admission (nothing pressed; KB-20/21/22). The console semantics are
 -- the MCP repository's (docs/modules.md there, "Console adjustment backend"); this plugin only chooses
 -- the backend.
-local VERSION   = "0.8.0"
+-- KB-23 (0.9.0): the context carries what the service lights its controls from (vendored feedback 0.6.0): per
+-- attribute slot the feature group / feature / activation group names (`fg`, `fn`, `ag`) and the definition's
+-- colour as six hex digits when the show defines one (`col`); per executor the assigned object's appearance
+-- background as six hex digits (`col`). A change of what the service shows (values, levels, activity, colours)
+-- resends the context after at most `feedbackMinMs`, instead of only with the 1 s cadence; the binding
+-- generation is untouched by any of it.
+local VERSION   = "0.9.0"
 -- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
 local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
 -- Review (PR #6, round 2): the watch list budget covers every supported configuration at once: the ordinary state
@@ -91,6 +97,7 @@ local DEFAULTS = {
   forgetMs = 10000,      -- a session without packets for this long is closed and forgotten
   hbMs = 250,            -- heartbeat interval the service is told to use
   fullStateMs = 1000,    -- full state to every session at least this often
+  feedbackMinMs = 250,   -- KB-23: a changed value/level/activity/colour resends the context after at most this
   maxDatagram = 512,
   maxPacketsPerTick = 32,
   maxPacketsPerSecond = 400,  -- per session
@@ -963,6 +970,20 @@ rewatch = function(now)
   return w
 end
 
+-- KB-23: 0..1 components to "rrggbb".
+local function hex6(r, g, b)
+  local function c(x) x = tonumber(x) or 0; if x < 0 then x = 0 elseif x > 1 then x = 1 end; return math.floor(x * 255 + 0.5) end
+  return string.format("%02x%02x%02x", c(r), c(g), c(b))
+end
+
+-- KB-23: what the service shows that is not in the generation: values, levels, activity, colours, the known flag.
+local function feedbackDigest(msg)
+  local parts = { tostring(msg.known), tostring(msg.enc and msg.enc.why) }
+  for _, r in ipairs(msg.slots or {}) do parts[#parts + 1] = string.format("%s:%s/%s/%s/%s/%s", tostring(r.n), tostring(r.avail), tostring(r.val), tostring(r.abs), tostring(r.vc), tostring(r.col)) end
+  for _, r in ipairs(msg.ex or {}) do parts[#parts + 1] = string.format("%s@%s:%s/%s/%s/%s/%s", tostring(r.n), tostring(r.pg), tostring(r.tgt), tostring(r.lvl), tostring(r.act), tostring(r.col), tostring(r.why)) end
+  return table.concat(parts, "|")
+end
+
 -- The context message: a compact copy of the cached contextSnapshot. nil while the module is missing or
 -- older than 0.3.0. `known` is 0 while any part is unobserved in this epoch (no generation is claimed then).
 local function collectContext(now)
@@ -1001,6 +1022,11 @@ local function collectContext(now)
         -- KB-20 review: vc 1 only when every selected fixture was scanned and read (feedback valueComplete); a
         -- surface picks up a position against the value only then.
         if x.valueComplete ~= nil then r.vc = x.valueComplete and 1 or 0 end
+        -- KB-23: the verified metadata a colour scheme rests on (feedback 0.6.0); the label above is textual only.
+        if x.featureGroup then r.fg = x.featureGroup end
+        if x.featureName then r.fn = x.featureName end
+        if x.activationGroup then r.ag = x.activationGroup end
+        if x.colorDefined == true then r.col = hex6(x.colorR, x.colorG, x.colorB) end
       elseif x.kind == "other" then r.ref = x.ref end
       msg.slots[#msg.slots + 1] = r
     end
@@ -1032,6 +1058,8 @@ local function collectContext(now)
       if v.level and type(v.level.value) == "number" then r.lvl = math.floor(v.level.value + 0.5); r.tok = v.level.token end
       if v.active ~= nil then r.act = v.active and 1 or 0 elseif not v.empty then r.act = "?" end
       if v.appearance and v.appearance.backRGBA then r.rgba = v.appearance.backRGBA end
+      -- KB-23: the assignment colour as six hex digits (feedback 0.6.0 parsed the BackRGBA; absent when it could not)
+      if v.appearance and type(v.appearance.r) == "number" then r.col = hex6(v.appearance.r, v.appearance.g, v.appearance.b) end
       if v.reason and v.reason ~= "the executor is empty" then r.why = v.reason end
     else
       r.why = x.reason or x.error or "not observed"
@@ -1048,10 +1076,15 @@ local function sendContexts(now, msg)
     if s.state == "active" then
       local due = s.lastContextAt == nil or (now - s.lastContextAt) >= DEFAULTS.fullStateMs / 1000
       local moved = s.lastContextGen ~= msg.cg or s.lastContextKnown ~= msg.known or s.lastContextEpoch ~= msg.epoch
-      if due or moved then
+      -- KB-23: what the service lights (values, levels, activity, colours) changed: resend after at most feedbackMinMs
+      -- (coalesced: many changes within the interval are one message); the generation is not involved.
+      local digest = feedbackDigest(msg)
+      local changed = s.lastContextDigest ~= digest and (s.lastContextAt == nil or (now - s.lastContextAt) >= DEFAULTS.feedbackMinMs / 1000)
+      if due or moved or changed then
         sendToSession(s, msg)
-        s.lastContextAt, s.lastContextGen, s.lastContextKnown, s.lastContextEpoch = now, msg.cg, msg.known, msg.epoch
+        s.lastContextAt, s.lastContextGen, s.lastContextKnown, s.lastContextEpoch, s.lastContextDigest = now, msg.cg, msg.known, msg.epoch, digest
         state.counters.contexts = state.counters.contexts + 1
+        if changed and not (due or moved) then state.counters.feedbackContexts = (state.counters.feedbackContexts or 0) + 1 end
       end
     end
   end
