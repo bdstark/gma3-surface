@@ -747,9 +747,9 @@ Windows/Linux hosts.
 
 ## KB-24 — Device profiles and end-to-end qualification (surface half, documentation and harness: 2026-10-10)
 
-The console half is the MCP repository's note (ENCODERS.md "KB-24 results"): no Lua module changed, the set
-stays hardkeys 0.10.0 / feedback 0.6.0 / control 0.5.0 at `9535ded`. This half has two parts; the first is done,
-the second needs the operator at the surfaces.
+The console half is the MCP repository's note (ENCODERS.md "KB-24 results"): control 0.6.0 (the two module defects
+the qualification found, fixed 2026-10-11), the set hardkeys 0.10.0 / feedback 0.6.0 / control 0.6.0 at `e4aa80a`.
+This half has two parts; the first is done, the second needs the operator at the surfaces.
 
 **Documentation (done):**
 
