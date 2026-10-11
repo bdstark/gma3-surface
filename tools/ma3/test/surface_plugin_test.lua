@@ -181,7 +181,7 @@ check("bad option refused", select(2, state._parseArgument("key=x bogus")) ~= ni
 check("start without a key uses fixed loopback", reset("input=fake") == true and state.host == "127.0.0.1")
 check("legacy key and network overrides are refused", select(2, state._parseArgument("key=abcd")) ~= nil and select(2, state._parseArgument("bind=0.0.0.0")) ~= nil and select(2, state._parseArgument("allow=10.0.0.1")) ~= nil)
 check("start without credentials succeeds on the fake backend", reset() == true and state.inputEnabled == true and state.inputMode == "fake" and state.gen:match("^%d+%-%x%x%x%x%x%x%x%x$"), J({ state.inputMode, state.gen }))
-check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.10.0" and state.modules.feedback.version == "0.6.0", J(state.moduleVersions))
+check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.10.0" and state.modules.feedback.version == "0.7.0", J(state.moduleVersions))
 check("feedback watch list bounded (9 state items + 3 more context items for the NX-K; page is shared)", state.modules.feedback.instance:status().watched == 12)
 
 -------------------------------------------------------------------------------
@@ -399,6 +399,63 @@ inbox = {}
 send({ t = "hb", held = {} }); tick(); drain()
 
 -------------------------------------------------------------------------------
+-- KB-24: the heartbeat reply carries the loop's load since the previous reply, then the window restarts
+-------------------------------------------------------------------------------
+tick(1.1)
+state.load, state.loadReport, state.loadRotate = nil, nil, nil
+for _ = 1, 5 do tick(0.001) end
+send({ t = "hb", held = {} }); tick()
+local hbLoad = ofType(drain(), "hb")[1]
+check("the first heartbeat reply of a window series carries no report; it rotates the window at the end of its tick", hbLoad and hbLoad.load == nil, J(hbLoad))
+send({ t = "hb", held = {} }); tick()
+hbLoad = ofType(drain(), "hb")[1]
+check("the second reply carries the window closed by the first: the 5 idle ticks and the reporting tick itself (6 ticks, one datagram)",
+      hbLoad and type(hbLoad.load) == "table" and hbLoad.load.n == 6 and hbLoad.load.pmax == 1 and hbLoad.load.full == 0, J(hbLoad and hbLoad.load))
+check("tick times are non-negative milliseconds (the stub clock stands still inside a tick: 0)", hbLoad.load.tmax == 0 and hbLoad.load.tavg == 0, J(hbLoad.load))
+check("scheduling diagnostics: one coroutine, no overlapping tick", hbLoad.load.co == 1 and hbLoad.load.ovl == 0, J(hbLoad.load))
+-- 32 datagrams queued at once: the tick exhausts its budget; the 33rd waits for the next tick. Review (PR #9): the
+-- reporting tick's own 32 datagrams and budget exhaustion are in the window it closes, not lost.
+for i = 1, 33 do send({ t = "hb", held = {} }) end
+tick()
+check("a tick processes at most the budget (32); the rest waits", #inbox == 1, #inbox)
+drain()
+tick()
+hbLoad = ofType(drain(), "hb")
+hbLoad = hbLoad[#hbLoad]
+check("the 33rd heartbeat's reply reports the burst tick (the window the burst tick itself closed): at the budget (pmax 32, full 1), one tick", hbLoad.load and hbLoad.load.full == 1 and hbLoad.load.pmax == 32 and hbLoad.load.n == 1, J(hbLoad.load))
+
+-------------------------------------------------------------------------------
+-- KB-24: a burst of continuous-control packets never delays a key release behind it, and the per-session rate
+-- limit still applies to the burst (the flood protection is unchanged by KB-18's ctl traffic)
+-------------------------------------------------------------------------------
+tick(1.1); drain()
+send({ t = "key", ev = 700, k = "Record", d = 1 }); tick(); drain()
+check("a press is held before the burst", state.sessions[sid].holds.Record ~= nil)
+-- 31 ctl deltas (refused: no encoder bar on the stub console, and no binding generation known) then the release:
+-- all 32 fit in one tick, so the release applies on that tick.
+for i = 1, 31 do send({ t = "ctl", ev = 700 + i, k = "rel", dev = "nxk", c = "Rotary1", es = i, cg = 1, gs = 1, tgt = { slot = 1 }, dx = 1 }) end
+send({ t = "key", ev = 740, k = "Record", d = 0 })
+local relBeforeBurst = eventCount("release")
+tick()
+local acks = ofType(drain(), "ack")
+check("the release behind 31 ctl packets applied on the same tick", eventCount("release") == relBeforeBurst + 1 and state.sessions[sid].holds.Record == nil, J({ eventCount("release"), relBeforeBurst }))
+local relAck
+for _, a in ipairs(acks) do if a.ev == 740 then relAck = a end end
+check("the release was acknowledged ok", relAck and relAck.ok == 1, J(relAck))
+-- A larger burst over one second: the per-session limit drops what exceeds 400/s, the key path keeps working.
+tick(1.1); drain()
+local dropped0 = state.counters.rateDropped
+for i = 1, 450 do send({ t = "ctl", ev = 800 + i, k = "rel", dev = "nxk", c = "Rotary1", es = 100 + i, cg = 1, gs = 2, tgt = { slot = 1 }, dx = 1 }) end
+for _ = 1, 16 do tick(0.001) end
+check("the per-session rate limit drops the ctl packets beyond 400/s", state.counters.rateDropped - dropped0 == 50, state.counters.rateDropped - dropped0)
+drain()
+tick(1.1)
+send({ t = "key", ev = 900, k = "Record", d = 1 }); tick()
+local pressAck = ofType(drain(), "ack")[1]
+check("a key press after the burst is admitted and held", pressAck and pressAck.ok == 1 and state.sessions[sid].holds.Record ~= nil, J(pressAck))
+send({ t = "key", ev = 901, k = "Record", d = 0 }); tick(); drain()
+
+-------------------------------------------------------------------------------
 -- Feedback: deltas, full refresh, unknown, stale, identity, epochs
 -------------------------------------------------------------------------------
 tickAlive(1.0)
@@ -466,9 +523,15 @@ check("an executor-page change moves the binding generation and is sent in the f
 console.page = "3"
 for _ = 1, 12 do tickAlive(0.05); drain() end
 check("back on the original page: a new generation again (meaning changed twice)", state._collectContext(clock.t).cg == G + 2)
+-- KB-24: the plugin reads 24 watched items per tick, enough to re-observe every part of the context in the tick of
+-- the change; a budget of 8 (the KB-21 value) shows the unknown context this scene is about.
+local fbCfg = state.modules.feedback.instance._config
+local readsBefore = fbCfg.maxReadsPerService
+fbCfg.maxReadsPerService = 8
 console.showFile = "show-c"
 local unknownCtx
 for _ = 1, 30 do tickAlive(0.05); for _, p in ipairs(ofType(drain(), "context")) do if p.epoch == fbEpoch + 1 and p.known == 0 then unknownCtx = p end end; if unknownCtx then break end end
+fbCfg.maxReadsPerService = readsBefore
 check("after a show change no generation is claimed until every part is observed again", unknownCtx and unknownCtx.cg == nil and unknownCtx.why:find("not observed"), J(unknownCtx))
 local back
 for _ = 1, 30 do tickAlive(0.05); for _, p in ipairs(ofType(drain(), "context")) do if p.epoch == fbEpoch + 1 and p.known == 1 then back = p end end; if back then break end end
@@ -505,7 +568,7 @@ do
     return a and a.ok == 0 and a.code == "control-disabled" end)())
   check("control=bogus is refused", select(2, state._parseArgument("control=bogus")) ~= nil)
   reset("input=fake control=fake")
-  check("control=fake enables the module on its fake backend", state.controlEnabled == true and state.controlMode == "fake" and state.modules.control.version == "0.5.0" and findLog("control enabled on the fake backend"), lastLog())
+  check("control=fake enables the module on its fake backend", state.controlEnabled == true and state.controlMode == "fake" and state.modules.control.version == "0.7.0" and findLog("control enabled on the fake backend"), lastLog())
   push({ t = "hello", v = 2, id = "nxk-c1", gen = 7, nonce = "c1c1c1c1c1c1c1c1", surface = "nxk", fw = "0.1.0" }); tick()
   local w = ofType(drain(), "welcome")[1]
   check("the welcome announces control 1 on the fake backend and the control session is open", w and w.control == 1 and w.controlBackend == "fake" and state.sessions[w.sid].controlOpen == true, J(w))

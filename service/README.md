@@ -9,6 +9,7 @@ cargo build --release
 ./target/release/mtpnxk run # drive the USB keypad
 ./target/release/mtpnxk sim --script "Record:down,5:tap@50,Record:up@300,Enter:tap"
 ./target/release/mtpnxk bench --taps 200 --rate 20
+./target/release/mtpnxk measure --seconds 30 --json report.json   # KB-24 workload report
 ./target/release/mtpnxk list                        # USB devices
 ./target/release/mtpnxk mtouch-listen --seconds 240 # KB-16: decode an M-Touch / M-Play (--pid f808|f80c)
 ./target/release/mtpnxk mtouch-led-test             # KB-16: walk every LED, bar and display by eye
@@ -60,6 +61,10 @@ or application-level authentication. Local processes are trusted, as with the MC
 - `sim`: a scripted keypad for machines without the hardware; `bench` is a
   scripted tap run that prints ack round-trip percentiles and, when the plugin
   was started with `bench`, press-to-effect percentiles.
+- `measure` (KB-24): a simultaneous workload on the simulated NX-K and M-Touch (key taps,
+  a Store/Clear feedback probe, two rotaries, a parameter strip, a playback fader and
+  key) with a report of latencies, loss, ordering and the plugin loop's load against the
+  thresholds in `docs/qualification-matrix.md` (`--json` for the record; exit 2 on a failure).
 
 `cargo test` runs the unit tests, including a fake plugin that exercises the
 link's retransmission, loss, freshness and re-pairing paths and 17 M-Touch /

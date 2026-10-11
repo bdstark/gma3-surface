@@ -4,7 +4,7 @@
 //! and sends what `take_outgoing()` returns.
 
 use crate::wire::{self, MAX_FROM_PLUGIN};
-use crate::protocol::{CtlTarget, FromPlugin, KeyReport, ToPlugin, PROTOCOL_VERSION};
+use crate::protocol::{CtlTarget, FromPlugin, KeyReport, PluginLoad, ToPlugin, PROTOCOL_VERSION};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,6 +28,11 @@ pub struct Config {
     pub motion_max_age: f64,
     /// KB-18: at most one motion packet per control per this interval; deltas merge in between.
     pub motion_min_interval: f64,
+    /// KB-24: the most motion packets sent per second per session; beyond it motion keeps merging (never dropped
+    /// here; the age bound still applies).
+    pub motion_per_second: usize,
+    /// KB-24: the ceiling is enforced over this window (seconds); a short window smooths the deferral.
+    pub motion_window: f64,
     /// KB-18: motion packets sent per tick.
     pub ctl_per_tick: usize,
     /// KB-18: a relative gesture without a touch ends after this idle time (the next delta is a new gesture).
@@ -46,11 +51,13 @@ impl Default for Config {
             watchdog: 1.5,
             repair_after: 4.0,
             retransmits: 4,
-            retransmit_spacing: 0.06, // measured ack round trip on onPC: median 35 ms, p99 50 ms
+            retransmit_spacing: 0.12, // KB-24: ack round trips on onPC 2.5.1 are 40-46 ms median, 57-70 ms p95 (the plugin tick); twice the p95
             state_stale: 1.5,
             motion_max_age: 0.25,
-            motion_min_interval: 0.005,
+            motion_min_interval: 0.025, // KB-24: one packet per control per 25 ms (deltas merge losslessly meanwhile)
             ctl_per_tick: 16,
+            motion_per_second: 100, // KB-24: per-session ceiling on motion packets, under the plugin's measured capacity
+            motion_window: 0.1,     // enforced per 100 ms (10 packets), so a burst defers for tens of ms, not hundreds
             gesture_idle: 0.3,
             motion_per_control: 64,
         }
@@ -93,6 +100,8 @@ pub struct Stats {
     pub ctl_unsupported: u64,
     pub ctl_refused: u64,
     pub ctl_lost_reported: u64,
+    /// Acks whose loss figure the plugin marked uncertain (an upper bound).
+    pub ctl_lost_uncertain: u64,
     pub ctl_superseded: u64,
     /// Positions dropped because a control's motion queue overflowed (stateful targets keep every position).
     pub ctl_overflow: u64,
@@ -185,6 +194,9 @@ struct Pending {
     first_sent: f64,
     next_at: f64,
     attempts: u32,
+    /// KB-24: the release of this press/down went out while the press was still in its first ack window; the
+    /// press is not retransmitted when it comes due (its ack may still arrive), it is dropped and counted then.
+    released: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -241,6 +253,14 @@ pub struct ConsoleView<'a> {
     pub items: Option<&'a BTreeMap<String, Value>>,
 }
 
+/// KB-24: a feedback probe: the state item watched, its value when the probe opened, and when.
+#[derive(Debug, Clone)]
+struct FeedbackProbe {
+    item: String,
+    before: Option<Value>,
+    at: f64,
+}
+
 /// One refused event, for the log.
 #[derive(Debug, Clone)]
 pub struct Refusal {
@@ -269,6 +289,20 @@ pub struct Link {
     /// Ack round trips in milliseconds, and press-to-effect samples from the plugin's bench mode.
     pub rtt_ms: Vec<f64>,
     pub effect_ms: Vec<i64>,
+    /// KB-24 measurement samples: ack round trips split by kind (key events; ctl boundaries: touches and
+    /// buttons; motion is never acknowledged), the time queued motion waited before it was sent, the time
+    /// from a probed key event to the console state item changing (`probe_change`), probes that never saw
+    /// a change, and the plugin loop's load reports (heartbeat replies, plugin 0.11.0).
+    pub rtt_key_ms: Vec<f64>,
+    pub rtt_ctl_ms: Vec<f64>,
+    pub motion_queue_ms: Vec<f64>,
+    pub feedback_ms: Vec<f64>,
+    pub feedback_missed: u64,
+    feedback_probe: Option<FeedbackProbe>,
+    pub plugin_load: Vec<PluginLoad>,
+    /// Review (PR #9): refusals per code over the whole pairing history (the `refusals` log below keeps the last
+    /// 100 for diagnostics; verdicts use these counters).
+    pub refusal_codes: BTreeMap<String, u64>,
     pub refusals: Vec<Refusal>,
     pub log: Vec<String>,
     /// KB-18: per-device event sequence (next value), gestures per control, queued motion.
@@ -277,6 +311,8 @@ pub struct Link {
     gs_next: u64,
     motion: Vec<Motion>,
     last_flush: BTreeMap<(String, String), f64>,
+    /// KB-24: send times of the motion packets of the last second (the per-session ceiling).
+    motion_sent_at: std::collections::VecDeque<f64>,
     /// KB-21: the executor binding this surface wants (sent after every pairing), whether it went out for
     /// the current pairing, the last binding revision seen in a context and the change flag for the caller.
     desired_bind: Option<BindSpec>,
@@ -308,6 +344,14 @@ impl Link {
             unsynced: Vec::new(),
             rtt_ms: Vec::new(),
             effect_ms: Vec::new(),
+            rtt_key_ms: Vec::new(),
+            rtt_ctl_ms: Vec::new(),
+            motion_queue_ms: Vec::new(),
+            feedback_ms: Vec::new(),
+            feedback_missed: 0,
+            feedback_probe: None,
+            plugin_load: Vec::new(),
+            refusal_codes: BTreeMap::new(),
             refusals: Vec::new(),
             log: Vec::new(),
             es_next: BTreeMap::new(),
@@ -315,10 +359,39 @@ impl Link {
             gs_next: 1,
             motion: Vec::new(),
             last_flush: BTreeMap::new(),
+            motion_sent_at: std::collections::VecDeque::new(),
             desired_bind: None,
             bind_sent: false,
             last_br: None,
             binding_changed: false,
+        }
+    }
+
+    /// KB-24: watches a console state item from now on; the first state message (full or delta) in which its
+    /// value differs from the value at this moment records the elapsed time in `feedback_ms`. One probe at a
+    /// time: opening a new one while the previous never saw a change counts that one as missed.
+    pub fn probe_change(&mut self, item: &str, now: f64) {
+        if self.feedback_probe.is_some() {
+            self.feedback_missed += 1;
+        }
+        let before = if self.console.full_seen { self.console.items.get(item).cloned() } else { None };
+        self.feedback_probe = Some(FeedbackProbe { item: item.to_string(), before, at: now });
+    }
+
+    /// KB-24: the probe still open, if any (its age in seconds).
+    pub fn feedback_probe_age(&self, now: f64) -> Option<f64> {
+        self.feedback_probe.as_ref().map(|p| now - p.at)
+    }
+
+    fn check_feedback_probe(&mut self, now: f64) {
+        let Some(p) = &self.feedback_probe else { return };
+        if !self.console.full_seen {
+            return;
+        }
+        let cur = self.console.items.get(&p.item).cloned();
+        if cur != p.before {
+            self.feedback_ms.push((now - p.at) * 1000.0);
+            self.feedback_probe = None;
         }
     }
 
@@ -563,7 +636,7 @@ impl Link {
         self.pending.retain(|p| !matches!(p.kind, PendingKind::Bind(_)));
         let ev = self.ev_next;
         self.ev_next += 1;
-        let p = Pending { ev, kind: PendingKind::Bind(spec.clone()), first_sent: now, next_at: now + self.cfg.retransmit_spacing, attempts: 1 };
+        let p = Pending { ev, kind: PendingKind::Bind(spec.clone()), first_sent: now, next_at: now + self.cfg.retransmit_spacing, attempts: 1, released: false };
         self.stats.events += 1;
         self.stats.binds += 1;
         self.send_pending(&p);
@@ -737,11 +810,16 @@ impl Link {
                 };
                 if !down {
                     let before = self.pending.len();
-                    self.pending.retain(|p| !matches!(&p.kind, PendingKind::Ctl(b) if b.d == 1 && b.dev == dev && b.c == c));
+                    self.pending.retain(|p| !matches!(&p.kind, PendingKind::Ctl(b) if b.d == 1 && b.dev == dev && b.c == c && p.attempts > 1));
                     let n = (before - self.pending.len()) as u64;
                     if n > 0 {
                         self.stats.ctl_superseded += n;
                         self.note(format!("{k} down on {dev}/{c} never acknowledged before its release: no longer retransmitted"));
+                    }
+                    for p in self.pending.iter_mut() {
+                        if matches!(&p.kind, PendingKind::Ctl(b) if b.d == 1 && b.dev == dev && b.c == c) {
+                            p.released = true;
+                        }
                     }
                 }
                 let es = self.next_es(dev);
@@ -749,7 +827,7 @@ impl Link {
                 self.ev_next += 1;
                 let br = if down { self.current_binding(now) } else { None };
                 let b = CtlBoundary { k, dev: dev.into(), c: c.into(), es, cg: if down { cg } else { None }, gs, tgt, d: if down { 1 } else { 0 }, br };
-                let p = Pending { ev, kind: PendingKind::Ctl(b), first_sent: now, next_at: now + self.cfg.retransmit_spacing, attempts: 1 };
+                let p = Pending { ev, kind: PendingKind::Ctl(b), first_sent: now, next_at: now + self.cfg.retransmit_spacing, attempts: 1, released: false };
                 self.stats.events += 1;
                 self.stats.ctl_sent += 1;
                 self.send_pending(&p);
@@ -769,7 +847,9 @@ impl Link {
         let fine = if m.fine { Some(1) } else { None };
         let tk = if m.takeover && m.v.is_some() { Some(1) } else { None };
         self.send_session(|sid, seq| serde_json::to_string(&ToPlugin::Ctl { sid, seq, ev, k, dev: &m.dev, c: &m.c, es, cg: Some(m.cg), gs: Some(m.gs), tgt: m.tgt, dx, v, d: None, fine, tk, br: m.br }).expect("ctl serialises"));
+        self.motion_queue_ms.push((now - m.first_at).max(0.0) * 1000.0);
         self.last_flush.insert((m.dev.clone(), m.c.clone()), now);
+        self.motion_sent_at.push_back(now);
     }
 
     /// Sends every queued motion of one control now (before a boundary of that control).
@@ -795,6 +875,12 @@ impl Link {
             return;
         }
         let cg = self.current_generation(now);
+        // KB-24: the per-session ceiling: how many motion packets may still go out in this second.
+        while self.motion_sent_at.front().map(|t| now - t >= self.cfg.motion_window).unwrap_or(false) {
+            self.motion_sent_at.pop_front();
+        }
+        let per_window = ((self.cfg.motion_per_second as f64) * self.cfg.motion_window).round().max(1.0) as usize;
+        let budget = per_window.saturating_sub(self.motion_sent_at.len()).min(self.cfg.ctl_per_tick);
         let mut sent = 0usize;
         let mut waiting: BTreeSet<(String, String)> = BTreeSet::new();
         let mut keep: Vec<Motion> = Vec::new();
@@ -809,7 +895,7 @@ impl Link {
                 self.stats.ctl_stale += 1;
                 continue;
             }
-            if waiting.contains(&key) || sent >= self.cfg.ctl_per_tick || self.last_flush.get(&key).map(|t| now - t < self.cfg.motion_min_interval).unwrap_or(false) {
+            if waiting.contains(&key) || sent >= budget || self.last_flush.get(&key).map(|t| now - t < self.cfg.motion_min_interval).unwrap_or(false) {
                 waiting.insert(key);
                 keep.push(m);
                 continue;
@@ -832,19 +918,26 @@ impl Link {
             return;
         }
         if !down {
-            // A press of this key that was never acknowledged must not be delivered after its release:
-            // stop retransmitting it (the plugin rejects it as superseded anyway; the tap is lost).
+            // A press of this key that was never acknowledged must not be RETRANSMITTED after its release (the
+            // plugin would reject the late copy as superseded). KB-24: a press still inside its first ack window
+            // (acks on onPC take 40-80 ms, a tap lasts 60 ms) is not lost: it stays pending for its ack and is
+            // dropped and counted only if it comes due unacknowledged. One already retransmitted is dropped now.
             let before = self.pending.len();
-            self.pending.retain(|p| !matches!(p.kind, PendingKind::Key { k, d: 1 } if k == name));
+            self.pending.retain(|p| !matches!(p.kind, PendingKind::Key { k, d: 1 } if k == name && p.attempts > 1));
             let n = (before - self.pending.len()) as u64;
             if n > 0 {
                 self.stats.superseded += n;
                 self.note(format!("press of {name} never acknowledged before its release: no longer retransmitted"));
             }
+            for p in self.pending.iter_mut() {
+                if matches!(p.kind, PendingKind::Key { k, d: 1 } if k == name) {
+                    p.released = true;
+                }
+            }
         }
         let ev = self.ev_next;
         self.ev_next += 1;
-        let p = Pending { ev, kind: PendingKind::Key { k: name, d: if down { 1 } else { 0 } }, first_sent: now, next_at: now + self.cfg.retransmit_spacing, attempts: 1 };
+        let p = Pending { ev, kind: PendingKind::Key { k: name, d: if down { 1 } else { 0 } }, first_sent: now, next_at: now + self.cfg.retransmit_spacing, attempts: 1, released: false };
         self.stats.events += 1;
         self.send_pending(&p);
         self.pending.push(p);
@@ -897,6 +990,16 @@ impl Link {
             if p.attempts > self.cfg.retransmits {
                 self.stats.lost += 1;
                 self.note(format!("event {} ({:?}) lost: no ack after {} attempts", p.ev, p.kind, p.attempts));
+                self.pending.retain(|q| q.ev != p.ev);
+                continue;
+            }
+            if p.released {
+                // KB-24: its release already went out; a late copy of the press would be rejected as superseded.
+                match p.kind {
+                    PendingKind::Key { k, .. } => { self.stats.superseded += 1; self.note(format!("press of {k} unacknowledged when its retransmission came due after the release: dropped")); }
+                    PendingKind::Ctl(ref b) => { self.stats.ctl_superseded += 1; self.note(format!("{} down on {}/{} unacknowledged when its retransmission came due after the release: dropped", b.k, b.dev, b.c)); }
+                    PendingKind::Bind(_) => {}
+                }
                 self.pending.retain(|q| q.ev != p.ev);
                 continue;
             }
@@ -984,7 +1087,7 @@ impl Link {
                     self.note(format!("plugin error: {e}"));
                 }
             }
-            FromPlugin::Ack { sid, seq, ev, ok, code, why, lost, coalesced, cg, br, .. } => {
+            FromPlugin::Ack { sid, seq, ev, ok, code, why, lost, lu, coalesced, cg, br, .. } => {
                 if !self.admit(&sid, seq, now) {
                     return;
                 }
@@ -994,7 +1097,13 @@ impl Link {
                     let p = self.pending.remove(i);
                     was_ctl = matches!(p.kind, PendingKind::Ctl(_));
                     was_bind = matches!(p.kind, PendingKind::Bind(_));
-                    self.rtt_ms.push((now - p.first_sent) * 1000.0);
+                    let rtt = (now - p.first_sent) * 1000.0;
+                    self.rtt_ms.push(rtt);
+                    match p.kind {
+                        PendingKind::Key { .. } => self.rtt_key_ms.push(rtt),
+                        PendingKind::Ctl(_) => self.rtt_ctl_ms.push(rtt),
+                        PendingKind::Bind(_) => {}
+                    }
                 }
                 if was_bind {
                     if ok == 1 {
@@ -1015,7 +1124,12 @@ impl Link {
                 if let Some(n) = lost {
                     // KB-18: the plugin saw a gap in our per-device sequence: packets were lost on the way.
                     self.stats.ctl_lost_reported += n;
-                    self.note(format!("event {ev}: the plugin reports {n} lost control packet(s) before it (never replayed)"));
+                    if lu == Some(1) {
+                        self.stats.ctl_lost_uncertain += 1;
+                        self.note(format!("event {ev}: the plugin reports at most {n} lost control packet(s) before it (its refusal history was bounded: an upper bound)"));
+                    } else {
+                        self.note(format!("event {ev}: the plugin reports {n} lost control packet(s) before it (never replayed)"));
+                    }
                 }
                 let _ = coalesced;
                 if ok == 1 {
@@ -1030,6 +1144,7 @@ impl Link {
                         self.note(format!("event {ev}: the plugin's binding generation is {g}; our context lags (events against it are refused until the next context message)"));
                     }
                     let r = Refusal { ev, code: code.unwrap_or_default(), why: why.unwrap_or_default() };
+                    *self.refusal_codes.entry(r.code.clone()).or_insert(0) += 1;
                     self.note(format!("event {} refused [{}] {}", r.ev, r.code, r.why));
                     self.refusals.push(r);
                     if self.refusals.len() > 100 {
@@ -1037,9 +1152,12 @@ impl Link {
                     }
                 }
             }
-            FromPlugin::Hb { sid, seq, held, unsynced, resynced, reconciled, .. } => {
+            FromPlugin::Hb { sid, seq, held, unsynced, resynced, reconciled, load, .. } => {
                 if !self.admit(&sid, seq, now) {
                     return;
+                }
+                if let Some(l) = load {
+                    self.plugin_load.push(l);
                 }
                 if resynced == Some(1) {
                     self.note("session revived by the plugin after a lease expiry; its holds were released, nothing re-pressed".into());
@@ -1070,6 +1188,7 @@ impl Link {
                     self.stats.deltas_ignored += 1;
                     self.console.full_seen = false;
                 }
+                self.check_feedback_probe(now);
             }
             FromPlugin::Context { sid, seq, generation: pgen, epoch, known, cg, rest } => {
                 if !self.admit(&sid, seq, now) {
@@ -1264,13 +1383,13 @@ mod tests {
         let first = plugin.decode(link.take_outgoing());
         let mut seqs = vec![first[0]["seq"].as_u64().unwrap()];
         for i in 1..=4 {
-            link.tick(11.0 + 0.07 * i as f64);
+            link.tick(11.0 + 0.13 * i as f64);
             let r = keys(plugin.decode(link.take_outgoing()));
             assert_eq!(r.len(), 1, "retransmit {i}");
             assert_eq!(r[0]["ev"], 2);
             seqs.push(r[0]["seq"].as_u64().unwrap());
         }
-        link.tick(11.4);
+        link.tick(11.8);
         assert!(keys(plugin.decode(link.take_outgoing())).is_empty(), "given up after the retransmit budget");
         assert_eq!(link.stats.retransmitted, 4);
         assert_eq!(link.stats.lost, 1);
@@ -1291,7 +1410,7 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["d"], 0);
         for i in 1..=5 {
-            link.tick(0.12 + 0.07 * i as f64);
+            link.tick(0.12 + 0.13 * i as f64);
         }
         let later = plugin.decode(link.take_outgoing());
         assert!(later.iter().all(|p| p["t"] != "key" || p["d"] == 0), "only the release is retransmitted: {later:?}");
@@ -1529,11 +1648,11 @@ mod tests {
         }
         let out = plugin.decode(link.take_outgoing());
         let c = ctl_packets(&out);
-        // The first delta goes out at once; the next nine (within 5 ms of it) merge into one packet.
+        // The first delta goes out at once; the next nine (within 25 ms of it) merge into one packet.
         assert_eq!(c.len(), 1, "{out:?}");
         assert_eq!(c[0]["dx"], 1);
         assert_eq!(link.queued_motion(), 1);
-        link.tick(20.006);
+        link.tick(20.026);
         let c2: Vec<Value> = plugin.decode(link.take_outgoing());
         let c2 = ctl_packets(&c2);
         assert_eq!(c2.len(), 1);
@@ -1546,6 +1665,121 @@ mod tests {
         let c3: Vec<Value> = plugin.decode(link.take_outgoing());
         let c3 = ctl_packets(&c3);
         assert_ne!(c3[0]["gs"], c[0]["gs"]);
+    }
+
+    // ---- KB-24: continuous-control traffic never delays key releases or boundaries, and the harness samples ----
+
+    #[test]
+    fn a_key_release_and_a_boundary_go_out_at_once_while_motion_saturates_the_per_tick_budget() {
+        let (mut link, mut plugin) = pair(40.0);
+        link.cfg.motion_per_second = 10_000; // this scene is about the per-tick budget, not the per-session ceiling
+        link.receive(&plugin.context(1, 1, Some(1), json!({})), 40.0);
+        // 40 controls each with queued motion: more than ctl_per_tick (16) can go out per tick.
+        let names: Vec<String> = (0..40).map(|i| format!("Ctl{i}")).collect();
+        for (i, n) in names.iter().enumerate() {
+            link.control_event("mtouch", n, slot((i % 4 + 1) as u8), CtlKind::Rel { dx: 1, fine: false }, 40.0);
+        }
+        link.key_event("Record", true, 40.0);
+        link.tick(40.0);
+        let out = plugin.decode(link.take_outgoing());
+        assert_eq!(ctl_packets(&out).iter().filter(|p| p["k"] == "rel").count(), 16, "the motion budget holds");
+        assert_eq!(out.iter().filter(|p| p["t"] == "key").count(), 1, "the key press is not budgeted behind motion");
+        // Still 24 queued. The release of the key and a strip touch boundary are sent immediately, before the tick,
+        // in the order they happened; the touch flushes only its own control's motion.
+        assert_eq!(link.queued_motion(), 24);
+        link.key_event("Record", false, 40.001);
+        link.control_event("mtouch", "Ctl39", slot(4), CtlKind::Touch { down: true }, 40.001);
+        let out = plugin.decode(link.take_outgoing());
+        let kinds: Vec<String> = out.iter().map(|p| format!("{}:{}", p["t"].as_str().unwrap_or("?"), p.get("k").map(|k| k.to_string()).unwrap_or_default())).collect();
+        assert_eq!(kinds, vec!["key:\"Record\"".to_string(), "ctl:\"rel\"".to_string(), "ctl:\"touch\"".to_string()], "{kinds:?}");
+        assert_eq!(out[0]["d"], 0);
+        assert_eq!(out[1]["c"], "Ctl39", "only the touched control's queued motion is flushed before its boundary");
+        assert_eq!(link.queued_motion(), 23);
+        // The remaining motion drains at the budget on the following ticks, oldest first, none aged within 250 ms.
+        link.tick(40.006);
+        assert_eq!(ctl_packets(&plugin.decode(link.take_outgoing())).len(), 16);
+        link.tick(40.012);
+        assert_eq!(ctl_packets(&plugin.decode(link.take_outgoing())).len(), 7);
+        assert_eq!(link.stats.ctl_aged, 0);
+        assert_eq!(link.queued_motion(), 0);
+        // The harness's samples: every sent motion packet recorded how long it waited.
+        assert_eq!(link.motion_queue_ms.len(), 16 + 1 + 16 + 7);
+        assert!(link.motion_queue_ms.iter().all(|m| *m >= 0.0 && *m < 13.0));
+    }
+
+    #[test]
+    fn the_per_session_motion_ceiling_defers_and_merges_instead_of_dropping() {
+        let (mut link, mut plugin) = pair(60.0);
+        link.receive(&plugin.context(1, 1, Some(1), json!({})), 60.0);
+        // 8 controls, each producing a detent every 10 ms for 300 ms: 800 detents/s offered; the per-control interval
+        // (25 ms) alone would allow 320 packets/s, the ceiling allows 100.
+        let names: Vec<String> = (0..8).map(|i| format!("Ctl{i}")).collect();
+        let mut sent_total = 0usize;
+        for k in 0..30 {
+            let t = 60.0 + k as f64 * 0.01;
+            for (i, n) in names.iter().enumerate() {
+                link.control_event("mtouch", n, slot((i % 4 + 1) as u8), CtlKind::Rel { dx: 1, fine: false }, t);
+            }
+            link.tick(t);
+            sent_total += ctl_packets(&plugin.decode(link.take_outgoing())).len();
+        }
+        assert!(sent_total <= 30, "ceiling: {sent_total} packets in 300 ms (10 per 100 ms window)");
+        assert!(sent_total >= 24, "the budget is used: {sent_total}");
+        assert_eq!(link.stats.ctl_aged, 0, "deferred motion merged, nothing aged within 250 ms");
+        assert_eq!(link.stats.ctl_overflow, 0);
+        // Every detent is accounted for: sent packets carry the merged deltas, the rest is still queued.
+        let queued_dx: i32 = link.motion.iter().map(|m| m.dx).sum();
+        let sent_dx: i32 = 240 - queued_dx; // 8 controls x 30 ticks
+        assert!(sent_dx > 0 && link.stats.ctl_coalesced as i32 + sent_total as i32 + link.motion.len() as i32 == 240, "coalesced {} + sent {} + queued {} = 240", link.stats.ctl_coalesced, sent_total, link.motion.len());
+        // After a quiet second the window is empty and the backlog drains at the per-tick budget, oldest first.
+        link.tick(61.4);
+        let drained = ctl_packets(&plugin.decode(link.take_outgoing())).len();
+        assert!(drained == 0, "motion older than 250 ms is aged, never sent late: {drained}");
+        assert!(link.stats.ctl_aged > 0);
+    }
+
+    #[test]
+    fn measurement_samples_are_split_by_kind_and_a_feedback_probe_times_the_state_change() {
+        let (mut link, mut plugin) = pair(50.0);
+        link.receive(&plugin.context(1, 1, Some(1), json!({})), 50.0);
+        let full = plugin.frame(json!({"t":"state","gen":plugin.generation,"epoch":1,"full":1,"s":{"pending":"none","highlight":0}}));
+        link.receive(&full, 50.0);
+        link.key_event("Record", true, 50.0);
+        link.control_event("nxk", "Rotary1", slot(1), CtlKind::Btn { down: true }, 50.0);
+        let out = plugin.decode(link.take_outgoing());
+        let key_ev = out.iter().find(|p| p["t"] == "key").unwrap()["ev"].as_u64().unwrap();
+        let btn_ev = out.iter().find(|p| p["t"] == "ctl").unwrap()["ev"].as_u64().unwrap();
+        link.probe_change("pending", 50.0);
+        let a = plugin.ack(key_ev, true);
+        link.receive(&a, 50.004);
+        let a = plugin.ack(btn_ev, true);
+        link.receive(&a, 50.010);
+        assert_eq!(link.rtt_key_ms.len(), 1);
+        assert!((link.rtt_key_ms[0] - 4.0).abs() < 0.01);
+        assert_eq!(link.rtt_ctl_ms.len(), 1);
+        assert!((link.rtt_ctl_ms[0] - 10.0).abs() < 0.01);
+        assert_eq!(link.rtt_ms.len(), 2, "the combined series is kept");
+        // A delta that leaves the probed item alone is no sample; the one that changes it is.
+        let d = plugin.frame(json!({"t":"state","gen":plugin.generation,"epoch":1,"full":0,"s":{"highlight":1}}));
+        link.receive(&d, 50.020);
+        assert!(link.feedback_ms.is_empty());
+        assert!(link.feedback_probe_age(50.020).is_some());
+        let d = plugin.frame(json!({"t":"state","gen":plugin.generation,"epoch":1,"full":0,"s":{"pending":"store"}}));
+        link.receive(&d, 50.030);
+        assert_eq!(link.feedback_ms.len(), 1);
+        assert!((link.feedback_ms[0] - 30.0).abs() < 0.01);
+        assert!(link.feedback_probe_age(50.03).is_none());
+        // A probe that never saw a change is counted missed when the next one opens.
+        link.probe_change("pending", 51.0);
+        link.probe_change("pending", 52.0);
+        assert_eq!(link.feedback_missed, 1);
+        // The plugin's load report rides on the heartbeat reply (plugin 0.11.0); an older plugin sends none.
+        let hb = plugin.frame(json!({"t":"hb","held":[],"unsynced":[],"load":{"tmax":1.25,"tavg":0.2,"pmax":3,"full":0,"n":60}}));
+        link.receive(&hb, 52.1);
+        let hb_old = plugin.frame(json!({"t":"hb","held":[],"unsynced":[]}));
+        link.receive(&hb_old, 52.2);
+        assert_eq!(link.plugin_load.len(), 1);
+        assert_eq!(link.plugin_load[0], crate::protocol::PluginLoad { tmax: 1.25, tavg: 0.2, pmax: 3, full: 0, n: 60, smod: 0.0, spkt: 0.0, sstate: 0.0, co: 0, ovl: 0 });
     }
 
     #[test]
@@ -1597,13 +1831,15 @@ mod tests {
         assert_eq!(c[1]["k"], "abs"); assert_eq!(c[1]["v"], 0.5); assert_eq!(c[1]["es"], 2); assert_eq!(c[1]["gs"], c[0]["gs"], "the position belongs to the touch's gesture");
         assert_eq!(c[2]["k"], "touch"); assert_eq!(c[2]["d"], 0); assert!(c[2]["cg"].is_null(), "a release carries no generation"); assert_eq!(c[2]["es"], 3);
         assert_eq!(link.stats.ctl_coalesced, 1);
-        // The press was never acknowledged: its release superseded it, only the release is pending.
-        assert_eq!(link.pending_count(), 1);
-        assert_eq!(link.stats.ctl_superseded, 1);
+        // The press was never acknowledged: it stays pending for its ack inside its first window (KB-24: acks on
+        // onPC take 40-80 ms, a tap 60 ms); when it comes due after the release it is dropped, not retransmitted.
+        assert_eq!(link.pending_count(), 2);
+        assert_eq!(link.stats.ctl_superseded, 0);
         let rel_ev = c[2]["ev"].as_u64().unwrap();
-        link.tick(40.07);
+        link.tick(40.13);
         let again = plugin.decode(link.take_outgoing());
         let again = ctl_packets(&again);
+        assert_eq!(link.stats.ctl_superseded, 1, "the due press was dropped");
         assert_eq!(again.len(), 1); assert_eq!(again[0]["ev"], rel_ev); assert_eq!(again[0]["es"], 3, "a retransmission keeps its sequence");
         link.receive(&plugin.ctl_ack(rel_ev, true, json!({"boundary":1})), 40.08);
         assert_eq!(link.pending_count(), 0);
@@ -1688,7 +1924,7 @@ mod tests {
         let c = ctl_packets(&c);
         assert_eq!(c.len(), 2, "touch down went out at once; the first position now, the second waits for the rate interval: {c:?}");
         assert_eq!(c[1]["v"], 1.0);
-        link.tick(80.01);
+        link.tick(80.03);
         let c2: Vec<Value> = plugin.decode(link.take_outgoing());
         let c2 = ctl_packets(&c2);
         assert_eq!(c2.len(), 1);

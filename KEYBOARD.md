@@ -744,3 +744,85 @@ test-covered, not live-reproduced.
 **Not verified live:** the refused-bind readiness path (test-covered; a live refusal needs the watch budget exceeded);
 the physical M-Touch / M-Play rendering of the mixes, the slow blink and blue on playback bars (KB-24's hardware pass);
 Windows/Linux hosts.
+
+## KB-24 — Device profiles and end-to-end qualification (surface half, documentation and harness: 2026-10-10)
+
+The console half is the MCP repository's note (ENCODERS.md "KB-24 results"): control 0.6.0 and 0.7.0, feedback 0.7.0
+(the module defects the qualification found and the improvements that followed, 2026-10-11), the set hardkeys
+0.10.0 / feedback 0.7.0 / control 0.7.0 at `bdcfe6e` (after the PR #28 review round 3).
+This half has two parts; the first is done, the second needs the operator at the surfaces.
+
+**Documentation (done):**
+
+- [docs/device-profiles.md](docs/device-profiles.md): every physical control of the NX-K, the M-Touch and the
+  M-Play with its default role, light and the flag that moves it; the bank arithmetic (row base + width · bank,
+  banks 1–9 / 1–7 / 1–3); hot-plug, two surfaces and restart behaviour; what is unmapped (M-Touch command keys,
+  MF keys, PFDs, M-Play SELECT/RELEASE/BEAT/SNAP, NX-K Snap Shot/Back/Swap Prog) and what is not claimed. The
+  optional M-Play parameter strips of the acceptance are **not implemented** and said so.
+- [docs/qualification-matrix.md](docs/qualification-matrix.md): hosts × console, devices × firmware/protocol
+  source, the KB-24 scenarios, each row split into automated evidence and live qualification, and the proposed
+  latency/loss thresholds with the results so far.
+
+**Measurement harness (done):** `mtpnxk measure` (`service/src/measure.rs`): a repeating five-second workload on
+the simulated surfaces at once (key taps, a Store/Clear feedback probe, two rotaries at 50 detents/s each, a
+dragged parameter strip, a moved playback fader, an executor key) with a report of ack round trips by kind, motion
+queueing, probe-to-state feedback latency, press-to-effect (plugin `bench`), loss/ordering counters, the plugin
+loop's load, and a PASS/FAIL/n.a. verdict per threshold (`--json` for the record; exit 2 on a failure). To carry
+it: the link records `rtt_key_ms` / `rtt_ctl_ms` / `motion_queue_ms` / `feedback_ms` (`probe_change`), and the
+plugin (0.11.0) answers every heartbeat with `load { tmax, tavg, pmax, full, n }`, its loop's longest and mean
+tick, the most datagrams one tick took and the ticks that hit the 32-per-tick budget since the previous reply
+([docs/surface-protocol.md](docs/surface-protocol.md); protocol 2, optional field; 0.10.0 is the keyless localhost-only transport).
+
+**Continuous control versus key releases (done):** `link.rs` proves that key events and boundaries are sent at
+once while motion saturates the 16-per-tick budget across 40 controls (only the touched control's motion is
+flushed before its boundary; the rest drains in order, nothing aged); the Lua suite proves that a release behind
+31 ctl packets applies on the same plugin tick, that the per-session 400/s limit drops a ctl burst's excess and
+that the key path is admitted afterwards. `cargo test` 96, `lua tools/ma3/test/surface_plugin_test.lua` 243,
+`sh tools/ma3/test/e2e.sh` passed.
+
+**Measured (2026-10-10) and fixed (2026-10-11):** [docs/probes/kb-24-measure-macos.md](docs/probes/kb-24-measure-macos.md).
+Runs A–E against onPC 2.5.1 found three defects: the control module counted refused events as loss, its queue held
+single detents and overflowed (`queue-full`) at 40 detents/s plus a strip, and at 100 detents/s the plugin saturated
+and key taps were lost (103 lost, 101 superseded). Fixed: control 0.6.0 (refused numbers remembered per device and
+not counted as loss; deltas merge into the most recent queued intent of their control across other controls'
+motion; upstream `e4aa80a`, re-vendored), the service (one motion packet per control per 25 ms under a per-session
+ceiling of 100/s, deferring and merging instead of dropping; retransmits after 120 ms; a release no longer drops a
+press still inside its first ack window), the plugin 0.11.0 (8 intents per tick, state readers at most every 40 ms,
+24 feedback reads per tick, the heartbeat load report with the tick's phases). Re-measured (run 3): admitted motion
+passes every check (C3); 40 and 100 detents/s plus a strip plus keys lose nothing (E2, D2: 0 lost / superseded /
+refused / retransmitted, key acks 67–69 ms p95); keys alone meet the agreed thresholds (B5). Thresholds agreed:
+key and boundary ack p95 80 ms, worst 300 ms, plugin tick max 200 ms; every zero-loss line unchanged. Open: the
+feedback read-back of a command-line keyword (median 60 ms, p95 509 ms, 11 of 39 probes missed), plugin tick spikes
+of 266–275 ms under motion, and the load report's tick count exceeding the wall clock under traffic (the plugin's
+own figures are indicative until understood). The service side stayed clean in every run (nothing stale or aged).
+
+**Round 4 (2026-10-11, later):** control 0.7.0 merges a delta into a queued intent of its control before resolving the
+target (within 100 ms of the intent), feedback 0.7.0 reads the state items before the executor targets (`priorityStateReads`,
+half the budget, own round robin), the service enforces its ceiling per 100 ms, and the load report carries scheduling
+diagnostics. Re-measured: feedback median 55 ms / p95 165 ms (was 60 / 509, 3 probes missed instead of 11); at 100
+detents/s plus a strip plus keys the plugin never hits its datagram budget and the deferral is bounded at 44 ms (was
+146); the admitted-motion and mixed runs pass (motion queue p95 agreed at 15 ms for the 25 ms interval). The scheduling
+anomaly did not reproduce (one coroutine, no overlapping ticks, coherent sums): it coincided with a stale load table
+surviving a plugin restart, now replaced. Open: press-to-effect p95 122 ms against 100, three missed probes, the context
+collection every tick.
+
+**Round 5 (2026-10-11, later):** the plugin reads and sends the console state on the tick after any key event;
+press-to-effect p95 fell from 122 to 66 ms (B7), feedback 49 ms median / 172 ms p95. The "probes missed" line was
+agreed at a tenth of the probes (3–5 of 39 are missed in every run since round 4; B7 is at 13 %). The context
+collection stays per tick: gating it shifts the binding revision the KB-21/KB-22 tests expect, with the finding
+recorded; the hardware pass is deferred until the merge.
+
+**Review round 1 (PR #9 / GrandMA3MCP #28, 2026-10-11):** six findings fixed: the early merge runs behind every
+admission guard (P1); both merge paths and the absolute supersede stop at another control's motion on the same
+target; the refused-sequence set is bounded; the load window rotates at the end of the reporting tick so no tick is
+lost; the measurement keeps one session through warm-up, workload and drain; the ordering verdict uses cumulative
+per-code counters minus the warm-up snapshot. Re-measured: B8, C6 and E5 pass every check (feedback p95 141 ms, 2 of
+39 probes missed); the 100 detents/s saturation run fails only the by-design deferral line and the plugin tick max
+(247 ms, now honestly counted). `control_admission_test` 296, Lua 244, cargo 96, e2e.
+
+**Pending (hardware pass, operator at the surfaces):** `measure` against onPC with the plugin 0.11.0 installed
+(procedure in the record), the physical NX-K rotaries, M-Touch and
+M-Play through `run` for every KB-16 … KB-23 scenario, two connected surfaces, USB removal, plugin restart, context
+changes and stale feedback on the physical lights, the agreed thresholds, and the records
+`docs/probes/kb-24-hardware-*.md`. Versions: service crate 0.1.0, plugin 0.11.0, protocol 2, module set
+unchanged (VENDOR.md hashes equal upstream `plugin/modules.lock.json` at `9535ded`).

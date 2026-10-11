@@ -109,6 +109,35 @@ pub struct KeyReport {
     pub unsupported: Vec<String>,
 }
 
+/// KB-24: the plugin loop's load over one heartbeat window (plugin 0.11.0): the longest and the mean tick in
+/// milliseconds, the most datagrams one tick processed, the ticks that exhausted the per-tick budget, ticks.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq)]
+pub struct PluginLoad {
+    #[serde(default)]
+    pub tmax: f64,
+    #[serde(default)]
+    pub tavg: f64,
+    #[serde(default)]
+    pub pmax: u64,
+    #[serde(default)]
+    pub full: u64,
+    #[serde(default)]
+    pub n: u64,
+    /// Where the window's tick time went, in ms summed over the window: module servicing (the feedback reads),
+    /// datagram handling, state/context collection and sends.
+    #[serde(default)]
+    pub smod: f64,
+    #[serde(default)]
+    pub spkt: f64,
+    #[serde(default)]
+    pub sstate: f64,
+    /// Scheduling diagnostics: distinct coroutines that ticked in the window, ticks that began inside another.
+    #[serde(default)]
+    pub co: u64,
+    #[serde(default)]
+    pub ovl: u64,
+}
+
 /// Packets the plugin sends.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
@@ -162,6 +191,9 @@ pub enum FromPlugin {
         /// delta was coalesced, the current binding generation on a stale-generation refusal.
         #[serde(default)]
         lost: Option<u64>,
+        /// KB-24 (review of GrandMA3MCP #28): the loss figure is an upper bound (the module dropped refusal history).
+        #[serde(default)]
+        lu: Option<u8>,
         #[serde(default)]
         coalesced: Option<u8>,
         #[serde(default)]
@@ -183,6 +215,9 @@ pub enum FromPlugin {
         reconciled: Option<u32>,
         #[serde(default, rename = "gen")]
         generation: Option<String>,
+        /// KB-24: the plugin loop's load since its previous heartbeat reply.
+        #[serde(default)]
+        load: Option<PluginLoad>,
     },
     State {
         sid: String,

@@ -6,6 +6,7 @@ mod banks;
 mod leds;
 mod lights;
 mod link;
+mod measure;
 mod mtouch;
 mod nxk;
 mod protocol;
@@ -120,6 +121,41 @@ enum Cmd {
         #[arg(long, default_value_t = 20.0)]
         rate: f64,
     },
+    /// KB-24 measurement harness: a realistic simultaneous workload on the simulated surfaces (key taps and a
+    /// feedback probe on the NX-K, two rotaries turning, an M-Touch parameter strip dragged, a playback fader
+    /// moved and a playback button tapped) for a number of seconds. Reports input latency (ack round trips by
+    /// kind, motion queueing), feedback latency (probe key to console state change), press-to-effect when the
+    /// plugin runs with `bench`, missed events, ordering, the plugin loop's load, and judges them against the
+    /// KB-24 thresholds (docs/qualification-matrix.md). `--json` writes the report for the records.
+    Measure {
+        /// Seconds of workload (after pairing and the first context).
+        #[arg(long, default_value_t = 10.0)]
+        seconds: f64,
+        /// Key taps per second ('5'; every tenth tap is a Clear).
+        #[arg(long, default_value_t = 4.0)]
+        key_rate: f64,
+        /// Detents per second on each of rotaries 2 and 3 (one detent per report; slot 1 is the strip's).
+        #[arg(long, default_value_t = 50.0)]
+        motion_rate: f64,
+        /// Feedback probes per second: a tap of --probe-key, each followed by a Clear.
+        #[arg(long, default_value_t = 2.0)]
+        probe_rate: f64,
+        /// The NX-K key whose press must change --probe-item in the console state (Record puts "Store" on the
+        /// command line; HighLight with item highlight is the alternative).
+        #[arg(long, default_value = "Record")]
+        probe_key: String,
+        #[arg(long, default_value = "pending")]
+        probe_item: String,
+        /// Leave the M-Touch parameter strip out of the workload.
+        #[arg(long)]
+        no_strip: bool,
+        /// Leave the playback fader and button out of the workload.
+        #[arg(long)]
+        no_playback: bool,
+        /// Write the report (samples summarised, counters, verdicts) as JSON here.
+        #[arg(long)]
+        json: Option<std::path::PathBuf>,
+    },
     /// List USB devices.
     List,
     /// KB-16: print every report of an M-Touch or M-Play (decoded, with the raw packet) and a
@@ -189,6 +225,9 @@ struct Loop {
     lights_lines_seen: Vec<String>,
     lights_block_seen: Option<String>,
     present: BTreeMap<mtouch::Model, bool>,
+    /// KB-24: the measurement harness's feedback probe: a press of this NX-K key opens a probe on this console
+    /// state item (the time until the item changes is a feedback-latency sample).
+    probe: Option<(&'static str, String)>,
     /// The fine flag handed to the strips converter by the last strip report (what a stale Bank would corrupt).
     #[cfg(test)]
     last_strip_fine: Option<bool>,
@@ -240,7 +279,7 @@ impl Loop {
         Ok(Loop { link, leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots,
                   strips: strips::Strips::new(strip_cfg), strips_log_seen: 0, pushed_wheels: BTreeSet::new(),
                   banks, banks_log_seen: 0, displays: BTreeMap::new(), bar_writes: Vec::new(),
-                  lights: lights::Lights::new(lights::Config { enabled: lights_on, min_interval: cli.lights_interval as f64 / 1000.0 }), lights_lines_seen: Vec::new(), lights_block_seen: None, present: BTreeMap::new(),
+                  lights: lights::Lights::new(lights::Config { enabled: lights_on, min_interval: cli.lights_interval as f64 / 1000.0 }), lights_lines_seen: Vec::new(), lights_block_seen: None, present: BTreeMap::new(), probe: None,
                   #[cfg(test)]
                   last_strip_fine: None })
     }
@@ -263,6 +302,12 @@ impl Loop {
                         self.bank_held = true;
                     }
                     self.leds.key_event(name, true, now);
+                    if let Some((k, item)) = &self.probe {
+                        if *k == name {
+                            let item = item.clone();
+                            self.link.probe_change(&item, now);
+                        }
+                    }
                     self.link.key_event(name, true, now);
                 }
                 Event::KeyUp { name, .. } => {
@@ -915,6 +960,40 @@ fn main() -> Result<()> {
             for l in &lp.lights.lines {
                 println!("light: {l}");
             }
+            Ok(())
+        }
+        Cmd::Measure { seconds, key_rate, motion_rate, probe_rate, probe_key, probe_item, no_strip, no_playback, json } => {
+            let probe = sim::key_name(probe_key)?;
+            let script = measure::workload(&measure::Workload { key_rate: *key_rate, motion_rate: *motion_rate, probe_rate: *probe_rate, probe_key: probe, strip: !no_strip, playback: !no_playback });
+            let mut lp = Loop::new(&cli)?;
+            lp.probe = Some((probe, probe_item.clone()));
+            // Review (PR #9): one session for warm-up, workload and drain; only the drain says bye.
+            lp.bye_on_exit = false;
+            // Warm-up: pair and wait for a known binding generation (the context), at most 5 s, with no input.
+            let mut idle = sim::SimKeypad::new(Vec::new(), false, false);
+            lp.run(&mut idle, |lp, _| lp.link.current_generation(lp.now()).is_some() || lp.started.elapsed() > Duration::from_secs(5))?;
+            let warm = lp.now();
+            let paired = lp.link.session().is_some();
+            let context = lp.link.current_generation(warm).is_some();
+            let before = measure::Snapshot::of(&lp.link, &lp.strips, &lp.banks);
+            let mut keypad = sim::SimKeypad::new(sim::parse_script(&script)?, true, false);
+            let total = Duration::from_secs_f64(*seconds);
+            let start = Instant::now();
+            lp.run(&mut keypad, |_, _| start.elapsed() > total)?;
+            // Drain: let the last acks and states arrive, then say bye.
+            let mut idle = sim::SimKeypad::new(Vec::new(), false, false);
+            let drain_from = Instant::now();
+            lp.bye_on_exit = true;
+            lp.run(&mut idle, |lp, _| drain_from.elapsed() > Duration::from_millis(600) && lp.link.pending_count() == 0 || drain_from.elapsed() > Duration::from_secs(3))?;
+            let report = measure::report(&lp.link, &lp.strips, &lp.banks, &before, measure::Setup { seconds: *seconds, key_rate: *key_rate, motion_rate: *motion_rate, probe_rate: *probe_rate, probe_key: probe.to_string(), probe_item: probe_item.clone(), strip: !no_strip, playback: !no_playback, plugin: cli.plugin.clone(), paired, context_at_start: context, warmup_s: warm });
+            print!("{}", report.text());
+            print_summary(&lp.link, &lp.strips);
+            println!("{}", lp.banks.summary(lp.link.console_page(lp.now())));
+            if let Some(path) = json {
+                std::fs::write(path, serde_json::to_string_pretty(&report.json())?).with_context(|| format!("writing {}", path.display()))?;
+                eprintln!("measure: report written to {}", path.display());
+            }
+            if report.failed() { std::process::exit(2); }
             Ok(())
         }
         Cmd::Bench { taps, rate } => {
