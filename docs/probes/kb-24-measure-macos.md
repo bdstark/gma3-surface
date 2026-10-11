@@ -244,3 +244,13 @@ plugin's tick maximum under saturation is honest now (247 ms at 100 detents/s pl
 and so is the feedback tail (p95 141 ms, 2 of 39 probes missed). Every scheduling window still shows one coroutine
 and no overlapping ticks.
 
+### Review round 2 (2026-10-11): bounded refusal history must not become loss
+
+Bounding the refused set by numbers (round 1) made forgotten received events count as lost (70 refusals at 10/s, then
+valid motion: `lost = 6`). Control 0.7.0 at `9cf1659` keeps received-but-refused numbers as merged ranges bounded by
+their count (a contiguous run is one entry), keeps the count and highest number of dropped ranges, subtracts that
+count exactly once the order passed the region, and reports an upper bound with `lostUncertain = true` (the ack's
+`lu`) while the order is inside it. The service counts such acks (`ctl_lost_uncertain`, in the report's counters);
+no run in this record produced one (every refusal-free run reports 0 lost; the accounting change does not alter any
+figure above). Known received events are never reported as lost.
+
