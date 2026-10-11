@@ -441,13 +441,28 @@ impl Link {
     }
 
     pub fn current_generation(&self, now: f64) -> Option<u64> {
-        self.context_view(now).and_then(|c| c.generation)
+        let ctx = self.context_view(now)?;
+        // Review (PR #7): a bind ack carries the new revision before the context does; until a context of THAT
+        // revision arrives the generation is unknown (a new binding may reuse the old generation number, so the
+        // old context's cg must not be combined with the new br). Releases need no generation and still go out.
+        let ctx_br = ctx.body.get("bind").and_then(|b| b.get("br")).and_then(|v| v.as_u64());
+        if let Some(acked) = self.last_br {
+            if ctx_br != Some(acked) {
+                return None;
+            }
+        }
+        ctx.generation
     }
 
     /// KB-21: the plugin's binding revision as the last context reported it (`bind.br`); motion and downs
     /// carry it so a replaced binding refuses what was produced against the old one.
     pub fn current_binding(&self, now: f64) -> Option<u64> {
-        self.context_view(now).and_then(|c| c.body.get("bind")).and_then(|b| b.get("br")).and_then(|v| v.as_u64())
+        let ctx = self.context_view(now).and_then(|c| c.body.get("bind")).and_then(|b| b.get("br")).and_then(|v| v.as_u64());
+        // KB-22: a bind ack carries the revision before the next context does; the newer of the two is current.
+        match (ctx, self.last_br) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// KB-21: the plugin's binding as the last context reported it: the executor list, the page (None =
@@ -513,6 +528,20 @@ impl Link {
         let complete = s.get("vc").and_then(|v| v.as_u64()) == Some(1);
         let abs = s.get("abs").and_then(|v| v.as_f64()).map(|a| (a / 100.0).clamp(0.0, 1.0));
         Some(crate::strips::SlotHint { single: state == "value" && complete && abs.is_some(), value: abs })
+    }
+
+    /// KB-22: what the last context said about a bound executor, for the playback faders' pickup: whether it is
+    /// a playback target, the configured fader function's level as 0..1 (the context's integer `lvl` / 100), the
+    /// function's name and when the context arrived. The context is refreshed on a generation change and at least
+    /// once a second, so the level is the binding's last read, not live.
+    pub fn exec_hint(&self, ex: u32, pg: Option<u32>, now: f64) -> Option<crate::banks::ExecHint> {
+        let ctx = self.context_view(now)?;
+        let exs = ctx.body.get("ex")?.as_array()?;
+        let x = exs.iter().find(|x| x.get("n").and_then(|n| n.as_u64()) == Some(ex as u64) && x.get("pg").and_then(|p| p.as_u64()).map(|p| p as u32) == pg)?;
+        let target = x.get("tgt").and_then(|v| v.as_u64()) == Some(1);
+        let level = x.get("lvl").and_then(|v| v.as_f64()).map(|l| (l / 100.0).clamp(0.0, 1.0));
+        let function = x.get("fd").and_then(|v| v.as_str()).filter(|f| !f.is_empty()).map(|f| f.to_string());
+        Some(crate::banks::ExecHint { target, level, function, received_at: ctx.received_at })
     }
 
     /// Whether a newer position may replace a queued one for this target (review 7): an encoder slot or an
@@ -912,6 +941,15 @@ impl Link {
                 if was_bind {
                     if ok == 1 {
                         self.note(format!("bind acknowledged: binding revision {}", br.map(|b| b.to_string()).unwrap_or_else(|| "?".into())));
+                        // KB-22: the acked revision is adopted at once (the context that carries it may lag a tick):
+                        // events produced from now on are stamped with it, and held gestures are rebound now.
+                        if br.is_some() && br != self.last_br {
+                            if self.last_br.is_some() {
+                                self.binding_changed = true;
+                                self.stats.binding_revisions += 1;
+                            }
+                            self.last_br = br;
+                        }
                     } else {
                         self.note(format!("bind refused [{}] {}: the plugin keeps its previous binding", code.clone().unwrap_or_default(), why.clone().unwrap_or_default()));
                     }
@@ -1684,6 +1722,49 @@ mod tests {
         let out = plugin.decode(link.take_outgoing());
         assert!(out.iter().any(|v| v["t"] == "bind" && v["pg"] == json!(2)), "re-sent after the re-pairing");
         assert_eq!(link.stats.binds, 3);
+    }
+
+    /// Review (PR #7): a bind ack carries the new revision before the context does; until a context of that revision
+    /// arrives the generation is unknown, so no down or motion combines the new `br` with the old context's `cg`
+    /// (a new binding can reuse the old generation number). Releases still go out.
+    #[test]
+    fn after_a_bind_ack_events_wait_for_the_context_of_that_revision() {
+        let (mut link, mut plugin) = pair(20.0);
+        let ctx = |p: &mut FakePlugin, cg: u64, br: u64| p.frame(json!({"t":"context","gen":p.generation,"epoch":1,"known":1,"cg":cg,"enc":{},"slots":[],"ex":[{"n":201,"tgt":1,"fd":"Master","tok":"FaderMaster"}],"page":1,"pool":"Default","display":1,"bind":{"ex":[201],"br":br,"mode":"current"}}));
+        link.receive(&ctx(&mut plugin, 1, 1), 20.02);
+        assert_eq!(link.current_generation(20.03), Some(1));
+        let key = CtlTarget::Executor { ex: 201, el: "key", pg: None };
+        link.control_event("mtouch", "PFA1", key, CtlKind::Btn { down: true }, 20.05);
+        link.tick(20.06);
+        let out = plugin.decode(link.take_outgoing());
+        let down = out.iter().find(|v| v["t"] == "ctl" && v["k"] == "btn").unwrap();
+        assert_eq!((down["br"].as_u64(), down["cg"].as_u64()), (Some(1), Some(1)));
+        // Our bank change: the bind goes out and is acked with revision 2 before any context carries it.
+        link.set_binding(BindSpec { ex: vec![211], pg: None }, 20.1);
+        link.tick(20.1);
+        let out = plugin.decode(link.take_outgoing());
+        let ev = out.iter().find(|v| v["t"] == "bind").unwrap()["ev"].as_u64().unwrap();
+        link.receive(&plugin.ctl_ack(ev, true, json!({"br": 2})), 20.12);
+        assert_eq!(link.current_binding(20.13), Some(2), "the acked revision is current at once");
+        assert_eq!(link.current_generation(20.13), None, "but the generation is unknown until a context of revision 2 arrives");
+        assert!(link.take_binding_changed());
+        let unbound_before = link.stats.ctl_unbound;
+        link.control_event("mtouch", "PFA2", CtlTarget::Executor { ex: 211, el: "key", pg: None }, CtlKind::Btn { down: true }, 20.15);
+        link.control_event("mtouch", "PFA1", key, CtlKind::Btn { down: false }, 20.15);
+        link.tick(20.16);
+        let out = plugin.decode(link.take_outgoing());
+        assert!(out.iter().all(|v| !(v["t"] == "ctl" && v["d"] == json!(1))), "no down went out with br 2 and the old cg: {out:?}");
+        assert_eq!(link.stats.ctl_unbound, unbound_before + 1, "the down was dropped as unbound (counted)");
+        assert!(out.iter().any(|v| v["t"] == "ctl" && v["k"] == "btn" && v["d"] == json!(0)), "the release still goes out");
+        // The context of revision 2 arrives (the same generation number as before): events flow again, stamped br 2.
+        link.receive(&ctx(&mut plugin, 1, 2), 20.2);
+        assert_eq!(link.current_generation(20.21), Some(1));
+        assert!(!link.take_binding_changed(), "the revision was already reported from the ack");
+        link.control_event("mtouch", "PFA2", CtlTarget::Executor { ex: 211, el: "key", pg: None }, CtlKind::Btn { down: true }, 20.25);
+        link.tick(20.26);
+        let out = plugin.decode(link.take_outgoing());
+        let down = out.iter().find(|v| v["t"] == "ctl" && v["d"] == json!(1)).unwrap();
+        assert_eq!((down["br"].as_u64(), down["cg"].as_u64()), (Some(2), Some(1)));
     }
 
     #[test]

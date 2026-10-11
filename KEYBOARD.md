@@ -1,6 +1,6 @@
-# KB-07, KB-08 and KB-15 to KB-21 in mtpnxk: the surface consumer and its qualification
+# KB-07, KB-08 and KB-15 to KB-22 in mtpnxk: the surface consumer and its qualification
 
-Updated: 2026-10-10 (KB-21 surface half added, see the last section). The feature series KB-01 to KB-09 is defined and tracked in
+Updated: 2026-10-10 (KB-22 surface half added, see the last section). The feature series KB-01 to KB-09 is defined and tracked in
 [bdstark/GrandMA3MCP `KEYBOARD.md`](https://github.com/bdstark/GrandMA3MCP/blob/main/KEYBOARD.md).
 KB-01 to KB-06 are complete there (macOS, onPC 2.5.1.0) and provide the reusable
 console modules this repository vendors. KB-07 (the surface consumer) and KB-08
@@ -523,3 +523,108 @@ moved the following binding's generation once each; the page display read `11` /
 **Not verified live:** the physical M-Touch and M-Play through `run` (the `sim` path enters the service after the decoder;
 the hardware qualification with the operator at the surfaces is KB-24's), the executor operations themselves (KB-22), an
 expanded assignment on the console (the MCP record says what the console answered), Windows/Linux hosts.
+
+## KB-22 — Playback faders and buttons follow executor configuration (surface half, 2026-10-10)
+
+The console half is in the MCP repository (`gma3_mcp_control` 0.5.0: the console backend serves an executor key as
+`Press`/`Unpress Page <p>.<e>`, the console's own dispatch of the CONFIGURED button function, for the key functions
+qualified live (Temp, Flash, Toggle, Top, Go+; any other configured function, or an empty one, is refused `unsupported`
+naming it), an executor fader as `Fader<Function> Page <p>.<e> At <level>` for the CONFIGURED fader function, qualified
+separately per function (Master and Temp; Rate, Speed, X/XA/XB, CrossFade and Time refused until qualified, with their
+travel and neutral position recorded in `FADER_FUNCTIONS`), a fader touch as a hold, executor encoders refused; a release
+whose executor was reassigned or emptied while held is kept as an `assignment-changed` record instead of operating the
+replacement, re-attempted by `recover()`; bridge 0.18.0; branch `feat/kb22-executor-operations`, probe
+`scripts/kb22-probe.mjs`). This repository vendors control 0.5.0 from `0315e18` ([tools/ma3/VENDOR.md](tools/ma3/VENDOR.md))
+and owns the playback faders, the pressure buttons, the pickup display and the dedicated-key profile (`service/src/banks.rs`):
+
+- **Configured action, separate down/up:** nothing changes on the wire for buttons: a strip's upper and lower buttons
+  go out as `btn` down/up on the executor's `key` element and the console runs the executor's own KeyPress/KeyUnpress.
+  Each physical strip button maps to one explicit element (`--pb-rows`); no button is invented on an executor.
+- **Playback faders operate the fader row's executor** through its `fader` element: the touch-down is a hold on the
+  executor the strip means right then (frozen, like a button: a bank change while touched neither moves the hold nor
+  reaches the new mapping; the lift ends it), positions go out as `abs` 0..1 of the strip and the console backend scales
+  them over the configured function's travel. The service never assumes a function: an unqualified one is refused by
+  the plugin and logged.
+- **Pickup by default:** a position goes out only after the strip crossed the executor's last known level (the
+  context's `lvl`, the configured fader function's level read by the plugin, refreshed on a generation change and at
+  least once a second) or landed within `--pb-pickup` (0.02 of the travel) of it. There is no takeover modifier for
+  playback faders. An executor whose level is unknown (not a playback target, no fader function, no context) is never
+  picked up: the strip waits, counted `waiting`.
+- **Pickup resets** on every touch, after a bank change or a plugin rebind (the touch is rebound: positions dropped until
+  the lift, counted `rebound`), after a reconnect (a lost device lifts its faders against their frozen targets, counted
+  `forced`) and after an **external edit**: a context received more than `external_grace` (1.2 s, one refresh) after our
+  last position that reports the level more than twice the tolerance away from it means someone moved the fader on the
+  console; the strip must cross the new level again (counted `resets`, logged "edited elsewhere"). Our own position's
+  lag in the context (a refresh within the grace) never resets it.
+- **Never from the device:** a report with `touch` 0 while nothing is touched (the device's startup or resting reports;
+  the first 250 ms after an open are discarded anyway) seeds nothing: no level is ever initialised from the surface.
+- **Pickup direction on the bar:** while a touched fader waits for pickup, its RGB bar (M-Touch 0x42n3, M-Play 0x92n3)
+  shows the span between the strip's position and the executor's level, yellow and blinking; cleared on pickup, lift,
+  rebind and loss; written on change only. Level, activity and assignment colours are KB-23's.
+- **M-Play buttons are pressure keys:** the hardware reports `FADER PFD 1-24` and `FADER EXT PF 1-24` as analog
+  pressure units (kind V; the KB-16 record and the decoder), which the loop used to count unmapped: the first report
+  with `touch` is the down, the release report the up, the pressure value is never an input (`banks.pressure`). The
+  M-Play's twelve faders are routed by id (`playback_fader_of`), no longer counted blindly. The M-Touch is opened for
+  its playback strips even with `--strips off`.
+- **Assignment changed while held:** the frozen record goes to the plugin unchanged; the vendored module keeps the
+  release as an `assignment-changed` record (nothing is issued on the replacement), the plugin's `status` prints it with
+  the KB-22 note and `recover` releases it once the original object is back on that executor (or the operator ends the
+  playback by hand).
+- **Page / bank navigation:** unchanged from KB-21: a bank change only replaces the bound list; the console's page
+  commands are never issued here; the MCP probe checks live that `Page n` neither stops a running playback nor starts
+  the newly visible ones.
+- **Dedicated keys through an explicit profile only:** `--pb-go <executor>` makes the `Next (Go)` key (0x5513, the same
+  id on both devices) press that executor's `key` element (its configured function, whatever it is: nothing here assumes
+  Go+), `--pb-pause <executor>` the same for `Pause (||/Back)` (0x5512); the executor is on the bound page, never banked,
+  and is bound with the windows. Without the flags the keys are unmapped and counted; SELECT, RELEASE, BEAT and SNAP are
+  ambiguous and stay unmapped.
+- **The rebind race (found by the e2e scenario):** events carry the binding revision from the plugin's context, which
+  was refreshed only at the next periodic send after a bind, so a press within a second of a bank change was refused
+  `stale-binding`. The plugin now pushes the context on the tick after a bind, and the service adopts the revision from
+  the bind ack at once (`current_binding` takes the newer of the two; held gestures are rebound then).
+- **`mtpnxk_surface.lua` 0.8.0:** the context push after a bind, the KB-22 wording of `control=console`, the
+  assignment-changed note in `status`; vendored control 0.5.0 (feedback 0.5.0 and hardkeys 0.10.0 unchanged).
+- **Rust service** (`cargo test` 80, seven new in `banks.rs`): the fader hold and pickup (crossing, tolerance, a resting
+  report seeds nothing), an unknown level never picks up, bank/generation rebinds and the fresh touch, the external-edit
+  reset against our own lag, a lost device and a missed lift, the M-Play pressure buttons and fader ids, the pickup
+  bar's span, the dedicated keys' profile and binding; `--pb-pickup`, `--pb-go`, `--pb-pause`; `sim` steps
+  `mpf<n>:t<v>|m<v>|lift`, `go|pause:down|up|tap`, M-Play buttons simulated as pressure reports; `banks:` summary
+  extended (`faders: touched touches lifts positions pickups waiting resets rebound forced dedicated`).
+
+Harness: `lua tools/ma3/test/surface_plugin_test.lua` 235 checks (9 new, against a stub Sequence assigned on page 1 with
+`control=console`: the bind acked with its revision and the context pushed on the same tick, the context listing the
+executor's functions/level/activity, a button down applied as `Press Page 1.201`, a fader touch and position applied as
+`FaderMaster Page 1.201 At 50`, a reassignment while held moving the generation, the release admitted but not issued,
+`status` naming the assignment-changed record, `recover` keeping it until the original object is back and then issuing
+`Unpress Page 1.201`); `sh tools/ma3/test/e2e.sh` extends the bank scenario (a fader touch travels as a hold on executor
+201's fader, refused empty by the stub console; the move waits for pickup; an M-Play pressure button is one down and
+one up, refused empty; the Go key without a profile is unmapped; the summary's fader counters).
+
+- **Review of PR #7 (round 1):** (6) after a bind ack the link adopts the revision but reports the generation as
+  **unknown** until a context of that revision arrives (`current_generation`): no down or motion combines the new `br`
+  with the old context's `cg` (a new binding can reuse the old generation number); releases still go out; the plugin's
+  context push after a bind keeps the gap to one tick. (7) The external-edit detection no longer restarts with every
+  position: each context is judged once against the positions in effect when the plugin could have read it (the last
+  1.2 s before its arrival and the one before that window); a match confirms our level, no match for longer than the
+  grace since the first unconfirmed position resets the pickup, so continuous reports can neither hide an edit nor
+  cause a false reset while the console follows with its refresh lag. The vendored control 0.5.0 from `3e0e7c4` adds the
+  console-side rules (a hold tracked until its release applied, queued downs revalidated, frozen releases on a current
+  observation in the same data pool through this plugin's `deps.observe`, same-session conflicts). `cargo test` 82
+  (two new), harness 235, e2e unchanged. **Round 2** (control from `ce91371`): the verification is the live `deps.observe`
+  read only (never the cached binding), a hold whose down never applied is discarded at the session's end without a
+  release, and an unresolved release reserves its target against new presses until `recover` applies it; the harness
+  check that raises on a cleanup release now services the touch first (an unapplied hold is discarded, by design). **Round 3** (control from `d77888d`): the gesture bound cancels an expired gesture's queued intents before
+  the queue is serviced; reservations compare the executor's stable address (pool, page, number, element), so a changed
+  key function or a reassignment cannot open an executor with a release pending on it.
+
+**Verified live in this repository:** [docs/probes/kb-22-surface-macos-2.5.1.md](docs/probes/kb-22-surface-macos-2.5.1.md)
+(the plugin 0.8.0 on onPC with `control=console`, driven by the release service's `sim` with `--pb-rows 201,201,301`: a
+PFA tap and two Go-profile taps ran `Press`/`Unpress Page 1.201` and `1.195`; a fader below an unreachable level sent
+nothing; an M-Play pressure button was one down and one up and its fader picked up at the level and placed
+`FaderMaster Page 1.201 At 98.04`; a bank change rebound the touched fader and the lift went to the frozen executor; an
+external `FaderTemp ... At 30` while PB10 was held reset the pickup ("edited elsewhere") and no further position went out;
+a touch above 210's Temp level waited, crossing 0 picked up and `At 0`, `At 39.22`, `At 0` started and ended the Temp
+playback; no refusals, nothing unresolved).
+
+**Not verified live:** the physical M-Touch and M-Play through `run` (KB-24's hardware qualification), the bar display
+on the device, Rate/Speed/crossfade fader functions (unqualified on the console half), Windows/Linux hosts.

@@ -52,7 +52,20 @@ CurrentUser = function() return { name = console.user } end
 SelectedSequence = function() return nil end
 -- Fake Quickey pool and executor page (KB-12/KB-13): the console objects the vendored module creates,
 -- verifies and presses through ObjectList()/Cmd(); the commands issued are recorded for the checks.
-local pool = { quickeys = {}, executors = {}, pages = { [1] = true }, pressed = {}, cmds = {}, failUnpress = false }
+local pool = { quickeys = {}, executors = {}, pages = { [1] = true }, pressed = {}, cmds = {}, failUnpress = false, sequences = {} }
+-- KB-22: a stub Sequence assigned to an executor (pool.executors[key] = { sequence = n }): the console objects the
+-- vendored feedback reads (Object, KeyPress/Fader with the display role, HasActivePlayback, GetFader) and the console
+-- backend operates (Press/Unpress and Fader<Fn> ... At recorded as commands; every key function is momentary here).
+local function sequenceHandle(n)
+  local sq = pool.sequences[n]
+  return { name = sq.name, GetClass = function() return "Sequence" end, Addr = function() return "Sequence " .. n end,
+           Get = function(_, k) if k == "No" then return n end end, HasActivePlayback = function() return sq.active end,
+           GetFader = function() return sq.level end, GetFaderText = function() return tostring(sq.level) .. "%" end }
+end
+local function sequenceExecutor(x)
+  return { GetClass = function() return "Executor" end, Object = sequenceHandle(x.sequence),
+           Get = function(_, k) if k == "KeyPress" then return x.keyPress or "Go+" elseif k == "KeyUnpress" then return "" elseif k == "Fader" then return x.fader or "Master" elseif k == "Width" then return 1 elseif k == "IsXKey" then return "No" elseif k == "Object" then return sequenceHandle(x.sequence) end end }
+end
 local function execKey(page, index) return page .. "." .. index end
 local function quickeyHandle(i, q)
   return { name = q.name, index = i, GetClass = function() return "Quickey" end,
@@ -69,6 +82,8 @@ ObjectList = function(ref)
   if qi then local q = pool.quickeys[tonumber(qi)]; if q then return { quickeyHandle(tonumber(qi), q) } end return {} end
   local page, index = ref:match("^Page (%d+)%.(%d+)$")
   if page then
+    local sx = pool.executors[execKey(tonumber(page), tonumber(index))]
+    if type(sx) == "table" and sx.sequence and pool.sequences[sx.sequence] then return { sequenceExecutor(sx) } end
     local qidx = assignedQuickey(tonumber(page), tonumber(index))
     if not qidx then return {} end
     return { { GetClass = function() return "Executor" end, Get = function(_, k) if k == "Object" then return quickeyHandle(qidx, pool.quickeys[qidx]) end end } }
@@ -92,11 +107,21 @@ Cmd = function(line)
   if q then if pool.executors[execKey(tonumber(pg), tonumber(ix))] == nil then return "Object not found" end pool.executors[execKey(tonumber(pg), tonumber(ix))] = { quickey = tonumber(q) }; return "OK" end
   pg, ix = line:match("^Delete Page (%d+)%.(%d+)")
   if pg then pool.executors[execKey(tonumber(pg), tonumber(ix))] = "empty"; return "OK" end
+  local sq, spg, six = line:match("^Assign Sequence (%d+) At Page (%d+)%.(%d+)$")
+  if sq then pool.executors[execKey(tonumber(spg), tonumber(six))] = { sequence = tonumber(sq) }; return "OK" end
+  local fpg, fix, lvl = line:match("^FaderMaster Page (%d+)%.(%d+) At ([%d%.%-]+)$")
+  if fpg then local x = pool.executors[execKey(tonumber(fpg), tonumber(fix))]; if type(x) == "table" and x.sequence then pool.sequences[x.sequence].level = tonumber(lvl); return "OK" end return "Object not found" end
   pg, ix = line:match("^Press Page (%d+)%.(%d+)$")
-  if pg then local qi = assignedQuickey(tonumber(pg), tonumber(ix)); if not qi then return "Object not found" end pool.pressed[execKey(tonumber(pg), tonumber(ix))] = qi; return "OK" end
+  if pg then
+    local x = pool.executors[execKey(tonumber(pg), tonumber(ix))]
+    if type(x) == "table" and x.sequence then pool.sequences[x.sequence].active = true; return "OK" end
+    local qi = assignedQuickey(tonumber(pg), tonumber(ix)); if not qi then return "Object not found" end pool.pressed[execKey(tonumber(pg), tonumber(ix))] = qi; return "OK"
+  end
   pg, ix = line:match("^Unpress Page (%d+)%.(%d+)$")
   if pg then
     if pool.failUnpress then return "Object not found" end
+    local x = pool.executors[execKey(tonumber(pg), tonumber(ix))]
+    if type(x) == "table" and x.sequence then pool.sequences[x.sequence].active = false; return "OK" end
     local qi = assignedQuickey(tonumber(pg), tonumber(ix)); if not qi then return "Object not found" end
     pool.pressed[execKey(tonumber(pg), tonumber(ix))] = nil; return "OK"
   end
@@ -490,7 +515,7 @@ do
     return a and a.ok == 0 and a.code == "control-disabled" end)())
   check("control=bogus is refused", select(2, state._parseArgument("key=" .. KEYHEX .. " control=bogus")) ~= nil)
   reset("key=" .. KEYHEX .. " input=fake control=fake")
-  check("control=fake enables the module on its fake backend", state.controlEnabled == true and state.controlMode == "fake" and state.modules.control.version == "0.4.0" and findLog("control enabled on the fake backend"), lastLog())
+  check("control=fake enables the module on its fake backend", state.controlEnabled == true and state.controlMode == "fake" and state.modules.control.version == "0.5.0" and findLog("control enabled on the fake backend"), lastLog())
   push({ t = "hello", v = 1, id = "nxk-c1", gen = 7, nonce = "c1c1c1c1c1c1c1c1", surface = "nxk", fw = "0.1.0" }); tick()
   local w = ofType(drain(), "welcome")[1]
   check("the welcome announces control 1 on the fake backend and the control session is open", w and w.control == 1 and w.controlBackend == "fake" and state.sessions[w.sid].controlOpen == true, J(w))
@@ -623,7 +648,8 @@ do
   check("kb19: a rotary push is refused unsupported on the console backend (nothing pressed, no gesture owned)", a and a.ok == 0 and a.code == "unsupported" and state.modules.control.instance:admission(clock.t + 1) == nil, J(a))
   send(ctl(44, "abs", { es = 5, v = 0.5, dev = "mtouch", c = "Strip1", tgt = { ex = 201, el = "fader" }, gs = 4 })); tick()
   a = ackOf()
-  check("kb19: a position on an executor fader is refused unsupported on the console backend (KB-21/22)", a and a.ok == 0 and a.code == "unsupported", J(a))
+  tick()
+  check("kb19/22: a position on an executor fader (Master) is admitted on the console backend and applied as FaderMaster Page 1.201 At 50 (KB-22)", a and a.ok == 1 and lastCmd('^FaderMaster Page %d+%.201 At 50$') ~= nil, J({ a, pool.cmds[#pool.cmds] }))
   Main(nil, "status"); Cleanup()
   check("kb19: status names the console backend", findLog("control: enabled backend=console") ~= nil, lastLog())
   -- KB-20: the M-Touch strips. A touch on a slot is a hold, the drag inside it the KB-19 adjustment, a position At <value>.
@@ -677,6 +703,7 @@ do
     snap.executors = { { available = true, value = { executor = 201, page = 3, empty = false, playbackTarget = true, assigned = { addr = "Sequence 1" }, functions = { keyPress = "Go+", fader = "Master" }, level = { token = "FaderMaster", value = 0 } } } }; return snap end
   for _ = 1, 3 do tickAlive(0.05); drain() end
   send(ctl(60, "touch", { es = 1, d = 1, cg = 7, dev = "m3", c = "Strip1", tgt = { ex = 201, el = "fader" } })); tick(); drain()
+  tick()  -- review round 2: the hold must have APPLIED before the cleanup (an unapplied hold is discarded, not released)
   state.modules.control.instance._adapter:raiseNext("touch", "Keyboard() raised")
   Cleanup(); Cleanup()
   check("a release the backend raised on is kept across the cleanup", state.running == false and state.controlUnresolved and #state.controlUnresolved == 1 and state.controlUnresolved[1].kind == "touch", J(state.controlUnresolved))
@@ -952,6 +979,64 @@ send({ t = "key", ev = 2, k = "Record", d = 1 }); tick()
 ack = ofType(drain(), "ack")[1]
 check("the paired surface can press again after recovery", ack and ack.ok == 1 and eventCount("press") == 1, J(ack))
 state.running = true; state.ignoreNextCleanup = false; Cleanup()
+
+-------------------------------------------------------------------------------
+-- KB-22: executor operations through the vendored console backend (control 0.5.0): a playback button is
+-- Press/Unpress Page P.E, a playback fader Fader<Function> Page P.E At <level>, a reassignment while held is an
+-- assignment-changed record until recover; a bind pushes the context (with its revision) on the next tick
+-------------------------------------------------------------------------------
+do
+  reset("key=" .. KEYHEX .. " input=fake control=console")
+  push({ t = "hello", v = 1, id = "nxk-k22", gen = 31, nonce = "2222222222222222", surface = "nxk", fw = "0.1.0" }); tick()
+  local w = ofType(drain(), "welcome")[1]
+  sid, seq = w.sid, 0
+  pool.sequences = { [1] = { name = "Seq A", active = false, level = 0 }, [2] = { name = "Seq B", active = false, level = 0 } }
+  pageWithExecutors(1, 201, 2)
+  pool.executors[execKey(1, 201)] = { sequence = 1 }
+  send({ t = "bind", ev = 1, ex = { 201, 202 }, pg = 1 }); tick()
+  local out = drain()
+  local a = ofType(out, "ack")[1]
+  local ctx = ofType(out, "context")
+  check("kb22: a bind to page 1 is acknowledged with its revision and the context (carrying bind.br) goes out on the same tick, not at the next periodic refresh", a and a.ok == 1 and a.br == 2 and #ctx >= 1 and ctx[#ctx].bind and ctx[#ctx].bind.br == 2, J({ a, ctx[#ctx] and ctx[#ctx].bind }))
+  for _ = 1, 10 do tickAlive(0.11); drain() end
+  local cm = state._collectContext(clock.t)
+  check("kb22: the context lists the stub sequence executor with its configured key and fader functions, level and activity", cm.known == 1 and cm.ex[1].n == 201 and cm.ex[1].tgt == 1 and cm.ex[1].kp == "Go+" and cm.ex[1].fd == "Master" and cm.ex[1].lvl == 0 and cm.ex[1].act == 0 and cm.ex[2].empty == 1, J(cm.ex))
+  local cg = cm.cg
+  local function ctl22(ev, k, extra)
+    local o = { t = "ctl", ev = ev, k = k, dev = "mtouch", c = extra.c or "PFA1", es = extra.es, cg = cg, gs = extra.gs or 1, tgt = extra.tgt or { ex = 201, el = "key", pg = 1 }, br = 2 }
+    for key, v in pairs(extra) do if key ~= "es" and key ~= "gs" and key ~= "tgt" and key ~= "c" then o[key] = v end end
+    return o
+  end
+  local function lastAck() local l = ofType(drain(), "ack"); return l[#l] end
+  local cmdsBefore = #pool.cmds
+  send(ctl22(10, "btn", { es = 1, d = 1 })); tick()
+  a = lastAck(); tick()
+  check("kb22: a playback button down on executor 201 is admitted on the console backend and applied as Press Page 1.201; the stub sequence is active", a and a.ok == 1 and lastCmd("^Press Page 1%.201$") ~= nil and pool.sequences[1].active == true and #pool.cmds == cmdsBefore + 1, J({ a, pool.cmds[#pool.cmds] }))
+  send(ctl22(11, "touch", { es = 2, d = 1, c = "PB1", tgt = { ex = 201, el = "fader", pg = 1 }, gs = 5 })); tick()
+  send(ctl22(12, "abs", { es = 3, v = 0.5, c = "PB1", tgt = { ex = 201, el = "fader", pg = 1 }, gs = 5 })); tick()
+  a = lastAck(); tick()
+  check("kb22: a playback fader touch is a hold and a position is FaderMaster Page 1.201 At 50 (the configured Master function); the stub level reads 50", a and a.ok == 1 and lastCmd("^FaderMaster Page 1%.201 At 50$") ~= nil and pool.sequences[1].level == 50, J({ a, pool.cmds[#pool.cmds] }))
+  send(ctl22(13, "touch", { es = 4, d = 0, c = "PB1", tgt = { ex = 201, el = "fader", pg = 1 }, gs = 5 })); tick(); drain(); tick()
+  -- The assignment changes while the button is held: the release is kept as an assignment-changed record.
+  pool.executors[execKey(1, 201)] = { sequence = 2 }
+  for _ = 1, 10 do tickAlive(0.11); drain() end
+  local cm2 = state._collectContext(clock.t)
+  check("kb22: the reassignment moved the generation and the context names Seq B on 201", cm2.cg ~= cg and cm2.ex[1].name == "Seq B", J({ cg, cm2.cg, cm2.ex[1] }))
+  cmdsBefore = #pool.cmds
+  send(ctl22(14, "btn", { es = 5, d = 0 })); tick()
+  a = lastAck(); tick()
+  check("kb22: the release is admitted (frozen to Seq A) but NOT issued on the replacement: no Unpress, the sequence pressed stays active", a and a.ok == 1 and #pool.cmds == cmdsBefore and pool.sequences[1].active == true, J({ a, pool.cmds[#pool.cmds] }))
+  Main(nil, "status"); Cleanup()
+  check("kb22: status reports the assignment-changed record with the KB-22 note", findLog("control UNRESOLVED: button release on mtouch/PFA1: assignment%-changed") ~= nil and findLog("KB%-22: the executor was reassigned") ~= nil, lastLog())
+  Main(nil, "recover"); Cleanup()
+  check("kb22: recover keeps it unresolved while Seq B is assigned (nothing issued)", findLog("control recover: 0 resolved, 1 still unresolved") ~= nil and #pool.cmds == cmdsBefore, lastLog())
+  pool.executors[execKey(1, 201)] = { sequence = 1 }
+  for _ = 1, 10 do tickAlive(0.11); drain() end
+  Main(nil, "recover"); Cleanup()
+  check("kb22: with Seq A back on 201, recover issues Unpress Page 1.201 and the sequence is inactive", findLog("control recover: 1 resolved, 0 still unresolved") ~= nil and lastCmd("^Unpress Page 1%.201$") ~= nil and pool.sequences[1].active == false, J({ lastLog(), pool.cmds[#pool.cmds] }))
+  send({ t = "bye" }); tick(); drain()
+  pool.executors[execKey(1, 201)] = nil; pool.executors[execKey(1, 202)] = nil; pool.sequences = {}; pool.cmds = {}  -- leave the stub page and the command log as the later sections expect them
+end
 
 -------------------------------------------------------------------------------
 -- KB-15: Quickey bank, mixed backend, explicit routing, no fallback
