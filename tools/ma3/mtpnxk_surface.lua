@@ -100,6 +100,8 @@ local DEFAULTS = {
   forgetMs = 10000,      -- a session without packets for this long is closed and forgotten
   hbMs = 250,            -- heartbeat interval the service is told to use
   fullStateMs = 1000,    -- full state to every session at least this often
+  stateEveryMs = 40,     -- KB-24: state and context are collected and sent at most this often (the readers refresh
+                         -- items on their own cadence; collecting every tick cost half of each tick on onPC 2.5.1)
   feedbackMinMs = 250,   -- KB-23: a changed value/level/activity/colour resends the context after at most this
   maxDatagram = 512,
   maxPacketsPerTick = 32,
@@ -109,10 +111,10 @@ local DEFAULTS = {
   errReplyMs = 500,      -- at most one err reply per source address per this interval
   maxHolds = 12, maxHoldMs = 60000,
   display = 1,
-  controlWorkPerTick = 4,  -- KB-18: continuous-control intents applied per loop iteration
+  controlWorkPerTick = 8,  -- KB-18: continuous-control intents applied per loop iteration (KB-24: 8, merged intents)
   maxCtlDelta = 4096,
   benchMs = 500,         -- how long bench mode waits for a NUM tap to show on the command line
-  readsPerService = 8,     -- KB-21: a bound bank window is up to 96 targets; 8 reads per tick keeps it fresh
+  readsPerService = 24,    -- KB-21: a bound bank window is up to 96 targets (KB-24: 24 reads per tick; 8 left the state readers behind ~100 watch items, a command-line keyword took 200-600 ms to read back)
 }
 
 -- State survives repeated Plugin calls (file-level locals are re-created on ReloadAllPlugins only).
@@ -711,8 +713,9 @@ local function handleHeartbeat(s, obj, now, revived)
   -- KB-24: the loop's load since the last heartbeat reply (any session), then the window starts again.
   local ld = state.load
   if ld and ld.n > 0 then
-    reply.load = { tmax = math.floor(ld.tmax * 1000 + 0.5) / 1000, tavg = math.floor(ld.tsum / ld.n * 1000 + 0.5) / 1000, pmax = ld.pmax, full = ld.full, n = ld.n }
-    state.load = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0 }
+    local r3 = function(v) return math.floor((v or 0) * 1000 + 0.5) / 1000 end
+    reply.load = { tmax = r3(ld.tmax), tavg = r3(ld.tsum / ld.n), pmax = ld.pmax, full = ld.full, n = ld.n, smod = r3(ld.smod), spkt = r3(ld.spkt), sstate = r3(ld.sstate) }
+    state.load = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0, smod = 0, spkt = 0, sstate = 0 }
   end
   if revived then reply.resynced = 1 end
   if releasedNow > 0 then reply.reconciled = releasedNow end
@@ -772,6 +775,7 @@ local function handleBind(s, obj, now)
   -- with) goes out on the next tick instead of at the next periodic refresh: a press right after a bank change is
   -- not refused stale-binding for up to a second.
   for _, sess in pairs(state.sessions) do if sess.state == "active" then sess.lastContextAt = nil end end
+  state.collectNow = true  -- KB-24: the context of the new binding goes out on this tick, not at the next cadence
   return nil
 end
 
@@ -1233,11 +1237,20 @@ local function serviceModules(now)
   return released
 end
 
+-- KB-24: a millisecond wall clock for the tick's phase timing (nil when socket.gettime is unavailable).
+local function clockMs()
+  local ok, t = pcall(socket.gettime)
+  if ok and type(t) == "number" then return t * 1000 end
+  return nil
+end
+
 local function tick(now)
   state.lastTickAt = now
   -- 1 + 2: deadlines and feedback before any packet.
+  local tA = clockMs()
   local released = serviceModules(now)
   if next(released) then for _, s in pairs(state.sessions) do pruneReleased(s, released) end end
+  local tB = clockMs()
   -- Forget sessions that stayed silent past forgetMs.
   for sid, s in pairs(state.sessions) do
     if now - s.lastSeen > DEFAULTS.forgetMs / 1000 then closeSession(s, now, "silent") end
@@ -1251,15 +1264,20 @@ local function tick(now)
     handleDatagram(data, ip, port, now)
   end
   state.counters.ticks = state.counters.ticks + 1
-  -- KB-24: the load window (datagrams this tick, whether the budget was exhausted).
+  -- KB-24: the load window (datagrams this tick, whether the budget was exhausted) and where the tick's time went
+  -- (smod: module servicing incl. the feedback reads, spkt: datagrams, sstate: state and context collection and sends).
   local ld = state.load
-  if not ld then ld = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0 }; state.load = ld end
+  if not ld then ld = { tmax = 0, tsum = 0, pmax = 0, full = 0, n = 0, smod = 0, spkt = 0, sstate = 0 }; state.load = ld end
   if n > ld.pmax then ld.pmax = n end
   if n >= DEFAULTS.maxPacketsPerTick then ld.full = ld.full + 1 end
-  -- 4: state out.
-  local cur = collectState(now)
-  state.lastState = cur
-  sendStates(now)
+  local tC = clockMs()
+  -- 4: state out (at most every stateEveryMs; the bench timing watches every tick).
+  if state.lastCollectAt == nil or now - state.lastCollectAt >= DEFAULTS.stateEveryMs / 1000 or state.collectNow then
+    state.lastCollectAt, state.collectNow = now, nil
+    local cur = collectState(now)
+    state.lastState = cur
+    sendStates(now)
+  end
   sendContexts(now, collectContext(now))
   serviceBench(now)
   -- Housekeeping (cheap, bounded).
@@ -1275,6 +1293,10 @@ local function tick(now)
     if ms < 0 then ms = 0 end
     if ms > ld.tmax then ld.tmax = ms end
     ld.tsum = ld.tsum + ms
+  end
+  local tD = clockMs()
+  if tA and tB and tC and tD then
+    ld.smod = ld.smod + math.max(0, tB - tA); ld.spkt = ld.spkt + math.max(0, tC - tB); ld.sstate = ld.sstate + math.max(0, tD - tC)
   end
   ld.n = ld.n + 1
 end

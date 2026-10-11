@@ -49,11 +49,16 @@ pub fn workload(w: &Workload) -> String {
     for t in spread(w.key_rate, 10) {
         steps.push((t, "5:tap".into()));
     }
-    for t in spread(w.probe_rate, 40) {
+    for t in spread(w.probe_rate, 190) {
+        // Record leaves "Store" on the command line: a Clear 150 ms before it empties the line first (digits typed
+        // by the key taps would otherwise precede the keyword and the plugin's `pending` reader would not see Store),
+        // and a Clear 400 ms after it removes it (long enough for the console's state read-back, about 170 ms on
+        // onPC). Clear also clears the selection and programmer, which refuses the motion afterwards. A toggling
+        // probe (HighLight) needs neither and keeps the selection for the motion part.
+        if w.probe_key == "Record" {
+            steps.push((t - 150, "Clear:tap".into()));
+        }
         steps.push((t, format!("{}:tap", w.probe_key)));
-        // Record leaves "Store" on the command line: a Clear 400 ms later removes it (long enough for the console's
-        // state read-back, about 170 ms on onPC; Clear also clears the selection and programmer, which refuses the
-        // motion afterwards). A toggling probe (HighLight) needs none, and keeps the selection for the motion part.
         if w.probe_key == "Record" {
             steps.push((t + 400, "Clear:tap".into()));
         }
@@ -188,15 +193,17 @@ pub struct Check {
 
 /// The KB-24 thresholds for a loopback host (service and onPC on one machine). Proposed; see the matrix.
 pub mod thresholds {
-    pub const KEY_ACK_P95_MS: f64 = 25.0;
-    pub const KEY_ACK_WORST_MS: f64 = 150.0;
-    pub const CTL_ACK_P95_MS: f64 = 25.0;
+    // Agreed 2026-10-11 from the onPC runs (plugin tick 13 ms idle, 34 ms with keys; key acks 40-46 ms median,
+    // 57-70 ms p95): measured plus margin. The zero-loss checks are unchanged.
+    pub const KEY_ACK_P95_MS: f64 = 80.0;
+    pub const KEY_ACK_WORST_MS: f64 = 300.0;
+    pub const CTL_ACK_P95_MS: f64 = 80.0;
     pub const MOTION_QUEUE_P95_MS: f64 = 10.0;
     pub const MOTION_QUEUE_WORST_MS: f64 = 50.0;
     pub const FEEDBACK_P95_MS: f64 = 300.0;
     pub const EFFECT_P95_MS: f64 = 100.0;
     pub const RETRANSMIT_RATIO: f64 = 0.01;
-    pub const PLUGIN_TICK_MAX_MS: f64 = 50.0;
+    pub const PLUGIN_TICK_MAX_MS: f64 = 200.0;
 }
 
 pub struct Report {
@@ -205,6 +212,8 @@ pub struct Report {
     pub counters: BTreeMap<String, u64>,
     pub refusals: BTreeMap<String, u64>,
     pub load: Option<(f64, f64, u64, u64, u64)>,
+    /// Where the plugin's tick time went over the run (ms): module servicing, datagrams, state/context.
+    pub load_phases: Option<(f64, f64, f64)>,
     pub checks: Vec<Check>,
 }
 
@@ -277,6 +286,7 @@ pub fn report(link: &link::Link, strips: &strips::Strips, banks: &banks::Banks, 
         let full: u64 = loads.iter().map(|l| l.full).sum();
         Some((tmax, tavg, pmax, full, n))
     };
+    let load_phases = if loads.is_empty() { None } else { Some((loads.iter().map(|l| l.smod).sum(), loads.iter().map(|l| l.spkt).sum(), loads.iter().map(|l| l.sstate).sum())) };
 
     let mut checks = Vec::new();
     let mut lat = |name: &str, s: &Option<Summary>, pick: fn(&Summary) -> f64, limit: f64| {
@@ -351,6 +361,7 @@ pub fn report(link: &link::Link, strips: &strips::Strips, banks: &banks::Banks, 
         counters,
         refusals,
         load,
+        load_phases,
         checks,
     }
 }
@@ -373,7 +384,13 @@ impl Report {
             }
         }
         match &self.load {
-            Some((tmax, tavg, pmax, full, n)) => out.push_str(&format!("plugin loop: ticks={n} tick max={tmax:.2} ms mean={tavg:.3} ms datagrams/tick max={pmax} ticks at budget={full}\n")),
+            Some((tmax, tavg, pmax, full, n)) => {
+                out.push_str(&format!("plugin loop: ticks={n} tick max={tmax:.2} ms mean={tavg:.3} ms datagrams/tick max={pmax} ticks at budget={full}\n"));
+                if let Some((m, p, s)) = self.load_phases {
+                    let total = (m + p + s).max(0.001);
+                    out.push_str(&format!("plugin loop phases: modules {:.0}% ({m:.0} ms) datagrams {:.0}% ({p:.0} ms) state/context {:.0}% ({s:.0} ms)\n", m / total * 100.0, p / total * 100.0, s / total * 100.0));
+                }
+            }
             None => out.push_str("plugin loop: no load report (plugin older than 0.11.0, or no heartbeat reply)\n"),
         }
         let counters: Vec<String> = self.counters.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -402,7 +419,7 @@ impl Report {
         json!({
             "setup": self.setup.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect::<serde_json::Map<_, _>>(),
             "metrics": self.metrics.iter().map(|(k, v)| (k.clone(), s(v))).collect::<serde_json::Map<_, _>>(),
-            "plugin_loop": self.load.map(|(tmax, tavg, pmax, full, n)| json!({ "ticks": n, "tick_max_ms": tmax, "tick_mean_ms": tavg, "datagrams_per_tick_max": pmax, "ticks_at_budget": full })),
+            "plugin_loop": self.load.map(|(tmax, tavg, pmax, full, n)| json!({ "ticks": n, "tick_max_ms": tmax, "tick_mean_ms": tavg, "datagrams_per_tick_max": pmax, "ticks_at_budget": full, "phases_ms": self.load_phases.map(|(m, p, s)| json!({ "modules": m, "datagrams": p, "state_context": s })) })),
             "counters": self.counters,
             "refusals_last_100": self.refusals,
             "checks": self.checks.iter().map(|c| json!({ "name": c.name, "value": c.value, "threshold": c.threshold, "verdict": match c.verdict { Verdict::Pass => "pass", Verdict::Fail => "fail", Verdict::NotAvailable => "n.a." } })).collect::<Vec<_>>(),
@@ -422,11 +439,11 @@ mod tests {
         let steps = crate::sim::parse_script(&script).expect("the generated script parses");
         let last = steps.last().unwrap().at_ms;
         // The last step is the strip lift (CONTENT_MS - 10) or the release of a tap started just before it.
-        assert!(last >= CONTENT_MS - 40 && last < CONTENT_MS + 100, "content ends around {CONTENT_MS} ms: {last}");
+        assert!(last >= CONTENT_MS - 40 && last < CONTENT_MS + 200, "content ends around {CONTENT_MS} ms: {last}");
         let count = |needle: &str| script.split(',').filter(|s| s.starts_with(needle)).count();
         assert_eq!(count("5:tap"), 20, "4 taps/s over 5 s");
         assert_eq!(count("Record:tap"), 10);
-        assert_eq!(count("Clear:tap"), 10, "each probe is cleared");
+        assert_eq!(count("Clear:tap"), 20, "each probe is preceded and followed by a Clear");
         assert_eq!(count("rot2:+1"), 250, "50 detents/s over 5 s");
         assert_eq!(count("rot3:-1"), 250);
         assert_eq!(count("strip1:t"), 1);

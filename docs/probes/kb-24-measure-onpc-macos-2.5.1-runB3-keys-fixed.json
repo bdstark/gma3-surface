@@ -1,0 +1,221 @@
+{
+  "checks": [
+    {
+      "name": "key ack p95",
+      "threshold": "<= 80 ms",
+      "value": 73.32508300000029,
+      "verdict": "pass"
+    },
+    {
+      "name": "key ack worst",
+      "threshold": "<= 300 ms",
+      "value": 91.81187500000033,
+      "verdict": "pass"
+    },
+    {
+      "name": "ctl boundary ack p95",
+      "threshold": "<= 80 ms",
+      "value": null,
+      "verdict": "n.a."
+    },
+    {
+      "name": "motion queue p95",
+      "threshold": "<= 10 ms",
+      "value": null,
+      "verdict": "n.a."
+    },
+    {
+      "name": "motion queue worst",
+      "threshold": "<= 50 ms",
+      "value": null,
+      "verdict": "n.a."
+    },
+    {
+      "name": "feedback p95",
+      "threshold": "<= 300 ms",
+      "value": 570.7204170000005,
+      "verdict": "fail"
+    },
+    {
+      "name": "press-to-effect p95",
+      "threshold": "<= 100 ms",
+      "value": 51.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "lost events",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "superseded presses",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "superseded ctl downs",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "plugin-reported ctl loss",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "aged motion",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "stale motion",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "overflowed positions",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "rejected plugin packets",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "link downs",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "deltas ignored",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "out-of-order refusals",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "retransmit ratio",
+      "threshold": "<= 1%",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "feedback probes missed",
+      "threshold": "= 0",
+      "value": 26.0,
+      "verdict": "fail"
+    },
+    {
+      "name": "plugin tick max",
+      "threshold": "<= 200 ms",
+      "value": 773.901,
+      "verdict": "fail"
+    },
+    {
+      "name": "plugin ticks at the packet budget",
+      "threshold": "= 0",
+      "value": 0.0,
+      "verdict": "pass"
+    },
+    {
+      "name": "plugin datagrams per tick max",
+      "threshold": "< 32",
+      "value": 11.0,
+      "verdict": "pass"
+    }
+  ],
+  "counters": {
+    "acked": 318,
+    "bank_downs": 0,
+    "bank_positions": 0,
+    "bank_ups": 0,
+    "bank_waiting_pickup": 0,
+    "contexts": 29,
+    "ctl_aged": 0,
+    "ctl_coalesced": 0,
+    "ctl_events": 0,
+    "ctl_lost_reported": 0,
+    "ctl_overflow": 0,
+    "ctl_refused": 0,
+    "ctl_sent": 0,
+    "ctl_stale": 0,
+    "ctl_superseded": 0,
+    "ctl_unbound": 0,
+    "deltas_ignored": 0,
+    "effect_none": 0,
+    "events": 318,
+    "feedback_missed": 26,
+    "link_downs": 0,
+    "lost": 0,
+    "old_seq": 0,
+    "refused": 0,
+    "rejected": 0,
+    "retransmitted": 0,
+    "states": 63,
+    "strip_detents": 0,
+    "strip_rebound_dropped": 0,
+    "strip_reports": 0,
+    "superseded": 0
+  },
+  "metrics": {
+    "ctl boundary ack round trip": null,
+    "feedback (Record -> pending)": {
+      "median_ms": 200.628334,
+      "n": 14,
+      "p95_ms": 570.7204170000005,
+      "p99_ms": 590.2605830000027,
+      "worst_ms": 590.2605830000027
+    },
+    "key ack round trip": {
+      "median_ms": 46.59804200000117,
+      "n": 316,
+      "p95_ms": 73.32508300000029,
+      "p99_ms": 82.12666699999983,
+      "worst_ms": 91.81187500000033
+    },
+    "motion queue delay": null,
+    "press-to-effect (plugin bench)": {
+      "median_ms": 0.0,
+      "n": 79,
+      "p95_ms": 51.0,
+      "p99_ms": 52.0,
+      "worst_ms": 234.0
+    }
+  },
+  "plugin_loop": {
+    "datagrams_per_tick_max": 11,
+    "phases_ms": {
+      "datagrams": 9584.236999999997,
+      "modules": 31016.88300000001,
+      "state_context": 100652.99800000004
+    },
+    "tick_max_ms": 773.901,
+    "tick_mean_ms": 13.288460199473093,
+    "ticks": 10628,
+    "ticks_at_budget": 0
+  },
+  "refusals_last_100": {},
+  "setup": {
+    "context known at start": "true",
+    "paired": "true",
+    "plugin": "127.0.0.1:9810",
+    "warm-up": "0.15 s",
+    "workload": "20 s: keys 4/s, probe Record (pending) 2/s, rotaries 2+3 at 0/s each, strip off, playback off"
+  },
+  "verdict": "fail"
+}

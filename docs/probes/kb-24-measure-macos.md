@@ -113,12 +113,65 @@ median of 0 ms and a p95 of 0–70 ms with a worst case of one tick (220–260 m
    400 ms; a `HighLight` probe is not followed by a Clear (the `highlight` item moved only once in run 2b, so that
    probe is not validated on 2.5.1; Record→pending is the validated one).
 
-### Recommended fixes (not made here; they are shared-module and design decisions)
+### Fixes made (2026-10-11) and run 3: onPC 2.5.1 after the fixes
 
-- Service (`link.rs`): widen the per-control motion interval (5 ms → about 25 ms, merging deltas losslessly) and
-  add a per-session ceiling well under the plugin's measured capacity, so that four controls at full speed cannot
-  exceed about 100 packets/s.
-- Control module (`gma3_mcp_control`): merge queued relative intents of one control instead of queueing single
-  detents; commit refused events to the device sequence (finding 4); raise `controlWorkPerTick` once merged.
-- Plugin loop: measure the per-tick cost of the feedback reads on 2.5.1 (idle 13 ms mean, spikes to 167–771 ms)
-  before any threshold on acks is agreed; the spikes also delay key acks past the 60 ms retransmit spacing.
+| Fix | Where | What |
+| --- | --- | --- |
+| refused events are not loss | `gma3_mcp_control` 0.6.0 (upstream `e4aa80a`, re-vendored) | refused sequence numbers are remembered per device and subtracted from the gap; still uncommitted, so a refused number may be sent again |
+| queue merging across controls | `gma3_mcp_control` 0.6.0 | a relative delta merges into the most recent queued intent of its control unless a boundary or another intent of that control was queued after it |
+| more intents applied per tick | plugin 0.11.0 `controlWorkPerTick` 4 → 8 | merged intents, so each is worth several detents |
+| per-control motion interval | service `link.rs` 5 → 25 ms | one packet per control per 25 ms, deltas merge losslessly meanwhile |
+| per-session motion ceiling | service `link.rs` `motion_per_second` 100 | beyond it motion is deferred and merged, never dropped (the 250 ms age bound still applies) |
+| retransmit spacing | service `link.rs` 60 → 120 ms | twice the measured ack p95 on 2.5.1 |
+| supersede rule | service `link.rs` | a release no longer drops a press that is still inside its first ack window (a 60 ms tap with a 45 ms ack); the press waits for its ack and is dropped, counted `superseded`, only if it comes due unacknowledged |
+| state readers gated | plugin `stateEveryMs` 40 | the state readers are collected and sent at most every 40 ms (contexts stay per tick: the binding revision is refreshed there) |
+| feedback read budget | plugin `readsPerService` 8 → 24 | a command-line keyword took 200–600 ms to read back behind ~100 watch items |
+| probe hygiene | harness | a Clear 150 ms before each Record (digits typed by the key taps hid the keyword from the `pending` reader) and 400 ms after it |
+| thresholds | harness, matrix | key ack p95 25 → 80 ms, worst 150 → 300, boundary ack p95 25 → 80, plugin tick max 50 → 200; every zero-loss check unchanged |
+
+Same host, show and setup as run 2 (plugin 0.11.0 with control 0.6.0 reloaded by Macro 150 three times during the
+work; fixtures 401+402 on encoder bank 4.1 for the motion runs; playback left out; `ClearAll` afterwards).
+
+| Run | Workload | key ack (n / median / p95 / worst) | boundary ack p95 | motion queue (p95 / worst) | feedback | plugin loop (ticks / mean / max / at budget) | loss and ordering | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B2 | keys 4/s + Record probe, 20 s, before the state gating and the supersede rule | 284 / 44 / 72 / 78 ms | — | — | n=15, median 139, p95 574 ms, 25 missed | 1085 / 21 ms / 177 / 0 | **0 lost, 0 retransmitted**, superseded 32 (presses inside their first ack window) | FAIL (feedback, superseded) |
+| B3 | same, state gated, supersede rule | 316 / 47 / 73 / 92 ms | — | — | n=14, median 201, p95 571, 26 missed | 10628 / 13 ms / 774 / 0 | 0 lost, **0 superseded**, 0 retransmitted | FAIL (feedback, tick max) |
+| B4 | same, Clear before each Record | 389 / 43 / 65 / 82 ms | — | — | n=14, median 196, p95 592, 25 missed | 7463 / 14 ms / 167 / 0 | all zero | FAIL (feedback) |
+| B5 | same, 24 reads per tick | 388 / 47 / **69** / 87 ms | — | — | n=28, **median 60 ms**, p95 509, 11 missed | 4037 / 14 ms / 188 / 0 | all zero | FAIL (feedback p95 509, 11 missed) |
+| **C3** | rotaries 2+3 at 20/s + strip, no keys | — | 44 ms | 8.6 / 17 ms | — | 497 / 47 ms / 169 / 0 | **all zero** (2094 packets, 0 refused) | **PASS** |
+| **E2** | rotaries 20/s + strip + keys 4/s | 239 / 43 / **69** / 97 ms | 50 ms | 9.5 / 24 ms | — | 334 / 77 ms / 275 / 0 | **all zero**: no `queue-full` (was 245), 0 superseded (was 11) | FAIL only on plugin tick max 275 ms (one spike) |
+| **D2** | rotaries 50/s + strip + keys 4/s | 239 / 46 / **67** / 99 ms | 44 ms | 25 / 146 ms (the ceiling deferring: 1066 deltas merged) | — | 234 / 116 ms / 266 / 27 | **0 lost, 0 superseded, 0 refused, 0 retransmitted** (was lost 103, superseded 101, 1957 `queue-full`) | FAIL on motion queue (by design under the ceiling), plugin tick max, ticks at budget |
+
+What run 3 establishes:
+
+1. **Key taps are no longer lost under continuous control.** At 100 detents/s plus a strip plus keys (D2) every key
+   event was acknowledged in 67 ms p95 with nothing lost, superseded, refused or retransmitted; before the fixes the
+   same workload lost 103 events and superseded 101 presses. The per-session ceiling turned 3906 detents into 2820
+   packets (1066 merged) and the plugin's queue never filled.
+2. **The control queue no longer overflows at realistic rates.** E2 (40 detents/s plus a strip with keys) went from
+   245 `queue-full` refusals to none.
+3. **Admitted motion is clean and the loss accounting is right.** C3 passes every check; no refusal was counted as
+   loss in any run (0 `ctl_lost_reported` throughout; run 2 had 496–2670).
+4. **Keys alone meet the agreed thresholds** (B5: p95 69 ms against 80, 0 superseded against 0, 0 retransmits).
+5. **Open: feedback read-back of a command-line keyword** (B5: median 60 ms, p95 509 ms, 11 of 39 probes never saw
+   the keyword inside the 400 ms before its Clear). The reader budget raise cut the median from 200 to 60 ms; the
+   tail is the watch list's round robin (about 100 items) and the console's own read cost. LED feedback (executor
+   activity, slot values) travels the same path, so the 300 ms p95 threshold is not met for feedback yet.
+6. **Open: the plugin's tick under motion.** At 100 detents/s the plugin still spends most of each tick on datagram
+   handling (77 %) and hits the 32-datagram budget in 27 of 234 ticks; the ceiling keeps that from costing key
+   events, at the price of 25 ms p95 / 146 ms worst motion queueing in the service (never aged). The idle tick is
+   13 ms on 2.5.1 (62–71 % of it the state/context collection: the context is still collected every tick).
+7. **Caveat on the plugin's own figures:** in runs with traffic the load report's tick count and phase sums exceed
+   what the wall clock allows (B3: 10628 ticks and 141 s of phase time in 21 s; idle, sampled directly, the loop
+   ticks 36 times a second at 12.9 ms, coherent). `socket.gettime` is a microsecond wall clock here, so either the
+   console resumes the plugin's coroutine from more than one thread under socket traffic or ticks overlap in some
+   other way. The service-side figures (acks, queueing, loss) are wall-clock and unaffected; the plugin's tick
+   figures are indicative until this is understood.
+
+### Recommended next steps
+
+- Feedback: measure the read cost per watch item and consider a smaller executor window or a per-item priority
+  (state readers before executor items) so that a keyword or LED change is read back within 300 ms.
+- Plugin loop: collect the context at a bounded cadence too, once the binding-revision refresh is decoupled from
+  it (the KB-21 tests expect the revision in the tick of the bind), and understand the tick-count anomaly above.
+- Hardware pass: the physical surfaces at the same workloads.

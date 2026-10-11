@@ -519,9 +519,15 @@ check("an executor-page change moves the binding generation and is sent in the f
 console.page = "3"
 for _ = 1, 12 do tickAlive(0.05); drain() end
 check("back on the original page: a new generation again (meaning changed twice)", state._collectContext(clock.t).cg == G + 2)
+-- KB-24: the plugin reads 24 watched items per tick, enough to re-observe every part of the context in the tick of
+-- the change; a budget of 8 (the KB-21 value) shows the unknown context this scene is about.
+local fbCfg = state.modules.feedback.instance._config
+local readsBefore = fbCfg.maxReadsPerService
+fbCfg.maxReadsPerService = 8
 console.showFile = "show-c"
 local unknownCtx
 for _ = 1, 30 do tickAlive(0.05); for _, p in ipairs(ofType(drain(), "context")) do if p.epoch == fbEpoch + 1 and p.known == 0 then unknownCtx = p end end; if unknownCtx then break end end
+fbCfg.maxReadsPerService = readsBefore
 check("after a show change no generation is claimed until every part is observed again", unknownCtx and unknownCtx.cg == nil and unknownCtx.why:find("not observed"), J(unknownCtx))
 local back
 for _ = 1, 30 do tickAlive(0.05); for _, p in ipairs(ofType(drain(), "context")) do if p.epoch == fbEpoch + 1 and p.known == 1 then back = p end end; if back then break end end
@@ -558,7 +564,7 @@ do
     return a and a.ok == 0 and a.code == "control-disabled" end)())
   check("control=bogus is refused", select(2, state._parseArgument("control=bogus")) ~= nil)
   reset("input=fake control=fake")
-  check("control=fake enables the module on its fake backend", state.controlEnabled == true and state.controlMode == "fake" and state.modules.control.version == "0.5.0" and findLog("control enabled on the fake backend"), lastLog())
+  check("control=fake enables the module on its fake backend", state.controlEnabled == true and state.controlMode == "fake" and state.modules.control.version == "0.6.0" and findLog("control enabled on the fake backend"), lastLog())
   push({ t = "hello", v = 2, id = "nxk-c1", gen = 7, nonce = "c1c1c1c1c1c1c1c1", surface = "nxk", fw = "0.1.0" }); tick()
   local w = ofType(drain(), "welcome")[1]
   check("the welcome announces control 1 on the fake backend and the control session is open", w and w.control == 1 and w.controlBackend == "fake" and state.sessions[w.sid].controlOpen == true, J(w))

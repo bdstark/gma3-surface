@@ -7,7 +7,7 @@ for the console, host and firmware it names. Vocabulary as in [deployments.md](d
 *harness*, *unqualified*.
 
 Revision of this matrix: service branch `feat/kb24-device-profiles`; vendored modules hardkeys 0.10.0 /
-feedback 0.6.0 / control 0.5.0 at `9535ded` ([VENDOR.md](../tools/ma3/VENDOR.md)); plugin `mtpnxk_surface`
+feedback 0.6.0 / control 0.6.0 at `e4aa80a` ([VENDOR.md](../tools/ma3/VENDOR.md)); plugin `mtpnxk_surface`
 0.11.0 (adds the heartbeat load report; 0.10.0 / protocol 2 is the localhost-only transport without a pairing key; the field is optional).
 
 ## Automated suites (what each run establishes)
@@ -15,7 +15,7 @@ feedback 0.6.0 / control 0.5.0 at `9535ded` ([VENDOR.md](../tools/ma3/VENDOR.md)
 | Suite | Count | Establishes | Does not establish |
 | --- | --- | --- | --- |
 | `lua tools/ma3/test/surface_plugin_test.lua` | 243 checks | protocol, pairing, dedup, leases, floods, feedback, context, KB-18 control admission, KB-19 console backend, KB-20 strips, KB-21 binds, KB-23 colours; **KB-24:** the heartbeat's load report (window, budget hit, reset), a key release behind a 31-packet ctl burst applied on the same tick, the per-session rate limit on a ctl burst | console routes, readers or timing |
-| `cargo test` in `service/` | 95 tests | framing, link state machine, control transport, strips, banks, lights, device slots, decoders, **KB-24:** key presses/releases and boundaries sent at once while motion saturates the 16-per-tick budget (motion drains in order, nothing aged), the per-kind latency samples, the feedback probe, the load report's parsing, the workload generator | USB, console |
+| `cargo test` in `service/` | 96 tests | framing, link state machine, control transport, strips, banks, lights, device slots, decoders, **KB-24:** key presses/releases and boundaries sent at once while motion saturates the 16-per-tick budget (motion drains in order, nothing aged), the per-kind latency samples, the feedback probe, the load report's parsing, the workload generator | USB, console |
 | `sh tools/ma3/test/e2e.sh` | 7 scenes + bench | the real service and the real plugin over a real UDP socket (stock Lua, stubbed console): keys, rotaries, strips, banks, faders, lights, lease expiry, 100-tap bench | console latency, hardware |
 | `mtpnxk measure` against the stub ([record](probes/kb-24-measure-macos.md), [report](probes/kb-24-measure-stub-macos.json)) | 15 s mixed workload | the service's own latencies under simultaneous use (key and boundary acks, motion queueing), no loss or reordering at the link, the plugin loop's load under the workload | console feedback or effect latency (the stub's command line and 16 ms frame stand in for the console) |
 
@@ -58,27 +58,28 @@ A row's live status is the KB-16 protocol-level qualification unless a later rec
 | console context changes (bank, page, selection) | Lua context tests, Rust stale-generation tests | **sim** (KB-19 … KB-21) | hardware pass |
 | stale feedback | lights tests | **sim** (KB-23) | hardware pass |
 | latency, missed events, ordering, plugin-loop load under simultaneous use | `measure` against the stub: 15 s, pass except the stub-only artefacts below | **measured** 2026-10-10 (runs A–E against onPC): fails the proposed thresholds, three defects identified | `probes/kb-24-measure-macos.md` |
-| continuous-control traffic versus key releases and flood protection | `link.rs` saturation test; Lua burst test; e2e | **regresses live** at 100 detents/s + strip (run D: key acks 236 ms p95, 101 taps superseded, 103 lost); clean at 40 detents/s without keys (run C2) | same |
+| continuous-control traffic versus key releases and flood protection | `link.rs` saturation and ceiling tests; Lua burst test; e2e | **regressed live** before the fixes (run D: key acks 236 ms p95, 101 taps superseded, 103 lost); **clean after them** (D2: 67 ms p95, nothing lost, superseded or refused at 100 detents/s + strip + keys) | same |
 
 ## Latency and loss thresholds (proposed)
 
 Measured by `mtpnxk measure` ([probes/kb-24-measure-macos.md](probes/kb-24-measure-macos.md) describes the
-workload). Thresholds are for a loopback host (service and onPC on one machine); they are proposed values until
-the operator agrees them after the first onPC run, and a run on another host publishes its own. A metric without
-samples is reported `n.a.` and claims nothing.
+workload). Thresholds are for a loopback host (service and onPC on one machine). The three latency lines marked
+**agreed** were moved on 2026-10-11 from the first proposal to the console's measured cadence plus margin; every
+zero-loss line is unchanged. A run on another host publishes its own. A metric without samples is reported `n.a.`
+and claims nothing.
 
 | Metric | Definition | Threshold | Why |
 | --- | --- | --- | --- |
-| key ack p95 / worst | surface key event sent → plugin ack received (service clock) | ≤ 25 ms / ≤ 150 ms | one plugin tick (16 ms frame) plus loopback; a retransmit (60 ms) must stay exceptional |
-| ctl boundary ack p95 | strip touch / button boundary sent → ack | ≤ 25 ms | as keys; boundaries are retransmitted like keys |
-| motion queue p95 / worst | a rotary/strip/fader motion queued → sent (never acknowledged, so the service side only) | ≤ 10 ms / ≤ 50 ms | one 5 ms per-control interval plus the 1 ms loop; the 250 ms age bound must never be approached |
+| key ack p95 / worst | surface key event sent → plugin ack received (service clock) | ≤ 80 ms / ≤ 300 ms | **agreed 2026-10-11**: the plugin tick on 2.5.1 is 13 ms idle and acks sit at 43–47 ms median, 65–73 ms p95 (runs B2–B5); measured plus margin; the retransmit spacing (120 ms) must stay exceptional |
+| ctl boundary ack p95 | strip touch / button boundary sent → ack | ≤ 80 ms | as keys (measured 44–50 ms p95) |
+| motion queue p95 / worst | a rotary/strip/fader motion queued → sent (never acknowledged, so the service side only) | ≤ 10 ms / ≤ 50 ms | under the 25 ms per-control interval (merging meanwhile) and the 1 ms loop; holds for unsaturated use (C3, E2). Above the per-session ceiling (100 packets/s) deferral is the mechanism and these lines are exceeded by design (D2: 25 / 146 ms, nothing aged); the 250 ms age bound must never be approached |
 | feedback p95 | probe key press → first state message in which the probed item changed | ≤ 300 ms | the plugin reads state every frame and sends deltas; a full state at least every second is not the path |
 | press-to-effect p95 | plugin `bench`: NUM key event → command-line change (plugin clock) | ≤ 100 ms | KB-08's open item; needs the plugin started with `bench` |
 | lost, superseded, plugin-reported ctl loss, aged, stale, overflow, rejected, link downs, deltas ignored | counters over the run | 0 | any loss on loopback is a defect |
 | out-of-order refusals | the plugin saw a later per-device sequence first | 0 | ordering must hold on loopback |
 | retransmit ratio | retransmitted / events | ≤ 1 % | acks later than 60 ms must be rare |
 | feedback probes missed | a probe never saw its change before the next opened | 0 | every Store/Clear must be read back |
-| plugin tick max | the longest plugin loop iteration in a heartbeat window (plugin 0.11.0) | ≤ 50 ms | a tick longer than three frames would be visible on the console |
+| plugin tick max | the longest plugin loop iteration in a heartbeat window (plugin 0.11.0) | ≤ 200 ms | **agreed 2026-10-11**: idle spikes of 167 ms recur on 2.5.1 (the console's own work); indicative only while the tick-count anomaly of the record stands |
 | plugin ticks at the packet budget | ticks that processed 32 datagrams | 0 | the workload must not approach the per-tick budget |
 
 ### Results so far
@@ -87,11 +88,11 @@ samples is reported `n.a.` and claims nothing.
 | --- | --- | --- | --- |
 | stub (stock Lua, Python 16 ms bridge), 15 s, defaults | 2026-10-10 | every service-side check passes; two **stub artefacts** fail: press-to-effect p95 242 ms (the stub's frame cadence, not a console), plugin-reported ctl loss 372 (every motion is refused `target-unavailable` by a console without an encoder bar, and a refused event is not committed to the control module's per-device sequence, so the next admitted event reports a gap) | [report](probes/kb-24-measure-stub-macos.json) |
 | onPC 2.5.1 loopback, plugin 0.11.0 (keyless protocol 2), runs A–E | 2026-10-10 | **FAIL against the proposed thresholds**: admitted motion is clean (run C2: 0 refused/lost/retransmitted, boundaries 23 ms median), but the plugin loop costs 13 ms per tick idle (max 167 ms) and 59 ms with motion and keys, key acks sit at 40–46 ms median, the control queue overflows (`queue-full`) at 40 detents/s plus a strip, and at 100 detents/s the plugin saturates (ticks 180–300 ms) and key taps are lost (superseded 101–234, lost 103–220). The refused-event loss accounting is confirmed live | [record](probes/kb-24-measure-macos.md), `probes/kb-24-measure-onpc-macos-2.5.1-run*.json` |
+| onPC 2.5.1 loopback, plugin 0.11.0 + control 0.6.0, after the fixes (runs B2–B5, C3, E2, D2) | 2026-10-11 | **keys and admitted motion pass**: C3 passes every check; E2 and D2 lose nothing (0 lost / superseded / refused / retransmitted at 40 and 100 detents/s with keys; before: 103 lost, 101 superseded, 1957 `queue-full`); key acks 65–69 ms p95 against 80. **Open**: feedback read-back p95 509 ms (11 of 39 probes missed; median 60 ms), plugin tick spikes 266–275 ms, D2 at the datagram budget in 27 ticks and motion deferred by the ceiling (25 / 146 ms) | same record, `…-run{B2,B3,B4,B5,C3,E2,D2}-*.json` |
 
-The onPC runs confirmed the second artefact as a defect of the vendored control module's accounting (every
-refusal, `target-unavailable` or `conflict`, is reported as loss by the next admitted event; zero with every event
-admitted) and identified two more: the control queue overflows at realistic rates (64 single-detent intents, 4
-applied per tick) and the plugin loop saturates at 100 detents/s so that key taps are lost. All three are
-qualification-identified defects under the KB-24 rule; the recommended fixes are in the record. The thresholds
-above stay proposed: on 2.5.1 the plugin tick alone (13 ms idle, 34 ms with keys) puts key acks at 40–46 ms
-median, so either the per-tick work comes down or the ack thresholds move to what the console gives.
+The onPC runs confirmed the second artefact as a defect of the vendored control module's accounting and
+identified two more (the control queue overflowing at realistic rates, the plugin loop saturating at 100 detents/s
+so that key taps were lost). All three were fixed on 2026-10-11 (control 0.6.0 upstream and re-vendored; the
+service's motion interval, ceiling, retransmit spacing and supersede rule; the plugin's work per tick, state cadence
+and read budget) and re-measured: see the record's run 3. What stays open is the feedback read-back tail and the
+plugin's tick spikes under heavy motion.

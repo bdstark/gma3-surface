@@ -123,6 +123,14 @@ pub struct PluginLoad {
     pub full: u64,
     #[serde(default)]
     pub n: u64,
+    /// Where the window's tick time went, in ms summed over the window: module servicing (the feedback reads),
+    /// datagram handling, state/context collection and sends.
+    #[serde(default)]
+    pub smod: f64,
+    #[serde(default)]
+    pub spkt: f64,
+    #[serde(default)]
+    pub sstate: f64,
 }
 
 /// Packets the plugin sends.
