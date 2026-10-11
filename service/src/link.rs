@@ -100,6 +100,8 @@ pub struct Stats {
     pub ctl_unsupported: u64,
     pub ctl_refused: u64,
     pub ctl_lost_reported: u64,
+    /// Acks whose loss figure the plugin marked uncertain (an upper bound).
+    pub ctl_lost_uncertain: u64,
     pub ctl_superseded: u64,
     /// Positions dropped because a control's motion queue overflowed (stateful targets keep every position).
     pub ctl_overflow: u64,
@@ -1085,7 +1087,7 @@ impl Link {
                     self.note(format!("plugin error: {e}"));
                 }
             }
-            FromPlugin::Ack { sid, seq, ev, ok, code, why, lost, coalesced, cg, br, .. } => {
+            FromPlugin::Ack { sid, seq, ev, ok, code, why, lost, lu, coalesced, cg, br, .. } => {
                 if !self.admit(&sid, seq, now) {
                     return;
                 }
@@ -1122,7 +1124,12 @@ impl Link {
                 if let Some(n) = lost {
                     // KB-18: the plugin saw a gap in our per-device sequence: packets were lost on the way.
                     self.stats.ctl_lost_reported += n;
-                    self.note(format!("event {ev}: the plugin reports {n} lost control packet(s) before it (never replayed)"));
+                    if lu == Some(1) {
+                        self.stats.ctl_lost_uncertain += 1;
+                        self.note(format!("event {ev}: the plugin reports at most {n} lost control packet(s) before it (its refusal history was bounded: an upper bound)"));
+                    } else {
+                        self.note(format!("event {ev}: the plugin reports {n} lost control packet(s) before it (never replayed)"));
+                    }
                 }
                 let _ = coalesced;
                 if ok == 1 {

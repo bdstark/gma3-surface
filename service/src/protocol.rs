@@ -191,6 +191,9 @@ pub enum FromPlugin {
         /// delta was coalesced, the current binding generation on a stale-generation refusal.
         #[serde(default)]
         lost: Option<u64>,
+        /// KB-24 (review of GrandMA3MCP #28): the loss figure is an upper bound (the module dropped refusal history).
+        #[serde(default)]
+        lu: Option<u8>,
         #[serde(default)]
         coalesced: Option<u8>,
         #[serde(default)]

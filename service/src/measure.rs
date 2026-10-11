@@ -255,6 +255,7 @@ pub fn report(link: &link::Link, strips: &strips::Strips, banks: &banks::Banks, 
     c("ctl_stale", delta(b.ctl_stale, st.ctl_stale));
     c("ctl_refused", delta(b.ctl_refused, st.ctl_refused));
     c("ctl_lost_reported", delta(b.ctl_lost_reported, st.ctl_lost_reported));
+    c("ctl_lost_uncertain", delta(b.ctl_lost_uncertain, st.ctl_lost_uncertain));
     c("ctl_superseded", delta(b.ctl_superseded, st.ctl_superseded));
     c("ctl_overflow", delta(b.ctl_overflow, st.ctl_overflow));
     c("strip_reports", delta(before.strips.reports, strips.stats.reports));

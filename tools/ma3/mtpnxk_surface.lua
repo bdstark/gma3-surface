@@ -681,7 +681,7 @@ local function handleCtl(s, obj, now)
   end
   if (r.lost or 0) > 0 then state.counters.ctlLost = state.counters.ctlLost + r.lost end
   if r.coalesced then state.counters.ctlCoalesced = state.counters.ctlCoalesced + 1 end
-  local extra = { lost = (r.lost or 0) > 0 and r.lost or nil, coalesced = r.coalesced and 1 or nil, superseded = r.superseded, queued = r.queued, noop = r.noop and 1 or nil, boundary = r.boundary and 1 or nil, evicted = r.evicted }
+  local extra = { lost = (r.lost or 0) > 0 and r.lost or nil, lu = r.lostUncertain and 1 or nil, coalesced = r.coalesced and 1 or nil, superseded = r.superseded, queued = r.queued, noop = r.noop and 1 or nil, boundary = r.boundary and 1 or nil, evicted = r.evicted }
   ackEvent(s, ev, true, extra)
   return nil
 end
