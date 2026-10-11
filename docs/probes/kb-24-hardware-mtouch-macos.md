@@ -128,3 +128,18 @@ the plugin applies a button to an executor, re-read that executor on the next ti
 feedback module, upstream), which should remove the slow tail. Not implemented yet.
 
 Cleanup: `Off Page 1.101`; `Delete Page 1.101`, `1.189`, `1.190`.
+
+### With the pressed-executor refresh (feedback 0.8.0, plugin refreshMs 300)
+
+The plugin re-reads an executor every tick for 300 ms after a playback key on it (feedback `refresh()`, GrandMA3MCP
+`4cbbb89`), instead of waiting for its turn in the round robin. Same setup, eleven taps of PFA 1:
+
+| Transition | n | median before → after | slowest before → after |
+| --- | --- | --- | --- |
+| down → running | 11 | 162 → 218 ms | 451 → 347 ms |
+| up → stopped | 11 | 112 → 96 ms | 356 → 150 ms |
+
+The release side's tail is gone (all 74–150 ms): the read path is fast. Presses still spread 84–347 ms through the
+same read path, so the remaining press time is the console's own time to report the sequence running after `Press`
+(stopping it is reported almost at once); the refresh cannot shorten that. Not yet measured: the MCP bridge's share
+of the plugin thread (a run with the bridge stopped).
