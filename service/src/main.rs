@@ -479,7 +479,7 @@ impl Loop {
             };
             let playback = self.banks.lights_controls();
             // Hardware pass: a missing context while the link holds a fresh one is a rebind in flight, not staleness.
-            self.lights.set_rebinding(ctx.is_none() && self.link.lighting_block_reason(now).is_some());
+            self.lights.set_rebinding(ctx.is_none() && self.link.in_transition(now));
             let writes = self.lights.render(&lights::Scene { ctx, strips, playback: &playback }, now);
             for (model, out) in writes {
                 surface.output(model, out);

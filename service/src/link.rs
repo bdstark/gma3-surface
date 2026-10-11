@@ -446,6 +446,18 @@ impl Link {
         }
     }
 
+    /// Hardware pass: no context to light from, but the link is healthy and the plugin is answering with contexts: a
+    /// transition (a bind in flight, the plugin re-observing after a bind and reporting the context unknown, a context
+    /// of the previous binding) rather than staleness. A silent plugin or a link down is never a transition.
+    pub fn in_transition(&self, now: f64) -> bool {
+        if self.session().is_none() || !self.link_up || self.lighting_context(now).is_some() {
+            return false;
+        }
+        let recent = self.context.as_ref().map(|c| now - c.received_at <= self.cfg.state_stale).unwrap_or(false);
+        let bind_pending = self.pending.iter().any(|p| matches!(p.kind, PendingKind::Bind(_)));
+        recent || bind_pending
+    }
+
     pub fn take_outgoing(&mut self) -> Vec<Vec<u8>> {
         std::mem::take(&mut self.outgoing)
     }
@@ -2217,5 +2229,22 @@ mod tests {
         }
         let summaries = link.log[base..].iter().filter(|l| l.contains("refused [conflict] held elsewhere: repeated")).count();
         assert!((2..=3).contains(&summaries), "about one summary per 2 s over 6 s: {summaries}");
+    }
+
+    #[test]
+    fn an_unknown_context_from_a_live_plugin_is_a_transition_and_silence_is_not() {
+        let (mut link, mut plugin) = pair(80.0);
+        assert!(!link.in_transition(80.0), "no context yet and nothing pending: not a transition");
+        link.receive(&plugin.context(1, 1, Some(1), json!({})), 80.0);
+        assert!(link.lighting_context(80.0).is_some());
+        assert!(!link.in_transition(80.0), "a context to light from: no transition");
+        // After a bind the plugin re-observes and reports the context unknown (hardware pass: the red flash).
+        link.receive(&plugin.context(1, 0, None, json!({})), 80.1);
+        assert!(link.lighting_context(80.1).is_none());
+        assert!(link.in_transition(80.1), "a live plugin answering with an unknown context is a transition");
+        // Silence: the watchdog takes the link down; that is staleness, never a transition.
+        link.tick(82.0);
+        assert!(!link.link_up);
+        assert!(!link.in_transition(82.0));
     }
 }
