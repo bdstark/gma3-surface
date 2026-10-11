@@ -51,3 +51,13 @@ red/green); a `pbank:up`/`pbank:down` storm blanked every control to the unavail
 in flight, and `--verbose` logged the reason (`bind ev N in flight`, then `the context carries binding revision …, the
 acknowledged one is …`) until the matching context restored them. The assignments were deleted afterwards (101, 209
 read back empty). `cargo test` 90, harness 237.
+
+## Re-run after the PR #8 review round 2 (2026-10-10)
+
+Review finding (a refused bind re-enabled lighting from the previous binding's context): `lighting_context` now also
+requires the context's reported binding to match the one the surface asked for, so a refused or not-yet-confirmed bind
+keeps the lights unavailable rather than lighting the new bank from the old feedback. A live bind refusal cannot be
+induced with the normal 30-executor window (the plugin refuses only a binding it cannot watch in full), so the path is
+covered by a link-level test and the caller-level test with the second bind refused (`cargo test` 92). The rebuilt
+service was re-run live on a steady scene for sanity: it still lit correctly (`lit=20`, PB9 running yellow). No console
+state changed (the fix is Rust-only; feedback 0.6.0 at `9535ded` is unchanged).

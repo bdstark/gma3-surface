@@ -726,5 +726,18 @@ show the previous binding's feedback as current, with a caller-level regression 
 (the steady scene lights `lit=21`, a bank change blanks the controls only until the matching context arrives). The
 numeric-only hex finding (2) is the console half (GrandMA3MCP PR #27).
 
-**Not verified live:** the physical M-Touch / M-Play rendering of the mixes, the slow blink and blue on playback bars
-(KB-24's hardware pass); Windows/Linux hosts.
+**Review of PR #8 (round 2):** a REFUSED bind (the plugin keeps its previous binding while the surface already maps the
+new bank) left the old revision current, so `lighting_context` returned the old context and lit the new bank's controls
+from the old bank's feedback (or showed them empty). `lighting_context` now also requires the context's reported
+binding (`plugin_binding`) to equal the binding the surface asked for (`desired_bind`): a refused or not-yet-confirmed
+bind keeps the lights unavailable until the plugin reports the requested binding (or the surface rolls back to a bound
+one). A link-level test and the caller-level test (the bind refused) cover it; `cargo test` 92. A live bind refusal
+cannot be induced with the normal 30-executor window (it needs the plugin's watch budget exceeded), so the path is
+test-covered, not live-reproduced.
+
+- **Rust service** (`cargo test` 92): two new tests for the refused-bind readiness; the lighting gate and its verbose
+  diagnostic (`lighting_block_reason`) name the binding mismatch.
+
+**Not verified live:** the refused-bind readiness path (test-covered; a live refusal needs the watch budget exceeded);
+the physical M-Touch / M-Play rendering of the mixes, the slow blink and blue on playback bars (KB-24's hardware pass);
+Windows/Linux hosts.

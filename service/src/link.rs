@@ -464,6 +464,16 @@ impl Link {
             return None;
         }
         self.current_generation(now)?;
+        // Review of PR #8 (round 2): the context must describe the executors the surface maps right now. A
+        // REFUSED bind leaves the plugin on its previous binding (no pending bind, the old revision still
+        // current) while our desired spec already moved to the new bank, so the old context is current by
+        // revision yet names the wrong executors: not something to light from (it would show the new bank's
+        // controls with the old bank's feedback). Light only once the plugin reports the binding we asked for.
+        if let Some(desired) = &self.desired_bind {
+            if self.plugin_binding(now).as_ref() != Some(desired) {
+                return None;
+            }
+        }
         self.context_view(now)
     }
 
@@ -482,6 +492,11 @@ impl Link {
         }
         if ctx.generation.is_none() {
             return Some("the context claims no generation".into());
+        }
+        if let Some(desired) = &self.desired_bind {
+            if self.plugin_binding(now).as_ref() != Some(desired) {
+                return Some(format!("the plugin's binding {:?} is not the one the surface asked for {:?} (a refused bind): the mapping and the context disagree", self.plugin_binding(now), Some(desired)));
+            }
         }
         None
     }
@@ -1807,13 +1822,56 @@ mod tests {
         // The context of revision 2 arrives (the same generation number as before): events flow again, stamped br 2.
         link.receive(&ctx(&mut plugin, 1, 2), 20.2);
         assert_eq!(link.current_generation(20.21), Some(1));
-        assert!(link.lighting_context(20.21).is_some(), "KB-23: the context of revision 2 lights again");
         assert!(!link.take_binding_changed(), "the revision was already reported from the ack");
         link.control_event("mtouch", "PFA2", CtlTarget::Executor { ex: 211, el: "key", pg: None }, CtlKind::Btn { down: true }, 20.25);
         link.tick(20.26);
         let out = plugin.decode(link.take_outgoing());
         let down = out.iter().find(|v| v["t"] == "ctl" && v["d"] == json!(1)).unwrap();
         assert_eq!((down["br"].as_u64(), down["cg"].as_u64()), (Some(2), Some(1)));
+    }
+
+
+    #[test]
+    fn lighting_waits_for_the_requested_binding_even_after_a_refused_bind() {
+        // Review of PR #8 (round 2): a refused bind must not re-enable lighting from the previous binding's context.
+        let (mut link, mut plugin) = pair(30.0);
+        let ctx = |p: &mut FakePlugin, ex: Vec<u32>, br: u64| {
+            let exj: Vec<Value> = ex.iter().map(|n| json!({"n": n, "tgt": 1, "cls": "Sequence", "name": "A", "kp": "Go+", "fd": "Master", "lvl": 100, "act": 0})).collect();
+            p.frame(json!({"t":"context","gen":p.generation,"epoch":1,"known":1,"cg":1,"enc":{},"slots":[],"ex":exj,"page":1,"pool":"Default","display":1,"bind":{"ex":ex,"br":br,"mode":"current"}}))
+        };
+        // Bind [201], acknowledged, its context arrives: the lights may use it.
+        link.set_binding(BindSpec { ex: vec![201], pg: None }, 30.0);
+        link.tick(30.0);
+        let out = plugin.decode(link.take_outgoing());
+        let ev = out.iter().find(|v| v["t"] == "bind").unwrap()["ev"].as_u64().unwrap();
+        link.receive(&plugin.ctl_ack(ev, true, json!({"br": 1})), 30.02);
+        link.receive(&ctx(&mut plugin, vec![201], 1), 30.03);
+        assert!(link.lighting_context(30.04).is_some(), "the requested binding is confirmed and its context is here");
+        // A bank change: the surface asks for [211]. The bind is in flight.
+        link.set_binding(BindSpec { ex: vec![211], pg: None }, 30.1);
+        link.tick(30.1);
+        let out = plugin.decode(link.take_outgoing());
+        let ev = out.iter().find(|v| v["t"] == "bind").unwrap()["ev"].as_u64().unwrap();
+        assert!(link.lighting_context(30.11).is_none(), "nothing lights while the bind is in flight");
+        // The plugin REFUSES it (its watch budget, say): the pending bind is gone, the old revision is still
+        // current, the old context still describes [201] — but the surface now maps [211].
+        link.receive(&plugin.ctl_ack(ev, false, json!({"code": "bad-bind", "why": "cannot watch in full"})), 30.12);
+        assert!(!link.pending.iter().any(|p| matches!(p.kind, PendingKind::Bind(_))), "the refused bind left the queue");
+        assert_eq!(link.current_generation(30.13), Some(1), "the old binding's generation is still current");
+        assert!(link.context_view(30.13).is_some(), "the old context is still held as data");
+        assert!(link.lighting_context(30.13).is_none(), "but lighting stays unavailable: [201] is not the requested [211]");
+        assert!(link.lighting_block_reason(30.13).unwrap().contains("refused bind"));
+        // The plugin keeps resending its unchanged context: still nothing to light the new mapping from.
+        link.receive(&ctx(&mut plugin, vec![201], 1), 30.2);
+        assert!(link.lighting_context(30.21).is_none(), "a resend of the old binding does not re-enable lighting");
+        // The surface rolls back to [201] (or the plugin later accepts [211]); once reported, lighting resumes.
+        link.set_binding(BindSpec { ex: vec![201], pg: None }, 30.3);
+        link.tick(30.3);
+        let out = plugin.decode(link.take_outgoing());
+        let ev = out.iter().find(|v| v["t"] == "bind").unwrap()["ev"].as_u64().unwrap();
+        link.receive(&plugin.ctl_ack(ev, true, json!({"br": 1})), 30.32);
+        link.receive(&ctx(&mut plugin, vec![201], 1), 30.33);
+        assert!(link.lighting_context(30.34).is_some(), "with the requested binding reported again, lighting resumes");
     }
 
     #[test]

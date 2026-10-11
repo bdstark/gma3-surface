@@ -626,8 +626,8 @@ mod lights_binding_tests {
             v["seq"] = json!(self.seq);
             auth::frame(&self.key, &v.to_string())
         }
-        fn context(&mut self, br: u64, ex: Value) -> Vec<u8> {
-            self.frame(json!({"t":"context","gen":"1-deadbeef","epoch":1,"known":1,"cg":1,"enc":{},"slots":[],"ex":ex,"page":1,"pool":"Default","display":1,"bind":{"ex":[101],"br":br,"mode":"current"}}))
+        fn context(&mut self, br: u64, ex: Value, bind_ex: Vec<u32>) -> Vec<u8> {
+            self.frame(json!({"t":"context","gen":"1-deadbeef","epoch":1,"known":1,"cg":1,"enc":{},"slots":[],"ex":ex,"page":1,"pool":"Default","display":1,"bind":{"ex":bind_ex,"br":br,"mode":"current"}}))
         }
     }
 
@@ -651,7 +651,9 @@ mod lights_binding_tests {
         let ev = lp.link.pending_bind_ev().expect("the bind is in flight");
         assert!(lp.link.lighting_context(lp.now()).is_none());
         lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":1,"br":1})), lp.now());
-        lp.link.receive(&plugin.context(1, json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Go+","fd":"Master","lvl":100,"act":0,"col":"ff0000"}])), lp.now());
+        // The plugin reports the binding it was asked for (the whole bank-1 window); the feedback list names 101.
+        let w1 = lp.banks.targets().ex;
+        { let now = lp.now(); let m = plugin.context(1, json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Go+","fd":"Master","lvl":100,"act":0,"col":"ff0000"}]), w1.clone()); lp.link.receive(&m, now); }
         lp.step(&mut lamp).unwrap();
         assert_eq!(key_writes(&lamp.outputs, 0x4201).last(), Some(&mtouch::LedKey::off().blue().value()), "PFA1 lit: executor 101 assigned ({:?})", lamp.outputs.len());
         assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex101") && l.contains("Assigned")), "{:?}", lp.lights.lines);
@@ -671,12 +673,52 @@ mod lights_binding_tests {
         lp.step(&mut lamp).unwrap();
         assert!(lp.link.lighting_context(lp.now()).is_none());
         assert!(key_writes(&lamp.outputs, 0x4201).is_empty(), "{:?}", lamp.outputs);
-        // The context of revision 2 lists 111 empty: PFA1 goes dark; 101's red never reached the new mapping.
-        lp.link.receive(&plugin.context(2, json!([{"n":111,"empty":1,"tgt":0}])), lp.now());
+        // The context of revision 2 reports the new (bank-2) binding and lists 111 empty: PFA1 goes dark; 101's red never reached the new mapping.
+        let w2 = lp.banks.targets().ex;
+        assert_ne!(w1, w2, "the bank change moved the bound window");
+        { let now = lp.now(); let m = plugin.context(2, json!([{"n":111,"empty":1,"tgt":0}]), w2); lp.link.receive(&m, now); }
         lamp.outputs.clear();
         lp.step(&mut lamp).unwrap();
         assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![0], "{:?}", lamp.outputs);
         assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111: empty, dark")), "{:?}", lp.lights.lines);
+    }
+
+    #[test]
+    fn a_refused_bank_change_keeps_the_lights_unavailable_not_the_old_context() {
+        // Review of PR #8 (round 2): when the plugin refuses the new binding, the surface still maps the new
+        // bank, so the previous binding's context must not light the controls (that would show the new bank's
+        // controls with the old bank's feedback, or as empty).
+        let cli = Cli::parse_from(["mtpnxk", "--key", &"ab".repeat(32), "sim"]);
+        let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
+        lp.lights.cfg.min_interval = 0.0;
+        let mut plugin = Plugin { key: auth::Key::from_hex(&"ab".repeat(32)).unwrap(), seq: 0 };
+        let mut lamp = Lamp { strips: VecDeque::new(), outputs: Vec::new() };
+        lp.step(&mut lamp).unwrap();
+        let nonce = lp.link.hello_nonce().expect("a hello was sent");
+        let welcome = json!({"t":"welcome","v":1,"sid":"feedfacefeedface","nonce":nonce,"gen":"1-deadbeef","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"modules":{},"input":"fake","epoch":1,"control":1,"controlBackend":"console","context":1,"seq":0});
+        lp.link.receive(&auth::frame(&plugin.key, &welcome.to_string()), lp.now());
+        lp.step(&mut lamp).unwrap();
+        let ev = lp.link.pending_bind_ev().expect("the bind is in flight");
+        lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":1,"br":1})), lp.now());
+        let w1 = lp.banks.targets().ex;
+        { let now = lp.now(); let m = plugin.context(1, json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Go+","fd":"Master","lvl":100,"act":0,"col":"ff0000"}]), w1.clone()); lp.link.receive(&m, now); }
+        lp.step(&mut lamp).unwrap();
+        assert_eq!(key_writes(&lamp.outputs, 0x4201).last(), Some(&mtouch::LedKey::off().blue().value()), "PFA1 lit for 101");
+        // Bank change: PFA1 now maps to 111; the bind for it goes out.
+        lamp.outputs.clear();
+        lamp.strips.push_back(mtouch::Event::KeyDown { id: 0x4111, name: "PLAYBACK BANK Up (+)" });
+        lp.step(&mut lamp).unwrap();
+        let ev = lp.link.pending_bind_ev().expect("the new bind is in flight");
+        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![mtouch::LedKey::off().blue().slow().value()], "unavailable while in flight");
+        // The plugin REFUSES the new binding and keeps [101..110]; it resends its unchanged context.
+        lamp.outputs.clear();
+        lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":0,"code":"bad-bind","why":"cannot watch in full"})), lp.now());
+        // The plugin kept its bank-1 binding (w1); the surface already maps bank 2.
+        { let now = lp.now(); let m = plugin.context(1, json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Go+","fd":"Master","lvl":100,"act":0,"col":"ff0000"}]), w1.clone()); lp.link.receive(&m, now); }
+        lp.step(&mut lamp).unwrap();
+        assert!(lp.link.lighting_context(lp.now()).is_none(), "the refused bind must not re-enable lighting from the old context");
+        assert!(key_writes(&lamp.outputs, 0x4201).iter().all(|&v| v != mtouch::LedKey::off().blue().value() && v != 0), "PFA1 is neither 101's assigned nor dark: {:?}", lamp.outputs);
+        assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111") && l.contains("unavailable")), "PFA1 is shown unavailable, mapped to 111: {:?}", lp.lights.lines);
     }
 }
 
