@@ -636,7 +636,7 @@ feature / activation group names parsed from the definition's own path text and 
 with `colorDefined` (a black colour, which Dimmer and Gobo have live, defines none), every assigned executor's
 appearance carries its `BackRGBA` as 0..1 components; colour and appearance stay out of the binding digest; the bridge
 0.18.0 and control 0.5.0 are unchanged; branch `feat/kb23-parameter-colors`, probe `scripts/kb23-probe.mjs`). This
-repository vendors feedback 0.6.0 from `730395f` (after the MCP live run: UV's out-of-gamut definition colour clamped and flagged; [tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns every LED
+repository vendors feedback 0.6.0 from `45945bf` (after the MCP live run: UV's out-of-gamut definition colour clamped and flagged; [tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and owns every LED
 translation (`service/src/lights.rs`):
 
 - **Colours from verified metadata, never from a label:** the plugin's context carries per attribute slot `fg`, `fn`,
