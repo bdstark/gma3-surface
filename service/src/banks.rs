@@ -750,7 +750,9 @@ impl Banks {
     /// M-Play strip: top button (red/green, row A), the RGB bar (fader row), bottom button (red/green, row B); the
     /// M-Play right block: red/green buttons (its row). The lights of a section whose device is absent are not
     /// listed (nothing can be written to it).
-    pub fn lights_controls(&self) -> Vec<crate::lights::PlaybackControl> {
+    /// `cg` (review of PR #10, round 2): the binding generation of the context being rendered; a touched fader's echo
+    /// is offered only when its touch started against that generation.
+    pub fn lights_controls(&self, cg: Option<u64>) -> Vec<crate::lights::PlaybackControl> {
         use crate::lights::{Light, PlaybackControl};
         let mut out = Vec::new();
         if !self.cfg.enabled {
@@ -776,7 +778,7 @@ impl Banks {
                         let touching = fs.map(|f| f.touching).unwrap_or(false);
                         let pending = fs.map(|f| f.touching && !f.picked_up && !f.rebound).unwrap_or(false);
                         // Hardware pass (local echo): a touched, picked-up fader shows its own position.
-                        let echo = fs.filter(|f| f.touching && f.picked_up && !f.rebound).map(|f| f.last_v);
+                        let echo = fs.filter(|f| f.touching && f.picked_up && !f.rebound && cg.is_some() && f.generation == cg).map(|f| f.last_v);
                         out.push(PlaybackControl { model: s.model, id: ka, light: light_ab, control: ca, ex: s.executor(Row::KeyA, i), pg, held: held(ca), pickup_pending: false, echo: None });
                         out.push(PlaybackControl { model: s.model, id: bar, light: Light::BarRgb, control: cf, ex: s.executor(Row::Fader, i), pg, held: touching, pickup_pending: pending, echo });
                         if let Some(id) = pfd {

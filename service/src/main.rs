@@ -478,11 +478,14 @@ impl Loop {
             let ctx = self.link.lighting_context(now).map(|c| &c.body);
             let strips_present = surface.device_present(mtouch::Model::MTouch);
             let strips = if self.strips.cfg.mode != strips::Mode::Off {
-                Some(lights::ParamStrips { present: strips_present, base_slot: self.strips.cfg.base_slot, touching: [self.strips.touching(1), self.strips.touching(2), self.strips.touching(3), self.strips.touching(4)], echo: [self.strips.echo(1), self.strips.echo(2), self.strips.echo(3), self.strips.echo(4)] })
+                Some(lights::ParamStrips { present: strips_present, base_slot: self.strips.cfg.base_slot, touching: [self.strips.touching(1), self.strips.touching(2), self.strips.touching(3), self.strips.touching(4)], echo: [self.strips.echo_at(1, self.link.current_generation(now)), self.strips.echo_at(2, self.link.current_generation(now)), self.strips.echo_at(3, self.link.current_generation(now)), self.strips.echo_at(4, self.link.current_generation(now))] })
             } else {
                 None
             };
-            let playback = self.banks.lights_controls();
+            // Review of PR #10 (round 2): the echoes are offered for the generation of the context rendered now, which
+            // includes this step's incoming packets; a gesture started against an older generation offers none.
+            let render_cg = self.link.current_generation(now);
+            let playback = self.banks.lights_controls(render_cg);
             // Hardware pass: a missing context while the link holds a fresh one is a rebind in flight, not staleness.
             self.lights.set_rebinding(ctx.is_none() && self.link.in_transition(now));
             self.lights.set_generation(self.link.current_generation(now));
@@ -784,6 +787,57 @@ mod lights_binding_tests {
         lp.step(&mut lamp).unwrap();
         assert!(key_writes(&lamp.outputs, 0x4201).is_empty(), "already dark from the rebind: nothing to rewrite: {:?}", lamp.outputs);
         assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111: empty, dark")), "{:?}", lp.lights.lines);
+    }
+
+    #[test]
+    fn review_10_round_2_a_context_that_moves_a_touched_strip_never_relabels_its_old_prediction() {
+        // The strip stays touched while a context arrives that puts another attribute on its slot (generation 1 -> 2).
+        // The old attribute's 90 % prediction must not be drawn for the new attribute, nor settle against it.
+        // The loop's own UDP peer: the moved context is delivered over the socket so it arrives INSIDE a step (after
+        // the step's gesture checks, before its render), as it does in production.
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").expect("a test peer");
+        let cli = Cli::parse_from(["mtpnxk", "--plugin", &format!("127.0.0.1:{}", peer.local_addr().unwrap().port()), "--id", "mtpnxk-unit-test", "sim"]);
+        let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
+        lp.lights.cfg.min_interval = 0.0;
+        let mut plugin = Plugin { seq: 0 };
+        let mut lamp = Lamp { strips: VecDeque::new(), outputs: Vec::new() };
+        lp.step(&mut lamp).unwrap();
+        let nonce = lp.link.hello_nonce().expect("a hello was sent");
+        let welcome = json!({"t":"welcome","v":2,"sid":"feedfacefeedface","nonce":nonce,"gen":"1-deadbeef","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"modules":{},"input":"fake","epoch":1,"control":1,"controlBackend":"console","context":1,"seq":0});
+        lp.link.receive(&wire::frame(&welcome.to_string()), lp.now());
+        lp.step(&mut lamp).unwrap();
+        let ev = lp.link.pending_bind_ev().expect("the bind is in flight");
+        lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":1,"br":1})), lp.now());
+        let w1 = lp.banks.targets().ex;
+        let ctx = |plugin: &mut Plugin, cg: u64, name: &str, abs: f64| plugin.frame(json!({"t":"context","gen":"1-deadbeef","epoch":1,"known":1,"cg":cg,"enc":{},"ex":[],"page":1,"pool":"Default","display":1,
+            "bind":{"ex":w1.clone(),"br":1,"mode":"current"},
+            "slots":[{"n":1,"kind":"attribute","name":name,"readout":"Percent","res":"Coarse","avail":"available","val":"value","abs":abs,"vc":1}]}));
+        { let now = lp.now(); let m = ctx(&mut plugin, 1, "ColorRGB_R", 90.0); lp.link.receive(&m, now); }
+        lp.step(&mut lamp).unwrap();
+        // Touch strip 1 and move it a little: the echo starts from 90 %.
+        lamp.strips.push_back(mtouch::Event::Fader { id: 0x6112, name: "VALUE BASE CHANNEL 1", value: 100, touch: true });
+        lp.step(&mut lamp).unwrap();
+        lamp.strips.push_back(mtouch::Event::Fader { id: 0x6112, name: "VALUE BASE CHANNEL 1", value: 102, touch: true });
+        lp.step(&mut lamp).unwrap();
+        assert!(lp.strips.echo(1).is_some(), "the touched strip predicts");
+        // While still touched, a context puts Dimmer on slot 1 at 20 % (generation 2), received before the render.
+        lamp.outputs.clear();
+        let m = ctx(&mut plugin, 2, "Dimmer", 20.0);
+        peer.send_to(&m, lp.sock.local_addr().unwrap()).expect("sent to the loop");
+        std::thread::sleep(Duration::from_millis(5));
+        lp.step(&mut lamp).unwrap();
+        assert_eq!(lp.link.current_generation(lp.now()), Some(2), "the moved context arrived inside the step");
+        let bar = |outs: &[(mtouch::Model, mtouch::Output)]| outs.iter().rev().find_map(|(_, o)| match o { mtouch::Output::FaderBar { id: 0x6112, data } => Some(*data), _ => None });
+        let twenty = mtouch::bar_level(lights::leds_of(0.20), mtouch::BarColour::Blue, false);
+        assert_eq!(bar(&lamp.outputs), Some(twenty), "the new attribute's 20 %, not the old 90 %: {:?}", lamp.outputs);
+        // The next steps (still touched, then lifted) never bring the old prediction back as a settling value.
+        lamp.outputs.clear();
+        lp.step(&mut lamp).unwrap();
+        lamp.strips.push_back(mtouch::Event::Fader { id: 0x6112, name: "VALUE BASE CHANNEL 1", value: 102, touch: false });
+        lp.step(&mut lamp).unwrap();
+        lp.step(&mut lamp).unwrap();
+        assert!(bar(&lamp.outputs).map(|b| b == twenty).unwrap_or(true), "no 90 % after the context moved: {:?}", lamp.outputs);
+        assert_eq!(lp.lights.want_bar(mtouch::Model::MTouch, 0x6112), Some(twenty));
     }
 
     #[test]

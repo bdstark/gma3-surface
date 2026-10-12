@@ -429,6 +429,12 @@ impl Lights {
         None
     }
 
+    /// Tests: what a bar is set to show (the latest computed state).
+    #[cfg(test)]
+    pub fn want_bar(&self, model: Model, id: u16) -> Option<[u8; 9]> {
+        match self.want.get(&(model, id)) { Some(Want::Bar(d)) => Some(*d), _ => None }
+    }
+
     /// Review of PR #10: the binding generation of the context being rendered (`Link::current_generation`).
     pub fn set_generation(&mut self, generation: Option<u64>) {
         if generation != self.generation {

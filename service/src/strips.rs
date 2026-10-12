@@ -190,6 +190,17 @@ impl Strips {
     /// read-back arrives. Relative: the value at the touch plus the detents sent since times one click (only for a
     /// readout with an exact step); absolute: the fader's own position once picked up. None when not touched, rebound,
     /// or not predictable: the bar then shows the read-back.
+    /// Review of PR #10 (round 2): the echo only for the binding generation the touch started against. The caller
+    /// passes the generation of the context it renders (after this step's packets were processed), so a context that
+    /// moved the slot to another target while the strip stays touched never relabels the old prediction.
+    pub fn echo_at(&self, n: u8, cg: Option<u64>) -> Option<f64> {
+        let s = &self.strips[(n.clamp(1, 4) - 1) as usize];
+        if cg.is_none() || s.generation != cg {
+            return None;
+        }
+        self.echo(n)
+    }
+
     pub fn echo(&self, n: u8) -> Option<f64> {
         let s = &self.strips[(n.clamp(1, 4) - 1) as usize];
         if !s.touching || s.rebound {
