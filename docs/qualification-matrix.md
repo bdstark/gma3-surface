@@ -23,7 +23,7 @@ feedback 0.7.0 / control 0.7.0 at `bdcfe6e` ([VENDOR.md](../tools/ma3/VENDOR.md)
 
 | Service host | Console | Automated | Live | Evidence |
 | --- | --- | --- | --- | --- |
-| macOS 26.5.1, Apple silicon (`bdsmbpm401`) | grandMA3 onPC 2.5.1.0 on the same machine, loopback | all suites pass | **qualified** for KB-07 … KB-23 through the `sim` path (keys, rotaries, strips, banks, faders, lights); the physical surfaces through `run` are the KB-24 hardware pass, pending | [deployments.md](deployments.md), `probes/kb-*-surface-macos-2.5.1.md` |
+| macOS 26.5.1, Apple silicon (`bdsmbpm401`) | grandMA3 onPC 2.5.1.0 on the same machine, loopback | all suites pass | **qualified** for KB-07 … KB-23 through the `sim` path (keys, rotaries, strips, banks, faders, lights); the physical NX-K, M-Touch and M-Play **qualified through `run`** in the KB-24 hardware pass, 2026-10-11/12 ([NX-K](probes/kb-24-hardware-nxk-macos.md), [M-Touch](probes/kb-24-hardware-mtouch-macos.md), [M-Play](probes/kb-24-hardware-mplay-macos.md)) | [deployments.md](deployments.md), `probes/kb-*-surface-macos-2.5.1.md` |
 | macOS | onPC on another machine (LAN) | n.a. | unqualified (no latency over a network measured) | KB-08 L7 |
 | Windows 11 | onPC 2.5.1 | Rust and Lua suites not run on Windows | unqualified (WinUSB binding for the NX-K not exercised) | — |
 | Linux | onPC on macOS/Windows over LAN | not run | unqualified (udev rule needed; no onPC for Linux) | — |
@@ -38,25 +38,25 @@ A row's live status is the KB-16 protocol-level qualification unless a later rec
 | Device | VID:PID | Firmware / protocol source | Automated | Live (protocol) | Live (roles through `run`) |
 | --- | --- | --- | --- | --- | --- |
 | NX-K | `11be:e102` | product "NX-K"; decoder from captures (KB-07) | decoder, LED map, device-slot tests | **qualified** macOS (KB-07: keys and LEDs confirmed by the operator) | keys **qualified** (KB-07/08); keys, LEDs, rotaries, Fine, unplug with a key held, replug and plugin restart **qualified through `run`** 2026-10-11 ([record](probes/kb-24-hardware-nxk-macos.md)) |
-| M-Touch | `11be:f808` | product "M-Touch", no serial; MTouchPlay `e48eb2c` `docs/protocol.md` | 17 decoder/encoder tests, strips 8, banks 18, lights 7 | **qualified** macOS 2026-10-10 ([record](probes/kb-16-hardware-mtouch-macos.md)): every control, report type, LED/bar/display write, unplug and replug | parameter strips, playback keys/faders and lights **sim only** (KB-20 … KB-23 records): physical pass pending |
-| M-Play | `11be:f80c` | product "M-Play"; MTouchPlay `e48eb2c` | decoder/encoder tests, banks | **qualified** macOS 2026-10-10 ([record](probes/kb-16-hardware-mplay-macos.md)) | playback buttons, faders, both bank sections and removal while held **qualified through `run`** 2026-10-12 ([record](probes/kb-24-hardware-mplay-macos.md)) |
-| two surfaces at once (NX-K + M-Touch, + M-Play) | — | — | `usb_surfaces.rs` 3 tests, `main.rs` loss tests | unqualified | unqualified (KB-24 hardware pass) |
-| USB removal and return while paired | — | — | device-slot tests (keypad lost: holds released; M-Touch lost: touches ended) | unplug/replug detection **qualified** per device (KB-16) | the released holds at the console: unqualified live |
+| M-Touch | `11be:f808` | product "M-Touch", no serial; MTouchPlay `e48eb2c` `docs/protocol.md` | 17 decoder/encoder tests, strips 8, banks 18, lights 7 | **qualified** macOS 2026-10-10 ([record](probes/kb-16-hardware-mtouch-macos.md)): every control, report type, LED/bar/display write, unplug and replug | parameter strips (relative, Fine, local echo), playback strips/keys/faders with pickup, bank keys and the frozen release, lights (keys, bars, PFDs, `page.bank` display), the Go key, removal while a strip is touched and a key held: **qualified through `run`** 2026-10-11 ([record](probes/kb-24-hardware-mtouch-macos.md)) |
+| M-Play | `11be:f80c` | product "M-Play"; MTouchPlay `e48eb2c` | decoder/encoder tests, banks | **qualified** macOS 2026-10-10 ([record](probes/kb-16-hardware-mplay-macos.md)) | playback buttons, faders, both bank sections and removal while held **qualified through `run`** 2026-10-12 ([record](probes/kb-24-hardware-mplay-macos.md)); the exact lights at rest before the first press were not confirmed one by one (reported unchanged after the replug) |
+| two surfaces at once (NX-K + M-Touch, + M-Play) | — | — | `usb_surfaces.rs` 3 tests, `main.rs` loss tests | — | NX-K + M-Touch and NX-K + M-Play **qualified** in one service each, including one device removed while the other kept working ([M-Touch](probes/kb-24-hardware-mtouch-macos.md), [M-Play](probes/kb-24-hardware-mplay-macos.md) P8); all three at once not tested |
+| USB removal and return while paired | — | — | device-slot tests (keypad lost: holds released; M-Touch lost: touches ended) | unplug/replug detection **qualified** per device (KB-16) | the released holds at the console **qualified**: NX-K with Record held, M-Touch with a strip touched and a playback key held, M-Play with a button held, each released at the console and rebound on replug ([NX-K](probes/kb-24-hardware-nxk-macos.md), [M-Touch](probes/kb-24-hardware-mtouch-macos.md), [M-Play](probes/kb-24-hardware-mplay-macos.md)) |
 
 ## Scenarios of the KB-24 end-to-end pass
 
 | Scenario | Automated | Live | Where it will be recorded |
 | --- | --- | --- | --- |
-| RGB and extended-colour pages on the strips and rotaries | KB-23 Lua/Rust tests (colour sources, mixed values) | **sim** 2026-10-10 (KB-23 surface record: R/G/B, UV, mixed) | hardware pass: `probes/kb-24-hardware-*.md` |
+| RGB and extended-colour pages on the strips and rotaries | KB-23 Lua/Rust tests (colour sources, mixed values) | **sim** 2026-10-10 (KB-23 surface record: R/G/B, UV, mixed); **hardware** 2026-10-11: R/G/B/Amber on the NX-K rotaries and the M-Touch strips (UV not exercised) | `probes/kb-24-hardware-nxk-macos.md`, `…-mtouch-macos.md` |
 | Pan/Tilt | KB-19 physical-readout tests | **sim** (KB-19 record: Pan at 10 degrees per 10 clicks) | hardware pass |
 | mixed fixtures (mixed values, takeover) | strips tests | **sim** (KB-20 record) | hardware pass |
-| cue playback, momentary buttons (Temp/Flash), Go+ | banks tests, control module tests upstream | **sim** (KB-22 records: Press/Unpress Page p.e verified) | hardware pass |
-| fader pickup and supported fader functions (Master, Temp) | banks pickup tests | **sim** (KB-22) | hardware pass |
-| two connected surfaces | device-slot tests | pending | hardware pass |
-| USB removal | device-slot tests | detection qualified (KB-16); released holds pending | hardware pass |
-| plugin restart | Lua lease/forget tests, e2e lease expiry | **sim** (KB-23: stopping the plugin switched every light to unavailable) | hardware pass (physical lights) |
-| console context changes (bank, page, selection) | Lua context tests, Rust stale-generation tests | **sim** (KB-19 … KB-21) | hardware pass |
-| stale feedback | lights tests | **sim** (KB-23) | hardware pass |
+| cue playback, momentary buttons (Temp/Flash), Go+ | banks tests, control module tests upstream | **sim** (KB-22 records); **hardware** 2026-10-11/12: Go+ (PFA, the Go key) and Flash (M-Touch PFA, M-Play top button); Temp not exercised physically | hardware records |
+| fader pickup and supported fader functions (Master, Temp) | banks pickup tests | **sim** (KB-22); **hardware**: Master with pickup on the M-Touch and M-Play faders; Temp not exercised physically | hardware records |
+| two connected surfaces | device-slot tests | **hardware**: NX-K + M-Touch, NX-K + M-Play (all three at once not tested) | hardware records |
+| USB removal | device-slot tests | **hardware**: held keys, touches and buttons released at the console on all three devices; replug rebinds | hardware records |
+| plugin restart | Lua lease/forget tests, e2e lease expiry | **sim** (KB-23); **hardware**: the NX-K Link LED blinked on `Plugin 2 "stop"` and went steady on the re-pair; the M-Touch/M-Play lights on a plugin restart not exercised | `probes/kb-24-hardware-nxk-macos.md` |
+| console context changes (bank, page, selection) | Lua context tests, Rust stale-generation tests | **sim** (KB-19 … KB-21); **hardware**: encoder-bank changes (Dimmer ↔ Color) followed by the M-Touch strips, surface bank changes on both devices; an executor page change not exercised | hardware records |
+| stale feedback | lights tests | **sim** (KB-23); **hardware**: the bank-change transition shows dark (no unavailable flash, re-tested); a plugin stop blinks the NX-K Link LED | `probes/kb-24-hardware-mtouch-macos.md` |
 | latency, missed events, ordering, plugin-loop load under simultaneous use | `measure` against the stub: 15 s, pass except the stub-only artefacts below | **measured** 2026-10-10 (runs A–E against onPC): fails the proposed thresholds, three defects identified | `probes/kb-24-measure-macos.md` |
 | continuous-control traffic versus key releases and flood protection | `link.rs` saturation and ceiling tests; Lua burst test; e2e | **regressed live** before the fixes (run D: key acks 236 ms p95, 101 taps superseded, 103 lost); **clean after them** (D2: 67 ms p95, nothing lost, superseded or refused at 100 detents/s + strip + keys) | same |
 
