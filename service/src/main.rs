@@ -76,7 +76,7 @@ struct Cli {
     /// picks it up; until then the strip moves nothing and its bar shows the span to travel.
     #[arg(long, default_value_t = 0.02, global = true)]
     pb_pickup: f64,
-    /// KB-22: the executor the `Next (Go)` key of the M-Touch / M-Play presses (its key element, whatever button
+    /// KB-22: the executor the `Go` key of the M-Touch / M-Play presses (its key element, whatever button
     /// function is configured on it; on the bound page, never banked). Unmapped without it.
     #[arg(long, global = true, value_parser = clap::value_parser!(u32).range(1..=999))]
     pb_go: Option<u32>,
@@ -225,6 +225,11 @@ struct Loop {
     lights_lines_seen: Vec<String>,
     lights_block_seen: Option<String>,
     present: BTreeMap<mtouch::Model, bool>,
+    /// Hardware pass: playback keys waiting for the console to report their effect: (executor, page) -> (the
+    /// activity expected, when the key moved, the control's name). See `time_playback_keys`.
+    key_timing: BTreeMap<(u32, Option<u32>), (bool, f64, &'static str)>,
+    /// Press/release-to-activity samples in milliseconds (logged and kept for the summary).
+    pub key_effect_ms: Vec<f64>,
     /// KB-24: the measurement harness's feedback probe: a press of this NX-K key opens a probe on this console
     /// state item (the time until the item changes is a feedback-latency sample).
     probe: Option<(&'static str, String)>,
@@ -279,7 +284,7 @@ impl Loop {
         Ok(Loop { link, leds: leds::Renderer::new(), sock, started, verbose: cli.verbose, log_seen: 0, bank_held: false, bye_on_exit: true, rotary_base: cli.rotary_slots,
                   strips: strips::Strips::new(strip_cfg), strips_log_seen: 0, pushed_wheels: BTreeSet::new(),
                   banks, banks_log_seen: 0, displays: BTreeMap::new(), bar_writes: Vec::new(),
-                  lights: lights::Lights::new(lights::Config { enabled: lights_on, min_interval: cli.lights_interval as f64 / 1000.0 }), lights_lines_seen: Vec::new(), lights_block_seen: None, present: BTreeMap::new(), probe: None,
+                  lights: lights::Lights::new(lights::Config { enabled: lights_on, min_interval: cli.lights_interval as f64 / 1000.0 }), lights_lines_seen: Vec::new(), lights_block_seen: None, present: BTreeMap::new(), key_timing: BTreeMap::new(), key_effect_ms: Vec::new(), probe: None,
                   #[cfg(test)]
                   last_strip_fine: None })
     }
@@ -346,7 +351,7 @@ impl Loop {
         let strip_events = match surface.poll_strips() {
             Ok(ev) => ev,
             Err(e) => {
-                eprintln!("strips: {e:#}; ending every touch and releasing the M-Touch's playback buttons");
+                eprintln!("mtouch: {e:#}; its strip touches are ended and its playback buttons released; retrying every 2 s");
                 let outs = self.strips.disconnect();
                 self.emit_strip_outs(outs, now);
                 // Review (PR #6): the M-Touch's held playback buttons are released against their frozen targets too
@@ -394,7 +399,7 @@ impl Loop {
         let mplay_events = match surface.poll_mplay() {
             Ok(ev) => ev,
             Err(e) => {
-                eprintln!("mplay: {e:#}; releasing what it held");
+                eprintln!("mplay: {e:#}; its playback buttons and faders are released; retrying every 2 s");
                 let outs = self.banks.disconnect("mplay");
                 for o in outs {
                     self.emit_bank_out(Some(o), now);
@@ -473,11 +478,17 @@ impl Loop {
             let ctx = self.link.lighting_context(now).map(|c| &c.body);
             let strips_present = surface.device_present(mtouch::Model::MTouch);
             let strips = if self.strips.cfg.mode != strips::Mode::Off {
-                Some(lights::ParamStrips { present: strips_present, base_slot: self.strips.cfg.base_slot, touching: [self.strips.touching(1), self.strips.touching(2), self.strips.touching(3), self.strips.touching(4)] })
+                Some(lights::ParamStrips { present: strips_present, base_slot: self.strips.cfg.base_slot, touching: [self.strips.touching(1), self.strips.touching(2), self.strips.touching(3), self.strips.touching(4)], echo: [self.strips.echo_at(1, self.link.current_generation(now)), self.strips.echo_at(2, self.link.current_generation(now)), self.strips.echo_at(3, self.link.current_generation(now)), self.strips.echo_at(4, self.link.current_generation(now))] })
             } else {
                 None
             };
-            let playback = self.banks.lights_controls();
+            // Review of PR #10 (round 2): the echoes are offered for the generation of the context rendered now, which
+            // includes this step's incoming packets; a gesture started against an older generation offers none.
+            let render_cg = self.link.current_generation(now);
+            let playback = self.banks.lights_controls(render_cg);
+            // Hardware pass: a missing context while the link holds a fresh one is a rebind in flight, not staleness.
+            self.lights.set_rebinding(ctx.is_none() && self.link.in_transition(now));
+            self.lights.set_generation(self.link.current_generation(now));
             let writes = self.lights.render(&lights::Scene { ctx, strips, playback: &playback }, now);
             for (model, out) in writes {
                 surface.output(model, out);
@@ -499,6 +510,9 @@ impl Loop {
                 self.lights_lines_seen = self.lights.lines.clone();
             }
         }
+        if !self.key_timing.is_empty() {
+            self.time_playback_keys(now);
+        }
         // KB-21: the page displays show "page then bank" (blank while the page is unknown); written on change only.
         if self.banks.cfg.enabled {
             let page = self.link.console_page(now);
@@ -510,7 +524,7 @@ impl Loop {
                 let v = self.banks.display_value(i, page);
                 if self.displays.get(&s.display) != Some(&v) {
                     self.displays.insert(s.display, v);
-                    surface.output(s.model, mtouch::Output::PageDisplay { id: s.display, data: mtouch::page_display(v) });
+                    surface.output(s.model, mtouch::Output::PageDisplay { id: s.display, data: mtouch::page_bank_display(v) });
                 }
             }
         }
@@ -576,16 +590,71 @@ impl Loop {
     /// is logged (the rebind goes out from `step`).
     fn emit_bank_out(&mut self, out: Option<banks::Out>, now: f64) {
         match out {
-            Some(banks::Out::Button { dev, control, target, kind }) | Some(banks::Out::Fader { dev, control, target, kind }) => self.link.control_event(dev, control, target, kind, now),
+            Some(banks::Out::Button { dev, control, target, kind }) => {
+                if let (protocol::CtlTarget::Executor { ex, pg, .. }, link::CtlKind::Btn { down }) = (target, kind) {
+                    self.note_key_timing(ex, pg, down, control, now);
+                }
+                self.link.control_event(dev, control, target, kind, now)
+            }
+            Some(banks::Out::Fader { dev, control, target, kind }) => self.link.control_event(dev, control, target, kind, now),
             Some(banks::Out::Bar { model, id, data }) => self.bar_writes.push((model, mtouch::Output::FaderBar { id, data })),
             Some(banks::Out::Bank { .. }) | None => {}
+        }
+    }
+
+    /// The context's activity of a bound executor (`act` 1/0) and its key function, if the context lists it.
+    fn exec_activity(&self, ex: u32, pg: Option<u32>, now: f64) -> Option<(bool, Option<String>)> {
+        let ctx = self.link.context_view(now)?;
+        let exs = ctx.body.get("ex")?.as_array()?;
+        let x = exs.iter().find(|x| x.get("n").and_then(|n| n.as_u64()) == Some(ex as u64) && x.get("pg").and_then(|p| p.as_u64()).map(|p| p as u32) == pg)?;
+        let act = x.get("act").and_then(|v| v.as_u64())? == 1;
+        Some((act, x.get("kp").and_then(|v| v.as_str()).map(|s| s.to_string())))
+    }
+
+    /// Hardware pass: start timing a playback key. A down expects the executor to start running (skipped when it
+    /// already runs); an up expects it to stop only for the momentary functions (Flash, Temp).
+    fn note_key_timing(&mut self, ex: u32, pg: Option<u32>, down: bool, control: &'static str, now: f64) {
+        let Some((act, kp)) = self.exec_activity(ex, pg, now) else { return };
+        let momentary = matches!(kp.as_deref(), Some("Flash") | Some("Temp"));
+        if down && !act {
+            self.key_timing.insert((ex, pg), (true, now, control));
+        } else if !down && act && momentary {
+            self.key_timing.insert((ex, pg), (false, now, control));
+        } else {
+            self.key_timing.remove(&(ex, pg));
+        }
+    }
+
+    /// Hardware pass: log how long each timed key took to show as running/stopped in the console's context (what the
+    /// lights follow), or that it did not within 3 s.
+    fn time_playback_keys(&mut self, now: f64) {
+        let keys: Vec<(u32, Option<u32>)> = self.key_timing.keys().copied().collect();
+        for k in keys {
+            let (want, at, control) = self.key_timing[&k];
+            let seen = self.exec_activity(k.0, k.1, now).map(|(a, _)| a == want).unwrap_or(false);
+            if seen {
+                let ms = (now - at) * 1000.0;
+                self.key_effect_ms.push(ms);
+                eprintln!("playback: {control} -> executor {}: {} {:.0} ms after the key went {}", k.0, if want { "running" } else { "stopped" }, ms, if want { "down" } else { "up" });
+                self.key_timing.remove(&k);
+            } else if now - at > 3.0 {
+                eprintln!("playback: {control} -> executor {}: not reported {} within 3 s", k.0, if want { "running" } else { "stopped" });
+                self.key_timing.remove(&k);
+            }
         }
     }
 
     fn run(&mut self, surface: &mut dyn Surface, until: impl Fn(&Loop, &dyn Surface) -> bool) -> Result<()> {
         eprintln!("mtpnxk {}: {} -> plugin at {}", env!("CARGO_PKG_VERSION"), surface.name(), self.sock.peer_addr().map(|a| a.to_string()).unwrap_or_default());
         loop {
-            if let Err(e) = self.step(surface) {
+            let step_started = Instant::now();
+            let stepped = self.step(surface);
+            // Hardware pass: a step longer than the link's heartbeat interval delays every surface and the lease.
+            let took = step_started.elapsed();
+            if took >= Duration::from_millis(250) {
+                eprintln!("loop: one step took {} ms; surfaces and heartbeats were blocked meanwhile", took.as_millis());
+            }
+            if let Err(e) = stepped {
                 // The keypad went away: end every strip touch before the caller reopens the devices.
                 let now = self.now();
                 let outs = self.strips.disconnect();
@@ -672,7 +741,7 @@ mod lights_binding_tests {
 
     #[test]
     fn a_bank_change_lights_nothing_from_the_previous_bindings_context_until_the_new_one_arrives() {
-        let cli = Cli::parse_from(["mtpnxk", "sim"]);
+        let cli = test_cli();
         let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
         lp.lights.cfg.min_interval = 0.0;
         let mut plugin = Plugin { seq: 0 };
@@ -699,8 +768,10 @@ mod lights_binding_tests {
         lp.step(&mut lamp).unwrap();
         assert!(lp.link.context_view(lp.now()).is_some(), "the previous context is still held as data");
         assert!(lp.link.lighting_context(lp.now()).is_none(), "but nothing lights from it while the bind is in flight");
-        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![mtouch::LedKey::off().blue().slow().value()], "PFA1 switches to the unavailable pattern, not 101's assigned state: {:?}", lamp.outputs);
-        assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111") && l.contains("unavailable")), "{:?}", lp.lights.lines);
+        // Hardware pass: a rebind in flight is dark (not 101's assigned state, and not the stale pattern, which read as
+        // an error during a normal bank change).
+        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![0], "PFA1 goes dark, not 101's assigned state: {:?}", lamp.outputs);
+        assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111") && l.contains("rebinding")), "{:?}", lp.lights.lines);
         // The ack (revision 2) without its context: still unavailable, nothing rewritten.
         let ev = lp.link.pending_bind_ev().expect("the new bind is in flight");
         lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":1,"br":2})), lp.now());
@@ -714,8 +785,59 @@ mod lights_binding_tests {
         { let now = lp.now(); let m = plugin.context(2, json!([{"n":111,"empty":1,"tgt":0}]), w2); lp.link.receive(&m, now); }
         lamp.outputs.clear();
         lp.step(&mut lamp).unwrap();
-        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![0], "{:?}", lamp.outputs);
+        assert!(key_writes(&lamp.outputs, 0x4201).is_empty(), "already dark from the rebind: nothing to rewrite: {:?}", lamp.outputs);
         assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111: empty, dark")), "{:?}", lp.lights.lines);
+    }
+
+    #[test]
+    fn review_10_round_2_a_context_that_moves_a_touched_strip_never_relabels_its_old_prediction() {
+        // The strip stays touched while a context arrives that puts another attribute on its slot (generation 1 -> 2).
+        // The old attribute's 90 % prediction must not be drawn for the new attribute, nor settle against it.
+        // The loop's own UDP peer: the moved context is delivered over the socket so it arrives INSIDE a step (after
+        // the step's gesture checks, before its render), as it does in production.
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").expect("a test peer");
+        let cli = Cli::parse_from(["mtpnxk", "--plugin", &format!("127.0.0.1:{}", peer.local_addr().unwrap().port()), "--id", "mtpnxk-unit-test", "sim"]);
+        let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
+        lp.lights.cfg.min_interval = 0.0;
+        let mut plugin = Plugin { seq: 0 };
+        let mut lamp = Lamp { strips: VecDeque::new(), outputs: Vec::new() };
+        lp.step(&mut lamp).unwrap();
+        let nonce = lp.link.hello_nonce().expect("a hello was sent");
+        let welcome = json!({"t":"welcome","v":2,"sid":"feedfacefeedface","nonce":nonce,"gen":"1-deadbeef","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"modules":{},"input":"fake","epoch":1,"control":1,"controlBackend":"console","context":1,"seq":0});
+        lp.link.receive(&wire::frame(&welcome.to_string()), lp.now());
+        lp.step(&mut lamp).unwrap();
+        let ev = lp.link.pending_bind_ev().expect("the bind is in flight");
+        lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":1,"br":1})), lp.now());
+        let w1 = lp.banks.targets().ex;
+        let ctx = |plugin: &mut Plugin, cg: u64, name: &str, abs: f64| plugin.frame(json!({"t":"context","gen":"1-deadbeef","epoch":1,"known":1,"cg":cg,"enc":{},"ex":[],"page":1,"pool":"Default","display":1,
+            "bind":{"ex":w1.clone(),"br":1,"mode":"current"},
+            "slots":[{"n":1,"kind":"attribute","name":name,"readout":"Percent","res":"Coarse","avail":"available","val":"value","abs":abs,"vc":1}]}));
+        { let now = lp.now(); let m = ctx(&mut plugin, 1, "ColorRGB_R", 90.0); lp.link.receive(&m, now); }
+        lp.step(&mut lamp).unwrap();
+        // Touch strip 1 and move it a little: the echo starts from 90 %.
+        lamp.strips.push_back(mtouch::Event::Fader { id: 0x6112, name: "VALUE BASE CHANNEL 1", value: 100, touch: true });
+        lp.step(&mut lamp).unwrap();
+        lamp.strips.push_back(mtouch::Event::Fader { id: 0x6112, name: "VALUE BASE CHANNEL 1", value: 102, touch: true });
+        lp.step(&mut lamp).unwrap();
+        assert!(lp.strips.echo(1).is_some(), "the touched strip predicts");
+        // While still touched, a context puts Dimmer on slot 1 at 20 % (generation 2), received before the render.
+        lamp.outputs.clear();
+        let m = ctx(&mut plugin, 2, "Dimmer", 20.0);
+        peer.send_to(&m, lp.sock.local_addr().unwrap()).expect("sent to the loop");
+        std::thread::sleep(Duration::from_millis(5));
+        lp.step(&mut lamp).unwrap();
+        assert_eq!(lp.link.current_generation(lp.now()), Some(2), "the moved context arrived inside the step");
+        let bar = |outs: &[(mtouch::Model, mtouch::Output)]| outs.iter().rev().find_map(|(_, o)| match o { mtouch::Output::FaderBar { id: 0x6112, data } => Some(*data), _ => None });
+        let twenty = mtouch::bar_level(lights::leds_of(0.20), mtouch::BarColour::Blue, false);
+        assert_eq!(bar(&lamp.outputs), Some(twenty), "the new attribute's 20 %, not the old 90 %: {:?}", lamp.outputs);
+        // The next steps (still touched, then lifted) never bring the old prediction back as a settling value.
+        lamp.outputs.clear();
+        lp.step(&mut lamp).unwrap();
+        lamp.strips.push_back(mtouch::Event::Fader { id: 0x6112, name: "VALUE BASE CHANNEL 1", value: 102, touch: false });
+        lp.step(&mut lamp).unwrap();
+        lp.step(&mut lamp).unwrap();
+        assert!(bar(&lamp.outputs).map(|b| b == twenty).unwrap_or(true), "no 90 % after the context moved: {:?}", lamp.outputs);
+        assert_eq!(lp.lights.want_bar(mtouch::Model::MTouch, 0x6112), Some(twenty));
     }
 
     #[test]
@@ -723,7 +845,7 @@ mod lights_binding_tests {
         // Review of PR #8 (round 2): when the plugin refuses the new binding, the surface still maps the new
         // bank, so the previous binding's context must not light the controls (that would show the new bank's
         // controls with the old bank's feedback, or as empty).
-        let cli = Cli::parse_from(["mtpnxk", "sim"]);
+        let cli = test_cli();
         let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
         lp.lights.cfg.min_interval = 0.0;
         let mut plugin = Plugin { seq: 0 };
@@ -744,7 +866,7 @@ mod lights_binding_tests {
         lamp.strips.push_back(mtouch::Event::KeyDown { id: 0x4111, name: "PLAYBACK BANK Up (+)" });
         lp.step(&mut lamp).unwrap();
         let ev = lp.link.pending_bind_ev().expect("the new bind is in flight");
-        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![mtouch::LedKey::off().blue().slow().value()], "unavailable while in flight");
+        assert_eq!(key_writes(&lamp.outputs, 0x4201), vec![0], "dark while in flight (the rebind grace)");
         // The plugin REFUSES the new binding and keeps [101..110]; it resends its unchanged context.
         lamp.outputs.clear();
         lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":0,"code":"bad-bind","why":"cannot watch in full"})), lp.now());
@@ -752,6 +874,11 @@ mod lights_binding_tests {
         { let now = lp.now(); let m = plugin.context(1, json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Go+","fd":"Master","lvl":100,"act":0,"col":"ff0000"}]), w1.clone()); lp.link.receive(&m, now); }
         lp.step(&mut lamp).unwrap();
         assert!(lp.link.lighting_context(lp.now()).is_none(), "the refused bind must not re-enable lighting from the old context");
+        assert!(key_writes(&lamp.outputs, 0x4201).is_empty(), "still dark inside the grace: {:?}", lamp.outputs);
+        // A refused bind never resolves: past the grace it is staleness and shows the unavailable pattern.
+        lp.lights.age_rebind(lights::REBIND_GRACE + 0.1);
+        lamp.outputs.clear();
+        lp.step(&mut lamp).unwrap();
         assert!(key_writes(&lamp.outputs, 0x4201).iter().all(|&v| v != mtouch::LedKey::off().blue().value() && v != 0), "PFA1 is neither 101's assigned nor dark: {:?}", lamp.outputs);
         assert!(lp.lights.lines.iter().any(|l| l.contains("PFA1 ex111") && l.contains("unavailable")), "PFA1 is shown unavailable, mapped to 111: {:?}", lp.lights.lines);
     }
@@ -812,7 +939,7 @@ mod keypad_loss_tests {
     }
 
     fn test_loop() -> Loop {
-        let cli = Cli::parse_from(["mtpnxk", "sim"]);
+        let cli = test_cli();
         Loop::new(&cli).expect("a loop on an ephemeral socket")
     }
     fn strip1(value: u8, touch: bool) -> mtouch::Event {
@@ -906,6 +1033,17 @@ fn percentiles(label: &str, samples: &[f64]) {
     s.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let p = |q: f64| s[((s.len() - 1) as f64 * q).round() as usize];
     println!("{label}: n={} median={:.1} p95={:.1} p99={:.1} worst={:.1} ms", s.len(), p(0.5), p(0.95), p(0.99), s[s.len() - 1]);
+}
+
+/// Hardware-pass finding (2026-10-11): unit tests that build the real loop used the default `--plugin`
+/// (127.0.0.1:9810), so `cargo test` sent hellos as `nxk-host` to a live plugin and replaced the running service's
+/// session ("replaced-by-hello"). Tests point at a local sink that nobody answers.
+#[cfg(test)]
+fn test_cli() -> Cli {
+    let sink = std::net::UdpSocket::bind("127.0.0.1:0").expect("binding a test sink");
+    let port = sink.local_addr().expect("sink address").port();
+    std::mem::forget(sink);
+    Cli::parse_from(["mtpnxk", "--plugin", &format!("127.0.0.1:{port}"), "--id", "mtpnxk-unit-test", "sim"])
 }
 
 fn main() -> Result<()> {
@@ -1084,9 +1222,10 @@ mod local_transport_tests {
         for args in [vec!["mtpnxk", "--key", "abc", "sim"], vec!["mtpnxk", "--key-file", "secret", "sim"], vec!["mtpnxk", "keygen"]] {
             assert!(Cli::try_parse_from(args).is_err());
         }
-        let cli = Cli::parse_from(["mtpnxk", "sim"]);
+        let cli = test_cli();
         let lp = Loop::new(&cli).unwrap();
         assert_eq!(lp.sock.local_addr().unwrap().ip(), std::net::IpAddr::V4(Ipv4Addr::LOCALHOST));
         assert_eq!(lp.sock.peer_addr().unwrap().ip(), std::net::IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_ne!(lp.sock.peer_addr().unwrap().port(), 9810, "tests never address the default plugin port");
     }
 }

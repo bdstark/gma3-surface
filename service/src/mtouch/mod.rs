@@ -58,6 +58,14 @@ impl Model {
         }
     }
 
+    /// The prefix of every device-level log line (hardware pass: one prefix per device, as `nxk:` for the NX-K).
+    pub fn tag(self) -> &'static str {
+        match self {
+            Model::MTouch => "mtouch",
+            Model::MPlay => "mplay",
+        }
+    }
+
     pub fn pid(self) -> u16 {
         match self {
             Model::MTouch => PID_MTOUCH,
@@ -118,7 +126,7 @@ pub const CONTROLS_MTOUCH: &[Control] = &[
     c(0x5101, 'K', "COMMAND EDIT"), c(0x5103, 'K', "COMMAND CLEAR"),
     c(0x5401, 'K', "COMMAND RECORD"), c(0x5402, 'K', "COMMAND UPDATE"), c(0x5411, 'K', "COMMAND LOAD"),
     c(0x5502, 'K', "SELECT"), c(0x5503, 'K', "RELEASE (Rel)"), c(0x5504, 'K', "BEAT"),
-    c(0x5511, 'K', "SNAP"), c(0x5512, 'K', "Pause (||/Back)"), c(0x5513, 'K', "Next (Go)"),
+    c(0x5511, 'K', "SNAP"), c(0x5512, 'K', "Pause (||/Back)"), c(0x5513, 'K', "Go"),
     c(0x5801, 'V', "MF 1"), c(0x5802, 'V', "MF 2"), c(0x5803, 'V', "MF 3"), c(0x5804, 'V', "MF 4"), c(0x5805, 'V', "MF 5"),
     c(0x5806, 'V', "MF 6"), c(0x5807, 'V', "MF 7"), c(0x5808, 'V', "MF 8"), c(0x5809, 'V', "MF 9"), c(0x580A, 'V', "MF 10"),
     c(0x5812, 'L', "MF mode LED Playback"), c(0x5813, 'L', "MF mode LED F-key"), c(0x5814, 'L', "MF mode LED Base"), c(0x5815, 'L', "MF mode LED Effect"),
@@ -137,7 +145,7 @@ pub const CONTROLS_MTOUCH: &[Control] = &[
 /// + 0x10*(n-1); two page displays 0x9F01 (left) and 0x9E01 (right). mplay-notes.md.
 pub const CONTROLS_MPLAY: &[Control] = &[
     c(0x5502, 'K', "SELECT"), c(0x5503, 'K', "RELEASE (Rel)"), c(0x5504, 'K', "BEAT"),
-    c(0x5511, 'K', "SNAP"), c(0x5512, 'K', "Pause (||/Back)"), c(0x5513, 'K', "Next (Go)"),
+    c(0x5511, 'K', "SNAP"), c(0x5512, 'K', "Pause (||/Back)"), c(0x5513, 'K', "Go"),
     c(0x7110, 'B', "BackLight"),
     c(0x9203, 'F', "FADER LEVEL 1"), c(0x9213, 'F', "FADER LEVEL 2"), c(0x9223, 'F', "FADER LEVEL 3"), c(0x9233, 'F', "FADER LEVEL 4"),
     c(0x9243, 'F', "FADER LEVEL 5"), c(0x9253, 'F', "FADER LEVEL 6"), c(0x9263, 'F', "FADER LEVEL 7"), c(0x9273, 'F', "FADER LEVEL 8"),
@@ -496,10 +504,43 @@ pub fn page_display(n: Option<u16>) -> [u8; 6] {
     out
 }
 
-/// The digits a `page_display` payload shows, as text (`"-"` for a blank display), for logs and tests.
+/// The decimal-point segment of a 7-segment digit (bit 7; the digit masks use bits 0-6).
+pub const SEG_DP: u8 = 0x80;
+
+/// Hardware pass (finding 6): a playback section's display as `page.bank` (`1.1` = page 1, bank 1): the page's last
+/// digit carries the decimal point, the bank is the last digit. `v` is the banks' `page x 10 + bank` value; a value
+/// below 10 is the bank alone (a page beyond two digits) and shows without a point; None is blank.
+pub fn page_bank_display(v: Option<u16>) -> [u8; 6] {
+    let Some(v) = v else { return [0u8; 6] };
+    if v < 10 {
+        return page_display(Some(v));
+    }
+    let (page, bank) = (v / 10, v % 10);
+    let mut out = [0u8; 6];
+    out[2] = SEG[bank as usize];
+    out[3] = SEG[(page % 10) as usize] | SEG_DP;
+    if page >= 10 {
+        out[4] = SEG[((page / 10) % 10) as usize];
+    }
+    out
+}
+
+/// The digits a `page_display` payload shows, as text (`"-"` for a blank display), for logs and tests; a digit with
+/// the decimal point is followed by `.`.
 pub fn page_display_text(data: &[u8; 6]) -> String {
-    let digit = |b: u8| SEG.iter().position(|s| *s == b).map(|d| char::from(b'0' + d as u8));
-    let s: String = [data[4], data[3], data[2]].iter().filter_map(|b| if *b == 0 { None } else { digit(*b) }).collect();
+    let digit = |b: u8| SEG.iter().position(|s| *s == (b & !SEG_DP)).map(|d| char::from(b'0' + d as u8));
+    let mut s = String::new();
+    for b in [data[4], data[3], data[2]] {
+        if b == 0 {
+            continue;
+        }
+        if let Some(c) = digit(b) {
+            s.push(c);
+            if b & SEG_DP != 0 {
+                s.push('.');
+            }
+        }
+    }
     if s.is_empty() { "-".into() } else { s }
 }
 
@@ -1002,5 +1043,18 @@ mod tests {
         assert_eq!(Model::from_pid(0xF80C), Some(MPlay));
         assert_eq!(Model::from_pid(0xE102), None);
         assert_eq!((MTouch.bank_units(), MPlay.bank_units()), (0x0A, 0x0C));
+    }
+
+    #[test]
+    fn the_playback_display_shows_page_dot_bank() {
+        assert_eq!(page_display_text(&page_bank_display(Some(11))), "1.1");
+        assert_eq!(page_display_text(&page_bank_display(Some(32))), "3.2");
+        assert_eq!(page_display_text(&page_bank_display(Some(129))), "12.9", "a two-digit page");
+        assert_eq!(page_display_text(&page_bank_display(Some(2))), "2", "a page beyond two digits: the bank alone, no point");
+        assert_eq!(page_display_text(&page_bank_display(None)), "-");
+        let d = page_bank_display(Some(11));
+        assert_eq!(d[3] & SEG_DP, SEG_DP, "the page digit carries the decimal point");
+        assert_eq!(d[2] & SEG_DP, 0);
+        assert_eq!(page_display_text(&page_display(Some(42))), "42", "the plain display is unchanged");
     }
 }

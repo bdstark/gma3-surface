@@ -80,6 +80,9 @@ pub struct PlaybackControl {
     pub held: bool,
     /// KB-22: the fader is touched and waiting for pickup: the bar shows the span and is not ours.
     pub pickup_pending: bool,
+    /// Hardware pass (local echo): a touched, picked-up playback fader's own position (0..1), shown as the level while
+    /// touched so the bar follows the finger; the read-back takes over at the lift.
+    pub echo: Option<f64>,
 }
 
 /// The M-Touch's parameter strips as the loop maps them.
@@ -88,6 +91,9 @@ pub struct ParamStrips {
     pub present: bool,
     pub base_slot: u8,
     pub touching: [bool; 4],
+    /// Hardware pass (local echo): the predicted value of each touched strip (`Strips::echo`), shown instead of the
+    /// read-back while touched so the bar follows the finger.
+    pub echo: [Option<f64>; 4],
 }
 
 /// Everything one render needs.
@@ -366,11 +372,88 @@ pub struct Lights {
     last_flush: Option<f64>,
     /// The textual state of every control (`describe`), rebuilt each render.
     pub lines: Vec<String>,
+    /// Hardware pass: a fresh context exists but belongs to the previous binding (a bank change in flight): set by the
+    /// caller before each render (`set_rebinding`), and since when.
+    rebinding: bool,
+    rebind_since: Option<f64>,
+    /// Hardware pass: the last echoed value of each bar (while touched) and, after the lift, the value held until the
+    /// read-back agrees (value, since).
+    last_echo: BTreeMap<(Model, u16), (f64, String)>,
+    settling: BTreeMap<(Model, u16), (f64, f64, String)>,
+    /// Review of PR #10: the binding generation the predictions belong to (set by the caller with `set_rebinding`'s
+    /// sibling `set_generation`); part of every prediction's target identity.
+    generation: Option<u64>,
 }
+
+/// Hardware pass: how long a rebind (fresh context, previous binding) is shown dark before it counts as stale. A bank
+/// change completes in a few hundred milliseconds; showing the unavailable pattern for that gap read as an error.
+pub const REBIND_GRACE: f64 = 2.0;
+
+/// Hardware pass: after a lift, a bar keeps its last echoed value until the read-back agrees within one LED or this
+/// long has passed (the read-back lags the finger; showing the older read value made the bar snap back).
+pub const SETTLE_S: f64 = 1.0;
 
 impl Lights {
     pub fn new(cfg: Config) -> Lights {
-        Lights { cfg, stats: Stats::default(), last: BTreeMap::new(), want: BTreeMap::new(), lit: BTreeMap::new(), last_flush: None, lines: Vec::new() }
+        Lights { cfg, stats: Stats::default(), last: BTreeMap::new(), want: BTreeMap::new(), lit: BTreeMap::new(), last_flush: None, lines: Vec::new(), rebinding: false, rebind_since: None, last_echo: BTreeMap::new(), settling: BTreeMap::new(), generation: None }
+    }
+
+    /// Hardware pass: the value a bar shows instead of the read-back: the echo while touched, then the last echo
+    /// until the read-back (`read`, in LEDs) agrees within one LED or SETTLE_S has passed.
+    /// Review of PR #10: a prediction belongs to one target (`ident`: the executor or slot and the binding generation);
+    /// a different target on the same bar (a bank change, a rebind, another attribute) drops it, so an old prediction
+    /// is never shown for, or settled against, a new target.
+    fn echo_or_settle(&mut self, key: (Model, u16), ident: &str, echo: Option<f64>, read: Option<u8>, now: f64) -> Option<f64> {
+        if self.last_echo.get(&key).map(|(_, i)| i != ident).unwrap_or(false) {
+            self.last_echo.remove(&key);
+        }
+        if self.settling.get(&key).map(|(_, _, i)| i != ident).unwrap_or(false) {
+            self.settling.remove(&key);
+        }
+        if let Some(e) = echo {
+            self.last_echo.insert(key, (e, ident.to_string()));
+            self.settling.remove(&key);
+            return Some(e);
+        }
+        if let Some((e, i)) = self.last_echo.remove(&key) {
+            self.settling.insert(key, (e, now, i));
+        }
+        if let Some((e, since, _)) = self.settling.get(&key).cloned() {
+            let agrees = read.map(|r| (r as i32 - leds_of(e) as i32).abs() <= 1).unwrap_or(false);
+            if agrees || now - since >= SETTLE_S {
+                self.settling.remove(&key);
+                return None;
+            }
+            return Some(e);
+        }
+        None
+    }
+
+    /// Tests: what a bar is set to show (the latest computed state).
+    #[cfg(test)]
+    pub fn want_bar(&self, model: Model, id: u16) -> Option<[u8; 9]> {
+        match self.want.get(&(model, id)) { Some(Want::Bar(d)) => Some(*d), _ => None }
+    }
+
+    /// Review of PR #10: the binding generation of the context being rendered (`Link::current_generation`).
+    pub fn set_generation(&mut self, generation: Option<u64>) {
+        if generation != self.generation {
+            self.generation = generation;
+        }
+    }
+
+    /// Hardware pass: whether the missing context is a rebind in flight (the link has a fresh context of the previous
+    /// binding) rather than staleness. Call before `render`.
+    pub fn set_rebinding(&mut self, rebinding: bool) {
+        self.rebinding = rebinding;
+    }
+
+    /// Tests: pretend the current rebind started `secs` earlier (the loop's clock is real time).
+    #[cfg(test)]
+    pub fn age_rebind(&mut self, secs: f64) {
+        if let Some(t) = self.rebind_since.as_mut() {
+            *t -= secs;
+        }
     }
 
     /// A write another part of the loop made to a light (the banks' pickup bar): the cache follows it.
@@ -402,7 +485,15 @@ impl Lights {
         let mut lit: BTreeMap<(Model, u16), BarColour> = BTreeMap::new();
         let mut lines = Vec::new();
         let stale = scene.ctx.is_none();
-        if stale {
+        // A rebind in flight is shown dark (nothing old identifies the new mapping, nothing claims staleness) for up to
+        // REBIND_GRACE; after that, or for any other missing context, the unavailable pattern.
+        if stale && self.rebinding {
+            self.rebind_since.get_or_insert(now);
+        } else {
+            self.rebind_since = None;
+        }
+        let dark_rebind = stale && self.rebind_since.map(|t| now - t < REBIND_GRACE).unwrap_or(false);
+        if stale && !dark_rebind {
             self.stats.stale_renders += 1;
         }
         // Parameter strips (M-Touch base channels, blue only).
@@ -420,7 +511,16 @@ impl Lights {
                             let vs = value_state(slot);
                             let key = if !adjustable { LedKey::off() } else if touching { LedKey::off().blue().fast() } else { LedKey::off().blue() };
                             want.insert((Model::MTouch, key_id), Want::Key(key.value()));
-                            want.insert((Model::MTouch, bar_id), Want::Bar(value_bar(vs, BarColour::Blue)));
+                            // Local echo while touched, then held after the lift until the read-back agrees; never
+                            // over a mixed selection.
+                            let echo = if touching { st.echo[(n - 1) as usize] } else { None };
+                            let read = match vs { ValueState::Level(l) | ValueState::LevelIncomplete(l) => Some(l), _ => None };
+                            let ident = format!("slot{slot_no}|{}|g{:?}", slot.and_then(|s| s.get("name")).and_then(|v| v.as_str()).unwrap_or("?"), self.generation);
+                            let shown = match self.echo_or_settle((Model::MTouch, bar_id), &ident, echo, read, now) {
+                                Some(e) if vs != ValueState::Mixed => ValueState::Level(leds_of(e)),
+                                _ => vs,
+                            };
+                            want.insert((Model::MTouch, bar_id), Want::Bar(value_bar(shown, BarColour::Blue)));
                             if adjustable {
                                 lit.insert((Model::MTouch, key_id), BarColour::Blue);
                             }
@@ -430,18 +530,22 @@ impl Lights {
                             lines.push(describe_slot(n, slot_no, slot, vs, touching));
                         }
                         None => {
-                            // Unavailable: what was lit blinks, what was dark stays dark.
+                            // Unavailable: what was lit blinks, what was dark stays dark (a rebind in flight: all dark).
                             let key_lit = self.lit.contains_key(&(Model::MTouch, key_id));
                             let bar_lit = self.lit.contains_key(&(Model::MTouch, bar_id));
-                            want.insert((Model::MTouch, key_id), Want::Key(if key_lit { LedKey::off().blue().slow().value() } else { 0 }));
-                            want.insert((Model::MTouch, bar_id), Want::Bar(if bar_lit { stale_bar(BarColour::Blue) } else { [0u8; 9] }));
+                            want.insert((Model::MTouch, key_id), Want::Key(if key_lit && !dark_rebind { LedKey::off().blue().slow().value() } else { 0 }));
+                            want.insert((Model::MTouch, bar_id), Want::Bar(if bar_lit && !dark_rebind { stale_bar(BarColour::Blue) } else { [0u8; 9] }));
                             if key_lit {
                                 lit.insert((Model::MTouch, key_id), BarColour::Blue);
                             }
                             if bar_lit {
                                 lit.insert((Model::MTouch, bar_id), BarColour::Blue);
                             }
-                            lines.push(format!("strip{n} slot{slot_no}: unavailable (no fresh context){}", if key_lit || bar_lit { ", shown as unavailable" } else { ", dark" }));
+                            if dark_rebind {
+                                lines.push(format!("strip{n} slot{slot_no}: rebinding (the new binding's context has not arrived), dark"));
+                            } else {
+                                lines.push(format!("strip{n} slot{slot_no}: unavailable (no fresh context){}", if key_lit || bar_lit { ", shown as unavailable" } else { ", dark" }));
+                            }
                         }
                     }
                 }
@@ -471,7 +575,12 @@ impl Lights {
                                 continue;
                             }
                             let (colour, _) = x.map(exec_colour).unwrap_or((BarColour::Green, ColourSource::Neutral));
-                            let lvl = x.filter(|x| is_target(x)).and_then(level);
+                            // Local echo: a touched, picked-up fader's own position is the level it is setting; after
+                            // the lift it is held until the read-back agrees.
+                            let read = x.filter(|x| is_target(x)).and_then(level);
+                            let ident = format!("ex{}|{:?}|g{:?}", c.ex, c.pg, self.generation);
+                            let held = self.echo_or_settle(key, &ident, c.echo, read.map(leds_of), now);
+                            let lvl = x.filter(|x| is_target(x)).and_then(|_| held.or(read));
                             let data = match lvl {
                                 Some(l) => mtouch::bar_level(leds_of(l), colour, false),
                                 None => [0u8; 9],
@@ -491,7 +600,8 @@ impl Lights {
                 }
                 None => {
                     let was_lit = self.lit.get(&key).copied();
-                    let w = match (c.light, was_lit) {
+                    let shown_lit = if dark_rebind { None } else { was_lit };
+                    let w = match (c.light, shown_lit) {
                         (_, None) => match c.light {
                             Light::BarRgb => Want::Bar([0u8; 9]),
                             _ => Want::Key(0),
@@ -511,10 +621,24 @@ impl Lights {
                         lit.insert(key, col);
                     }
                     if describes(c) {
-                        lines.push(format!("{} {} ex{}{}: unavailable (no fresh context){}", c.model.name(), c.control, c.ex, pg_text(c.pg), if was_lit.is_some() { ", shown as unavailable" } else { ", dark" }));
+                        if dark_rebind {
+                            lines.push(format!("{} {} ex{}{}: rebinding (the new binding's context has not arrived), dark", c.model.name(), c.control, c.ex, pg_text(c.pg)));
+                        } else {
+                            lines.push(format!("{} {} ex{}{}: unavailable (no fresh context){}", c.model.name(), c.control, c.ex, pg_text(c.pg), if was_lit.is_some() { ", shown as unavailable" } else { ", dark" }));
+                        }
                     }
                 }
             }
+        }
+        // Review of PR #10: no prediction survives a stale or transitional frame, or a control that is no longer
+        // rendered (its device gone, its section unbound).
+        if stale {
+            self.last_echo.clear();
+            self.settling.clear();
+        } else {
+            let wanted: std::collections::BTreeSet<(Model, u16)> = want.keys().copied().collect();
+            self.last_echo.retain(|k, _| wanted.contains(k));
+            self.settling.retain(|k, _| wanted.contains(k));
         }
         self.lit = lit;
         self.lines = lines;
@@ -609,7 +733,7 @@ mod tests {
         m
     }
     fn pb(model: Model, id: u16, light: Light, control: &'static str, ex: u32, held: bool, pickup: bool) -> PlaybackControl {
-        PlaybackControl { model, id, light, control, ex, pg: None, held, pickup_pending: pickup }
+        PlaybackControl { model, id, light, control, ex, pg: None, held, pickup_pending: pickup, echo: None }
     }
     fn bar_of(writes: &[(Model, Output)], id: u16) -> Option<[u8; 9]> {
         writes.iter().find_map(|(_, o)| match o { Output::FaderBar { id: i, data } if *i == id => Some(*data), _ => None })
@@ -680,7 +804,7 @@ mod tests {
             { "n": 4, "kind": "empty" }
         ]), json!([]));
         let mut l = Lights::new(fast());
-        let strips = ParamStrips { present: true, base_slot: 1, touching: [false, false, true, false] };
+        let strips = ParamStrips { present: true, base_slot: 1, touching: [false, false, true, false], echo: [None; 4] };
         let w = l.render(&Scene { ctx: Some(&c), strips: Some(strips), playback: &[] }, 1.0);
         assert_eq!(bar_of(&w, param_bar_id(1)), Some(mtouch::bar_level(5, BarColour::Blue, false)), "a single complete value is five blue LEDs");
         assert_eq!(key_of(&w, param_key_id(1)), Some(LedKey::off().blue().value()));
@@ -691,7 +815,7 @@ mod tests {
         assert!(l.lines.iter().any(|s| s.contains("ColorRGB_R \"R\" Color/RGB colour=Red (Definition") && s.contains("50% single (5/10)")), "{:?}", l.lines);
         assert!(l.lines.iter().any(|s| s.contains("mixed (end LEDs blinking)")));
         // touching the adjustable strip 1 fast-blinks its key; nothing else changes (one write)
-        let strips2 = ParamStrips { present: true, base_slot: 1, touching: [true, false, false, false] };
+        let strips2 = ParamStrips { present: true, base_slot: 1, touching: [true, false, false, false], echo: [None; 4] };
         let w2 = l.render(&Scene { ctx: Some(&c), strips: Some(strips2), playback: &[] }, 2.0);
         assert_eq!(w2.len(), 1);
         assert_eq!(key_of(&w2, param_key_id(1)), Some(LedKey::off().blue().fast().value()));
@@ -737,7 +861,7 @@ mod tests {
             pb(Model::MTouch, 0x4205, Light::KeyRedGreen, "PFD1", 201, false, false),
             pb(Model::MTouch, 0x4202, Light::KeyBlue, "PFB1", 301, false, false),
         ];
-        let strips = ParamStrips { present: true, base_slot: 1, touching: [false; 4] };
+        let strips = ParamStrips { present: true, base_slot: 1, touching: [false; 4], echo: [None; 4] };
         let mut l = Lights::new(fast());
         let _ = l.render(&Scene { ctx: Some(&c), strips: Some(strips.clone()), playback: &controls }, 1.0);
         let w = l.render(&Scene { ctx: None, strips: Some(strips.clone()), playback: &controls }, 2.0);
@@ -794,5 +918,114 @@ mod tests {
         // disabled: nothing is written
         let mut off = Lights::new(Config { enabled: false, min_interval: 0.0 });
         assert!(off.render(&Scene { ctx: Some(&c1), strips: None, playback: &controls }, 1.0).is_empty());
+    }
+
+    #[test]
+    fn a_touched_strip_and_a_picked_up_fader_show_the_echo_and_hand_back_at_the_lift() {
+        let mut l = Lights::new(fast());
+        let c = ctx(json!([{"n":1,"kind":"attribute","name":"ColorRGB_R","avail":"available","val":"value","abs":40.0,"vc":1}]),
+                    json!([{"n":201,"tgt":1,"cls":"Sequence","name":"A","fd":"Master","lvl":30,"act":1,"col":"00ff00"}]));
+        let pbs = vec![PlaybackControl { echo: Some(0.9), ..pb(Model::MTouch, 0x4203, Light::BarRgb, "PB1", 201, true, false) }];
+        let strips = ParamStrips { present: true, base_slot: 1, touching: [true, false, false, false], echo: [Some(0.8), None, None, None] };
+        let w = l.render(&Scene { ctx: Some(&c), strips: Some(strips), playback: &pbs }, 0.0);
+        assert_eq!(bar_of(&w, param_bar_id(1)), Some(mtouch::bar_level(8, BarColour::Blue, false)), "the strip shows its echo (80 %), not the read-back 40 %");
+        assert_eq!(bar_of(&w, 0x4203), Some(mtouch::bar_level(9, BarColour::Green, false)), "the fader shows its position (90 %), not the read-back 30 %");
+        // The lift: no echo, the read-back again.
+        let pbs = vec![pb(Model::MTouch, 0x4203, Light::BarRgb, "PB1", 201, false, false)];
+        let strips = ParamStrips { present: true, base_slot: 1, touching: [false; 4], echo: [None; 4] };
+        // The read-back (40 %, 30 %) disagrees with what was set: the bars hold the echo, then the console's value
+        // after SETTLE_S.
+        let w = l.render(&Scene { ctx: Some(&c), strips: Some(strips.clone()), playback: &pbs }, 0.1);
+        assert_eq!(bar_of(&w, param_bar_id(1)), None, "held at the echoed 80 %");
+        let w = l.render(&Scene { ctx: Some(&c), strips: Some(strips), playback: &pbs }, 0.1 + SETTLE_S + 0.01);
+        assert_eq!(bar_of(&w, param_bar_id(1)), Some(mtouch::bar_level(4, BarColour::Blue, false)));
+        assert_eq!(bar_of(&w, 0x4203), Some(mtouch::bar_level(3, BarColour::Green, false)));
+        // A mixed selection never shows a single echoed level.
+        let m = ctx(json!([{"n":1,"kind":"attribute","name":"ColorRGB_R","avail":"mixed","val":"mixed","abs":40.0,"vc":1}]), json!([]));
+        let strips = ParamStrips { present: true, base_slot: 1, touching: [true, false, false, false], echo: [Some(0.8), None, None, None] };
+        let w = l.render(&Scene { ctx: Some(&m), strips: Some(strips), playback: &[] }, 5.0);
+        assert_eq!(bar_of(&w, param_bar_id(1)), Some(mixed_bar(BarColour::Blue)));
+    }
+
+    #[test]
+    fn a_rebind_in_flight_is_dark_for_the_grace_then_unavailable() {
+        let mut l = Lights::new(fast());
+        let c = ctx(json!([]), json!([{"n":201,"tgt":1,"cls":"Sequence","name":"A","fd":"Master","lvl":30,"act":0}]));
+        let pbs = vec![pb(Model::MTouch, 0x4205, Light::KeyRedGreen, "PB1", 201, false, false)];
+        let w = l.render(&Scene { ctx: Some(&c), strips: None, playback: &pbs }, 0.0);
+        assert_eq!(key_of(&w, 0x4205), Some(key_red_green(PlaybackState::Assigned).value()));
+        l.set_rebinding(true);
+        let w = l.render(&Scene { ctx: None, strips: None, playback: &pbs }, 0.1);
+        assert_eq!(key_of(&w, 0x4205), Some(0), "a bank change in flight is dark, not the stale pattern");
+        assert_eq!(l.stats.stale_renders, 0);
+        let w = l.render(&Scene { ctx: None, strips: None, playback: &pbs }, 0.1 + REBIND_GRACE + 0.01);
+        assert_eq!(key_of(&w, 0x4205), Some(key_red_green(PlaybackState::Unavailable).value()), "past the grace it is staleness");
+        // Plain staleness (no rebind) is the pattern at once.
+        let mut s = Lights::new(fast());
+        s.render(&Scene { ctx: Some(&c), strips: None, playback: &pbs }, 0.0);
+        let w = s.render(&Scene { ctx: None, strips: None, playback: &pbs }, 0.1);
+        assert_eq!(key_of(&w, 0x4205), Some(key_red_green(PlaybackState::Unavailable).value()));
+    }
+    #[test]
+    fn after_the_lift_the_bar_holds_the_echo_until_the_read_back_agrees_or_the_settle_time_passes() {
+        let mut l = Lights::new(fast());
+        let old = ctx(json!([{"n":1,"kind":"attribute","name":"ColorRGB_R","avail":"available","val":"value","abs":20.0,"vc":1}]), json!([]));
+        let touched = ParamStrips { present: true, base_slot: 1, touching: [true, false, false, false], echo: [Some(0.8), None, None, None] };
+        l.render(&Scene { ctx: Some(&old), strips: Some(touched), playback: &[] }, 0.0);
+        let lifted = ParamStrips { present: true, base_slot: 1, touching: [false; 4], echo: [None; 4] };
+        // The read-back still says 20 %: the bar keeps 80 % (no snap back).
+        let w = l.render(&Scene { ctx: Some(&old), strips: Some(lifted.clone()), playback: &[] }, 0.1);
+        assert_eq!(bar_of(&w, param_bar_id(1)), None, "unchanged: still the echoed 8 LEDs");
+        assert_eq!(l.want.get(&(Model::MTouch, param_bar_id(1))), Some(&Want::Bar(mtouch::bar_level(8, BarColour::Blue, false))));
+        // The read-back arrives at 79 %: it agrees within one LED, the read value takes over.
+        let new = ctx(json!([{"n":1,"kind":"attribute","name":"ColorRGB_R","avail":"available","val":"value","abs":72.0,"vc":1}]), json!([]));
+        l.render(&Scene { ctx: Some(&new), strips: Some(lifted.clone()), playback: &[] }, 0.3);
+        assert_eq!(l.want.get(&(Model::MTouch, param_bar_id(1))), Some(&Want::Bar(mtouch::bar_level(leds_of(0.72), BarColour::Blue, false))));
+        // A read-back that never agrees is shown after SETTLE_S.
+        let mut m = Lights::new(fast());
+        m.render(&Scene { ctx: Some(&old), strips: Some(ParamStrips { present: true, base_slot: 1, touching: [true, false, false, false], echo: [Some(0.8), None, None, None] }), playback: &[] }, 0.0);
+        m.render(&Scene { ctx: Some(&old), strips: Some(lifted.clone()), playback: &[] }, 0.1);
+        m.render(&Scene { ctx: Some(&old), strips: Some(lifted), playback: &[] }, 0.1 + SETTLE_S + 0.01);
+        assert_eq!(m.want.get(&(Model::MTouch, param_bar_id(1))), Some(&Want::Bar(mtouch::bar_level(2, BarColour::Blue, false))), "the console's value wins after the settle time");
+    }
+
+    #[test]
+    fn review_10_a_prediction_never_crosses_to_another_target_or_survives_a_transition() {
+        // Executor 201 echoed at 90 %, then the lift (settling), then a bank change: the bar now means 211, which
+        // reports 20 %. The old 90 % must not appear on 211.
+        let mut l = Lights::new(fast());
+        l.set_generation(Some(1));
+        let c1 = ctx(json!([]), json!([{"n":201,"tgt":1,"cls":"Sequence","name":"A","fd":"Master","lvl":30,"act":1,"col":"00ff00"},
+                                       {"n":211,"tgt":1,"cls":"Sequence","name":"B","fd":"Master","lvl":20,"act":0,"col":"00ff00"}]));
+        let on201 = vec![PlaybackControl { echo: Some(0.9), ..pb(Model::MTouch, 0x4203, Light::BarRgb, "PB1", 201, true, false) }];
+        l.render(&Scene { ctx: Some(&c1), strips: None, playback: &on201 }, 0.0);
+        let lifted = vec![pb(Model::MTouch, 0x4203, Light::BarRgb, "PB1", 201, false, false)];
+        l.render(&Scene { ctx: Some(&c1), strips: None, playback: &lifted }, 0.05);
+        assert_eq!(l.want.get(&(Model::MTouch, 0x4203)), Some(&Want::Bar(mtouch::bar_level(9, BarColour::Green, false))), "settling on 201");
+        let on211 = vec![pb(Model::MTouch, 0x4203, Light::BarRgb, "PB1", 211, false, false)];
+        l.render(&Scene { ctx: Some(&c1), strips: None, playback: &on211 }, 0.1);
+        assert_eq!(l.want.get(&(Model::MTouch, 0x4203)), Some(&Want::Bar(mtouch::bar_level(2, BarColour::Green, false))), "211's own 20 %, not 201's 90 %");
+        // A new binding generation on the same executor drops the prediction too.
+        let mut g = Lights::new(fast());
+        g.set_generation(Some(1));
+        g.render(&Scene { ctx: Some(&c1), strips: None, playback: &on201 }, 0.0);
+        g.render(&Scene { ctx: Some(&c1), strips: None, playback: &lifted }, 0.05);
+        g.set_generation(Some(2));
+        g.render(&Scene { ctx: Some(&c1), strips: None, playback: &lifted }, 0.1);
+        assert_eq!(g.want.get(&(Model::MTouch, 0x4203)), Some(&Want::Bar(mtouch::bar_level(3, BarColour::Green, false))), "rebound: the read-back 30 %");
+        // A stale or transitional frame clears every prediction: after it the read-back shows, not the old echo.
+        let mut s = Lights::new(fast());
+        s.set_generation(Some(1));
+        s.render(&Scene { ctx: Some(&c1), strips: None, playback: &on201 }, 0.0);
+        s.render(&Scene { ctx: None, strips: None, playback: &lifted }, 0.05);
+        s.render(&Scene { ctx: Some(&c1), strips: None, playback: &lifted }, 0.1);
+        assert_eq!(s.want.get(&(Model::MTouch, 0x4203)), Some(&Want::Bar(mtouch::bar_level(3, BarColour::Green, false))));
+        // A control that is no longer rendered (its device gone) loses its prediction.
+        let mut d = Lights::new(fast());
+        d.set_generation(Some(1));
+        d.render(&Scene { ctx: Some(&c1), strips: None, playback: &on201 }, 0.0);
+        d.render(&Scene { ctx: Some(&c1), strips: None, playback: &[] }, 0.05);
+        d.render(&Scene { ctx: Some(&c1), strips: None, playback: &lifted }, 0.1);
+        assert_eq!(d.want.get(&(Model::MTouch, 0x4203)), Some(&Want::Bar(mtouch::bar_level(3, BarColour::Green, false))), "reattached: the read-back");
     }
 }

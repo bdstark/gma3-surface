@@ -150,7 +150,7 @@ executor is at (shown as a blinking yellow span on the strip's bar) and it
 picks up; it picks up again after every touch, bank change, reconnect or a
 level edited elsewhere (`--pb-pickup 0.02` is the tolerance). Startup reports
 of the device never set a level. `--pb-go 201` / `--pb-pause 202` make the
-`Next (Go)` and `Pause` keys press those executors' buttons (their configured
+`Go` and `Pause` keys press those executors' buttons (their configured
 function, whatever it is); without them the keys do nothing. If an executor is
 reassigned while its button is held, the release is kept as a record instead
 of operating the new assignment: the plugin's `status` shows it and `recover`

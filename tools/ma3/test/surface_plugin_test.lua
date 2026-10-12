@@ -181,7 +181,7 @@ check("bad option refused", select(2, state._parseArgument("key=x bogus")) ~= ni
 check("start without a key uses fixed loopback", reset("input=fake") == true and state.host == "127.0.0.1")
 check("legacy key and network overrides are refused", select(2, state._parseArgument("key=abcd")) ~= nil and select(2, state._parseArgument("bind=0.0.0.0")) ~= nil and select(2, state._parseArgument("allow=10.0.0.1")) ~= nil)
 check("start without credentials succeeds on the fake backend", reset() == true and state.inputEnabled == true and state.inputMode == "fake" and state.gen:match("^%d+%-%x%x%x%x%x%x%x%x$"), J({ state.inputMode, state.gen }))
-check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.10.0" and state.modules.feedback.version == "0.7.0", J(state.moduleVersions))
+check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.10.0" and state.modules.feedback.version == "0.8.0", J(state.moduleVersions))
 check("feedback watch list bounded (9 state items + 3 more context items for the NX-K; page is shared)", state.modules.feedback.instance:status().watched == 12)
 
 -------------------------------------------------------------------------------
@@ -1076,8 +1076,13 @@ do
   end
   local function lastAck() local l = ofType(drain(), "ack"); return l[#l] end
   local cmdsBefore = #pool.cmds
+  local refreshesBefore = state.counters.execRefreshes or 0
   send(ctl22(10, "btn", { es = 1, d = 1 })); tick()
   a = lastAck(); tick()
+  -- KB-24 hardware pass: the pressed executor is re-read every tick for refreshMs, outside the feedback round robin.
+  check("kb24: a playback button queues a refresh of its executor and the plugin re-reads it on the next ticks", (state.counters.execRefreshes or 0) > refreshesBefore and state.refreshExec ~= nil and state.refreshExec["201|1"] ~= nil, J({ refreshes = (state.counters.execRefreshes or 0) - refreshesBefore }))
+  for _ = 1, 30 do tick(0.016) end
+  check("kb24: the refresh ends after refreshMs", state.refreshExec["201|1"] == nil, J(state.refreshExec))
   check("kb22: a playback button down on executor 201 is admitted on the console backend and applied as Press Page 1.201; the stub sequence is active", a and a.ok == 1 and lastCmd("^Press Page 1%.201$") ~= nil and pool.sequences[1].active == true and #pool.cmds == cmdsBefore + 1, J({ a, pool.cmds[#pool.cmds] }))
   send(ctl22(11, "touch", { es = 2, d = 1, c = "PB1", tgt = { ex = 201, el = "fader", pg = 1 }, gs = 5 })); tick()
   send(ctl22(12, "abs", { es = 3, v = 0.5, c = "PB1", tgt = { ex = 201, el = "fader", pg = 1 }, gs = 5 })); tick()

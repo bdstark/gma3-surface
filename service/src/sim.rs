@@ -15,7 +15,7 @@
 //! block's top / bottom button (pressure keys, as the hardware reports them: the down is a touched report, the up the
 //! release report), `mpe<n>` (1..24) its right block, `lbank:up|down` / `rbank:up|down` the M-Play's bank keys.
 //! KB-22 adds `mpf<n>:t<v>|m<v>|lift` (1..12) the M-Play's faders and `go` / `pause` (`down|up|tap`) the M-Touch's
-//! dedicated `Next (Go)` / `Pause` keys.
+//! dedicated `Go` / `Pause` keys.
 
 use crate::mtouch;
 use crate::nxk::usb::Surface;

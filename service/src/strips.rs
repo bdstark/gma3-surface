@@ -84,6 +84,9 @@ pub struct SlotHint {
     pub single: bool,
     /// The value as 0..1 of the travel (the programmer's `absolute` / 100).
     pub value: Option<f64>,
+    /// Hardware pass (local echo): one Coarse detent as a fraction of the travel, when the readout makes that exact
+    /// (Percent: 0.01); None for readouts whose step is not a fixed fraction (the bar then shows the read-back only).
+    pub step: Option<f64>,
 }
 
 /// One control event for the link.
@@ -128,6 +131,11 @@ struct Strip {
     picked_up: bool,
     takeover: bool,
     last_v: f64,
+    /// Hardware pass (local echo): the slot's value when the echo started, the Coarse step, and the steps sent since
+    /// (Fine counts a tenth), so the bar can follow the finger before the console's read-back arrives.
+    /// Review of PR #10: the running prediction, clamped at every step (a reversal after a limit moves at once).
+    echo_value: Option<f64>,
+    echo_step: Option<f64>,
 }
 
 pub const CONTROLS: [&str; 4] = ["Strip1", "Strip2", "Strip3", "Strip4"];
@@ -178,6 +186,33 @@ impl Strips {
         self.strips[(n.clamp(1, 4) - 1) as usize].touching
     }
 
+    /// Hardware pass (local echo): what strip `n`'s bar should show while it is touched, 0..1, before the console's
+    /// read-back arrives. Relative: the value at the touch plus the detents sent since times one click (only for a
+    /// readout with an exact step); absolute: the fader's own position once picked up. None when not touched, rebound,
+    /// or not predictable: the bar then shows the read-back.
+    /// Review of PR #10 (round 2): the echo only for the binding generation the touch started against. The caller
+    /// passes the generation of the context it renders (after this step's packets were processed), so a context that
+    /// moved the slot to another target while the strip stays touched never relabels the old prediction.
+    pub fn echo_at(&self, n: u8, cg: Option<u64>) -> Option<f64> {
+        let s = &self.strips[(n.clamp(1, 4) - 1) as usize];
+        if cg.is_none() || s.generation != cg {
+            return None;
+        }
+        self.echo(n)
+    }
+
+    pub fn echo(&self, n: u8) -> Option<f64> {
+        let s = &self.strips[(n.clamp(1, 4) - 1) as usize];
+        if !s.touching || s.rebound {
+            return None;
+        }
+        match self.cfg.mode {
+            Mode::Relative => s.echo_step.and(s.echo_value),
+            Mode::Absolute => s.picked_up.then_some(s.last_v),
+            Mode::Off => None,
+        }
+    }
+
     /// The strip's own key: held, it is the fine modifier (relative) or, at touch-down, the explicit takeover (absolute).
     pub fn key(&mut self, n: u8, down: bool) {
         self.strips[(n.clamp(1, 4) - 1) as usize].key_held = down;
@@ -215,6 +250,8 @@ impl Strips {
             s.picked_up = false;
             s.takeover = self.cfg.mode == Mode::Absolute && s.key_held;
             s.last_v = value as f64 / 255.0;
+            s.echo_value = hint.filter(|h| h.single).and_then(|h| h.value);
+            s.echo_step = hint.and_then(|h| h.step);
             self.stats.touches += 1;
             if s.takeover {
                 self.stats.takeovers += 1;
@@ -234,12 +271,22 @@ impl Strips {
             Mode::Off => {}
             Mode::Relative => {
                 let s = &mut self.strips[i];
+                if s.echo_value.is_none() {
+                    // No value at the touch (an empty programmer): the echo starts from the first read value.
+                    if let Some(h) = hint.filter(|h| h.single) {
+                        s.echo_value = h.value;
+                        s.echo_step = h.step;
+                    }
+                }
                 let d = value as i32 - s.anchor as i32;
                 s.anchor = value;
                 s.acc += d * self.cfg.detents_per_travel;
                 let det = s.acc / 255;  // truncates toward zero: the fraction stays in acc, signed
                 if det != 0 {
                     s.acc -= det * 255;
+                    if let (Some(v), Some(step)) = (s.echo_value, s.echo_step) {
+                        s.echo_value = Some((v + det as f64 * step * if fine { 0.1 } else { 1.0 }).clamp(0.0, 1.0));
+                    }
                     self.stats.detents += det.unsigned_abs() as u64;
                     outs.push(self.out(n, CtlKind::Rel { dx: det, fine }));
                 }
@@ -469,7 +516,7 @@ mod tests {
     #[test]
     fn absolute_mode_waits_for_pickup_or_takeover_and_never_jumps_on_touch_or_reconnect() {
         let mut s = Strips::new(Config { mode: Mode::Absolute, ..Config::default() });
-        let known = Some(SlotHint { single: true, value: Some(0.5) });
+        let known = Some(SlotHint { single: true, value: Some(0.5), step: None });
         // Touch far from the value: nothing moves; the finger approaches from below and crosses 0.5: picked up.
         assert_eq!(kinds(&s.fader(1, 25, true, false, Some(1), known, 0.0)), vec![CtlKind::Touch { down: true }]);
         assert!(s.fader(1, 60, true, false, Some(1), known, 0.1).is_empty());
@@ -484,7 +531,7 @@ mod tests {
         assert_eq!(s.fader(1, 128, true, false, Some(1), known, 1.1).len(), 1, "128/255 = 0.502 is within 0.02 of 0.5");
         s.fader(1, 128, false, false, Some(1), known, 1.2);
         // No single value (empty, mixed, unknown): no pickup; the strip waits until an explicit takeover.
-        let mixed = Some(SlotHint { single: false, value: Some(0.3) });
+        let mixed = Some(SlotHint { single: false, value: Some(0.3), step: None });
         s.fader(1, 0, true, false, Some(1), mixed, 2.0);
         assert!(s.fader(1, 255, true, false, Some(1), mixed, 2.1).is_empty());
         assert!(s.fader(1, 0, true, false, Some(1), None, 2.2).is_empty());
@@ -500,8 +547,72 @@ mod tests {
         assert_eq!(s.fader(1, 130, true, false, Some(1), known, 3.1).len(), 1);
         assert!(s.fader(1, 140, true, false, Some(2), known, 3.2).is_empty());
         s.fader(1, 140, false, false, Some(2), known, 3.3);
-        s.fader(1, 140, true, false, Some(2), Some(SlotHint { single: true, value: Some(0.9) }), 3.4);
-        assert!(s.fader(1, 150, true, false, Some(2), Some(SlotHint { single: true, value: Some(0.9) }), 3.5).is_empty(), "not picked up yet: no jump");
+        s.fader(1, 140, true, false, Some(2), Some(SlotHint { single: true, value: Some(0.9), step: None }), 3.4);
+        assert!(s.fader(1, 150, true, false, Some(2), Some(SlotHint { single: true, value: Some(0.9), step: None }), 3.5).is_empty(), "not picked up yet: no jump");
         assert_eq!(s.stats.positions, 5);
+    }
+
+    #[test]
+    fn the_echo_follows_the_finger_from_the_value_at_the_touch_until_the_lift() {
+        let mut s = Strips::new(Config::default());
+        let pct = Some(SlotHint { single: true, value: Some(0.40), step: Some(0.01) });
+        assert_eq!(s.echo(1), None, "not touched: no echo");
+        s.fader(1, 100, true, false, Some(1), pct, 0.0);
+        assert_eq!(s.echo(1), Some(0.40), "the touch shows the value at the touch");
+        // 51 counts are 24 detents at 120 per travel: +24 % at Percent.
+        s.fader(1, 151, true, false, Some(1), pct, 0.1);
+        assert!((s.echo(1).unwrap() - 0.64).abs() < 1e-9, "{:?}", s.echo(1));
+        // Fine counts a tenth: 24 detents more add 2.4 %.
+        s.fader(1, 202, true, true, Some(1), pct, 0.2);
+        assert!((s.echo(1).unwrap() - 0.664).abs() < 1e-9, "{:?}", s.echo(1));
+        // Clamped at the end of the range.
+        s.fader(1, 255, true, false, Some(1), pct, 0.3);
+        s.fader(1, 0, true, false, Some(1), pct, 0.4);
+        s.fader(1, 0, true, false, Some(1), pct, 0.5);
+        assert_eq!(s.echo(1), Some(0.0));
+        s.fader(1, 0, false, false, Some(1), pct, 0.6);
+        assert_eq!(s.echo(1), None, "the lift hands the bar back to the read-back");
+        // A readout without an exact step (Physical) is not predicted; an empty programmer starts from the first read value.
+        s.fader(2, 100, true, false, Some(1), Some(SlotHint { single: true, value: Some(0.5), step: None }), 1.0);
+        assert_eq!(s.echo(2), None);
+        s.fader(3, 100, true, false, Some(1), Some(SlotHint { single: false, value: None, step: Some(0.01) }), 1.0);
+        assert_eq!(s.echo(3), None, "nothing read yet");
+        s.fader(3, 151, true, false, Some(1), Some(SlotHint { single: true, value: Some(0.2), step: Some(0.01) }), 1.1);
+        assert!((s.echo(3).unwrap() - 0.44).abs() < 1e-9, "the base is the first read value (20 %), plus this report's 24 detents not yet in it: {:?}", s.echo(3));
+        // A rebound touch (the binding moved) shows no echo.
+        s.fader(3, 160, true, false, Some(2), Some(SlotHint { single: true, value: Some(0.2), step: Some(0.01) }), 1.2);
+        assert_eq!(s.echo(3), None);
+    }
+
+    #[test]
+    fn absolute_mode_echoes_the_fader_position_once_picked_up() {
+        let mut s = Strips::new(Config { mode: Mode::Absolute, ..Config::default() });
+        let h = Some(SlotHint { single: true, value: Some(0.5), step: Some(0.01) });
+        s.fader(1, 20, true, false, Some(1), h, 0.0);
+        s.fader(1, 40, true, false, Some(1), h, 0.1);
+        assert_eq!(s.echo(1), None, "waiting for pickup: the bar is not ours");
+        s.fader(1, 128, true, false, Some(1), h, 0.2);
+        assert_eq!(s.echo(1), Some(128.0 / 255.0));
+    }
+
+    #[test]
+    fn review_10_a_reversal_after_a_limit_moves_at_once() {
+        // From 90 %: +24 detents reaches 100 % (clamped), then -11 is 89 %, not still 100 % from a retained overshoot.
+        let mut s = Strips::new(Config::default());
+        let h = Some(SlotHint { single: true, value: Some(0.90), step: Some(0.01) });
+        s.fader(1, 100, true, false, Some(1), h, 0.0);
+        s.fader(1, 151, true, false, Some(1), h, 0.1); // +24 detents
+        assert_eq!(s.echo(1), Some(1.0));
+        // -11 detents: 11 x 255 / 120 = 23.375 counts; 24 counts down gives 11 detents (0.4 carried).
+        s.fader(1, 127, true, false, Some(1), h, 0.2);
+        assert!((s.echo(1).unwrap() - 0.89).abs() < 1e-9, "{:?}", s.echo(1));
+        // The same at the lower limit: from 5 %, -24 then +11 is 11 %.
+        let mut t = Strips::new(Config::default());
+        let l = Some(SlotHint { single: true, value: Some(0.05), step: Some(0.01) });
+        t.fader(1, 151, true, false, Some(1), l, 0.0);
+        t.fader(1, 100, true, false, Some(1), l, 0.1); // -24 detents
+        assert_eq!(t.echo(1), Some(0.0));
+        t.fader(1, 124, true, false, Some(1), l, 0.2);
+        assert!((t.echo(1).unwrap() - 0.11).abs() < 1e-9, "{:?}", t.echo(1));
     }
 }
