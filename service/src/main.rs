@@ -631,7 +631,15 @@ impl Loop {
         let keys: Vec<(u32, Option<u32>)> = self.key_timing.keys().copied().collect();
         for k in keys {
             let (want, at, control) = self.key_timing[&k];
-            let seen = self.exec_activity(k.0, k.1, now).map(|(a, _)| a == want).unwrap_or(false);
+            let activity = self.exec_activity(k.0, k.1, now);
+            if activity.is_none() && self.link.context_view(now).is_some() {
+                // M-Play pass: the executor left the binding (its device was unplugged, its window unbound) before its
+                // change was reported; that is not a slow console, so no timing is claimed.
+                eprintln!("playback: {control} -> executor {}: no longer bound; not timed", k.0);
+                self.key_timing.remove(&k);
+                continue;
+            }
+            let seen = activity.map(|(a, _)| a == want).unwrap_or(false);
             if seen {
                 let ms = (now - at) * 1000.0;
                 self.key_effect_ms.push(ms);
