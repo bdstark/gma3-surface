@@ -712,9 +712,14 @@ impl Link {
         // only; `vc` 1 (feedback valueComplete) is required before a value is a pickup target.
         let complete = s.get("vc").and_then(|v| v.as_u64()) == Some(1);
         let abs = s.get("abs").and_then(|v| v.as_f64()).map(|a| (a / 100.0).clamp(0.0, 1.0));
-        // Hardware pass (local echo): one Coarse click is exactly 1 % of the travel for the Percent readouts.
-        let step = match s.get("readout").and_then(|v| v.as_str()) {
-            Some("Percent") | Some("PercentFine") => Some(0.01),
+        // Hardware pass (local echo): one console click is exactly 1 % of the travel for the Percent readouts at the
+        // console's Coarse resolution and 0.1 % at Fine (the console backend's calibration); the surface's own Fine
+        // modifier divides that by ten again in the strips. Any other readout or resolution is not predicted.
+        let readout = s.get("readout").and_then(|v| v.as_str());
+        let res = s.get("res").and_then(|v| v.as_str());
+        let step = match (readout, res) {
+            (Some("Percent") | Some("PercentFine"), Some("Coarse")) => Some(0.01),
+            (Some("Percent") | Some("PercentFine"), Some("Fine")) => Some(0.001),
             _ => None,
         };
         Some(crate::strips::SlotHint { single: state == "value" && complete && abs.is_some(), value: abs, step })
@@ -2246,5 +2251,25 @@ mod tests {
         link.tick(82.0);
         assert!(!link.link_up);
         assert!(!link.in_transition(82.0));
+    }
+
+    #[test]
+    fn review_10_the_echo_step_follows_the_console_resolution_and_is_absent_for_other_combinations() {
+        let (mut link, mut plugin) = pair(90.0);
+        let mut v = json!({"t":"context","gen":plugin.generation,"epoch":1,"known":1,"cg":1,"enc":{},"page":1,"pool":"Default","display":1,"ex":[],
+                           "slots":[{"n":1,"kind":"attribute","readout":"Percent","res":"Coarse","val":"value","abs":40.0,"vc":1},
+                                    {"n":2,"kind":"attribute","readout":"Percent","res":"Fine","val":"value","abs":40.0,"vc":1},
+                                    {"n":3,"kind":"attribute","readout":"PercentFine","res":"Fine","val":"value","abs":40.0,"vc":1},
+                                    {"n":4,"kind":"attribute","readout":"Physical","res":"Coarse","val":"value","abs":40.0,"vc":1},
+                                    {"n":5,"kind":"attribute","readout":"Percent","res":"Ultra","val":"value","abs":40.0,"vc":1}]});
+        v["sid"] = json!(plugin.sid);
+        let f = plugin.frame(v);
+        link.receive(&f, 90.0);
+        let step = |n| link.slot_hint(n, 90.1).and_then(|h| h.step);
+        assert_eq!(step(1), Some(0.01), "Percent at Coarse: 1 % per click");
+        assert_eq!(step(2), Some(0.001), "Percent at the console's Fine: 0.1 % per click");
+        assert_eq!(step(3), Some(0.001));
+        assert_eq!(step(4), None, "Physical: no fixed fraction, not predicted");
+        assert_eq!(step(5), None, "an unknown resolution: not predicted");
     }
 }

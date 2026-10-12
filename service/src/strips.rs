@@ -133,9 +133,9 @@ struct Strip {
     last_v: f64,
     /// Hardware pass (local echo): the slot's value when the echo started, the Coarse step, and the steps sent since
     /// (Fine counts a tenth), so the bar can follow the finger before the console's read-back arrives.
-    echo_base: Option<f64>,
+    /// Review of PR #10: the running prediction, clamped at every step (a reversal after a limit moves at once).
+    echo_value: Option<f64>,
     echo_step: Option<f64>,
-    echo_steps: f64,
 }
 
 pub const CONTROLS: [&str; 4] = ["Strip1", "Strip2", "Strip3", "Strip4"];
@@ -196,7 +196,7 @@ impl Strips {
             return None;
         }
         match self.cfg.mode {
-            Mode::Relative => Some((s.echo_base? + s.echo_steps * s.echo_step?).clamp(0.0, 1.0)),
+            Mode::Relative => s.echo_step.and(s.echo_value),
             Mode::Absolute => s.picked_up.then_some(s.last_v),
             Mode::Off => None,
         }
@@ -239,9 +239,8 @@ impl Strips {
             s.picked_up = false;
             s.takeover = self.cfg.mode == Mode::Absolute && s.key_held;
             s.last_v = value as f64 / 255.0;
-            s.echo_base = hint.filter(|h| h.single).and_then(|h| h.value);
+            s.echo_value = hint.filter(|h| h.single).and_then(|h| h.value);
             s.echo_step = hint.and_then(|h| h.step);
-            s.echo_steps = 0.0;
             self.stats.touches += 1;
             if s.takeover {
                 self.stats.takeovers += 1;
@@ -261,12 +260,11 @@ impl Strips {
             Mode::Off => {}
             Mode::Relative => {
                 let s = &mut self.strips[i];
-                if s.echo_base.is_none() {
+                if s.echo_value.is_none() {
                     // No value at the touch (an empty programmer): the echo starts from the first read value.
                     if let Some(h) = hint.filter(|h| h.single) {
-                        s.echo_base = h.value;
+                        s.echo_value = h.value;
                         s.echo_step = h.step;
-                        s.echo_steps = 0.0;
                     }
                 }
                 let d = value as i32 - s.anchor as i32;
@@ -275,7 +273,9 @@ impl Strips {
                 let det = s.acc / 255;  // truncates toward zero: the fraction stays in acc, signed
                 if det != 0 {
                     s.acc -= det * 255;
-                    s.echo_steps += det as f64 * if fine { 0.1 } else { 1.0 };
+                    if let (Some(v), Some(step)) = (s.echo_value, s.echo_step) {
+                        s.echo_value = Some((v + det as f64 * step * if fine { 0.1 } else { 1.0 }).clamp(0.0, 1.0));
+                    }
                     self.stats.detents += det.unsigned_abs() as u64;
                     outs.push(self.out(n, CtlKind::Rel { dx: det, fine }));
                 }
@@ -582,5 +582,26 @@ mod tests {
         assert_eq!(s.echo(1), None, "waiting for pickup: the bar is not ours");
         s.fader(1, 128, true, false, Some(1), h, 0.2);
         assert_eq!(s.echo(1), Some(128.0 / 255.0));
+    }
+
+    #[test]
+    fn review_10_a_reversal_after_a_limit_moves_at_once() {
+        // From 90 %: +24 detents reaches 100 % (clamped), then -11 is 89 %, not still 100 % from a retained overshoot.
+        let mut s = Strips::new(Config::default());
+        let h = Some(SlotHint { single: true, value: Some(0.90), step: Some(0.01) });
+        s.fader(1, 100, true, false, Some(1), h, 0.0);
+        s.fader(1, 151, true, false, Some(1), h, 0.1); // +24 detents
+        assert_eq!(s.echo(1), Some(1.0));
+        // -11 detents: 11 x 255 / 120 = 23.375 counts; 24 counts down gives 11 detents (0.4 carried).
+        s.fader(1, 127, true, false, Some(1), h, 0.2);
+        assert!((s.echo(1).unwrap() - 0.89).abs() < 1e-9, "{:?}", s.echo(1));
+        // The same at the lower limit: from 5 %, -24 then +11 is 11 %.
+        let mut t = Strips::new(Config::default());
+        let l = Some(SlotHint { single: true, value: Some(0.05), step: Some(0.01) });
+        t.fader(1, 151, true, false, Some(1), l, 0.0);
+        t.fader(1, 100, true, false, Some(1), l, 0.1); // -24 detents
+        assert_eq!(t.echo(1), Some(0.0));
+        t.fader(1, 124, true, false, Some(1), l, 0.2);
+        assert!((t.echo(1).unwrap() - 0.11).abs() < 1e-9, "{:?}", t.echo(1));
     }
 }
