@@ -602,11 +602,24 @@ impl Loop {
         }
     }
 
-    /// The context's activity of a bound executor (`act` 1/0) and its key function, if the context lists it.
-    fn exec_activity(&self, ex: u32, pg: Option<u32>, now: f64) -> Option<(bool, Option<String>)> {
+    /// The fresh context's entry for a bound executor; None when there is no fresh context or it does not list it.
+    fn exec_entry(&self, ex: u32, pg: Option<u32>, now: f64) -> Option<&serde_json::Value> {
         let ctx = self.link.context_view(now)?;
         let exs = ctx.body.get("ex")?.as_array()?;
-        let x = exs.iter().find(|x| x.get("n").and_then(|n| n.as_u64()) == Some(ex as u64) && x.get("pg").and_then(|p| p.as_u64()).map(|p| p as u32) == pg)?;
+        exs.iter().find(|x| x.get("n").and_then(|n| n.as_u64()) == Some(ex as u64) && x.get("pg").and_then(|p| p.as_u64()).map(|p| p as u32) == pg)
+    }
+
+    /// Review of PR #11: whether a fresh context lists the executor (Some(false): it left the binding); None without a
+    /// fresh context, when membership is unknown.
+    fn exec_bound(&self, ex: u32, pg: Option<u32>, now: f64) -> Option<bool> {
+        self.link.context_view(now)?;
+        Some(self.exec_entry(ex, pg, now).is_some())
+    }
+
+    /// The context's activity of a bound executor (`act` 1/0) and its key function; None when it is not listed or its
+    /// activity is unreadable (`act` "?").
+    fn exec_activity(&self, ex: u32, pg: Option<u32>, now: f64) -> Option<(bool, Option<String>)> {
+        let x = self.exec_entry(ex, pg, now)?;
         let act = x.get("act").and_then(|v| v.as_u64())? == 1;
         Some((act, x.get("kp").and_then(|v| v.as_str()).map(|s| s.to_string())))
     }
@@ -631,6 +644,14 @@ impl Loop {
         let keys: Vec<(u32, Option<u32>)> = self.key_timing.keys().copied().collect();
         for k in keys {
             let (want, at, control) = self.key_timing[&k];
+            if self.exec_bound(k.0, k.1, now) == Some(false) {
+                // M-Play pass (review of PR #11): the executor left the binding (its device was unplugged, its window
+                // unbound) before its change was reported; that is not a slow console, so no timing is claimed. A bound
+                // executor whose activity is momentarily unreadable keeps waiting (readable activity or the timeout).
+                eprintln!("playback: {control} -> executor {}: no longer bound; not timed", k.0);
+                self.key_timing.remove(&k);
+                continue;
+            }
             let seen = self.exec_activity(k.0, k.1, now).map(|(a, _)| a == want).unwrap_or(false);
             if seen {
                 let ms = (now - at) * 1000.0;
@@ -838,6 +859,51 @@ mod lights_binding_tests {
         lp.step(&mut lamp).unwrap();
         assert!(bar(&lamp.outputs).map(|b| b == twenty).unwrap_or(true), "no 90 % after the context moved: {:?}", lamp.outputs);
         assert_eq!(lp.lights.want_bar(mtouch::Model::MTouch, 0x6112), Some(twenty));
+    }
+
+    /// Review of PR #11: a paired loop whose context lists the given executors (helper for the timing tests).
+    fn paired_with_executors(ex: Value) -> (Loop, Plugin, Lamp) {
+        let cli = test_cli();
+        let mut lp = Loop::new(&cli).expect("a loop on an ephemeral socket");
+        let mut plugin = Plugin { seq: 0 };
+        let mut lamp = Lamp { strips: VecDeque::new(), outputs: Vec::new() };
+        lp.step(&mut lamp).unwrap();
+        let nonce = lp.link.hello_nonce().expect("a hello was sent");
+        let welcome = json!({"t":"welcome","v":2,"sid":"feedfacefeedface","nonce":nonce,"gen":"1-deadbeef","lease":2000,"hb":250,"keys":{"ok":["Record"],"unsupported":[]},"modules":{},"input":"fake","epoch":1,"control":1,"controlBackend":"console","context":1,"seq":0});
+        lp.link.receive(&wire::frame(&welcome.to_string()), lp.now());
+        lp.step(&mut lamp).unwrap();
+        let ev = lp.link.pending_bind_ev().expect("the bind is in flight");
+        lp.link.receive(&plugin.frame(json!({"t":"ack","ev":ev,"ok":1,"br":1})), lp.now());
+        let w = lp.banks.targets().ex;
+        { let now = lp.now(); let m = plugin.context(1, ex, w); lp.link.receive(&m, now); }
+        (lp, plugin, lamp)
+    }
+
+    #[test]
+    fn review_11_unreadable_activity_keeps_the_timing_and_only_a_left_executor_cancels_it() {
+        // Bound, activity "?": the timing keeps waiting, then times the readable change.
+        let (mut lp, mut plugin, _lamp) = paired_with_executors(json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Flash","fd":"Master","lvl":0,"act":0}]));
+        let now = lp.now();
+        lp.note_key_timing(101, None, true, "MPA1", now);
+        assert!(lp.key_timing.contains_key(&(101, None)), "a down on an idle executor is timed");
+        let w = lp.banks.targets().ex;
+        { let m = plugin.context(1, json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Flash","fd":"Master","lvl":0,"act":"?"}]), w.clone()); lp.link.receive(&m, now + 0.01); }
+        lp.time_playback_keys(now + 0.02);
+        assert!(lp.key_timing.contains_key(&(101, None)), "still bound with unreadable activity: not cancelled as unbound");
+        assert!(lp.key_effect_ms.is_empty());
+        { let m = plugin.context(1, json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Flash","fd":"Master","lvl":0,"act":1}]), w.clone()); lp.link.receive(&m, now + 0.05); }
+        lp.time_playback_keys(now + 0.06);
+        assert!(!lp.key_timing.contains_key(&(101, None)));
+        assert_eq!(lp.key_effect_ms.len(), 1, "the readable change is timed");
+        // Left the binding: cancelled, nothing timed.
+        let (mut lq, mut pq, _lq_lamp) = paired_with_executors(json!([{"n":101,"tgt":1,"cls":"Sequence","name":"A","kp":"Flash","fd":"Master","lvl":0,"act":0}]));
+        let t = lq.now();
+        lq.note_key_timing(101, None, true, "MPA1", t);
+        let wq = lq.banks.targets().ex;
+        { let m = pq.context(1, json!([]), wq); lq.link.receive(&m, t + 0.01); }
+        lq.time_playback_keys(t + 0.02);
+        assert!(!lq.key_timing.contains_key(&(101, None)), "the executor left the binding: cancelled");
+        assert!(lq.key_effect_ms.is_empty(), "and not timed");
     }
 
     #[test]
