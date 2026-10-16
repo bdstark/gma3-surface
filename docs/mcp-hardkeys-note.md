@@ -1,6 +1,6 @@
 # Note for bdstark/gma3-mcp: hardkey and keyboard ops
 
-Drafted 2026-10-09 in mtpnxk-client-pico (`docs/handoff.md` has the
+Drafted 2026-10-09 in this repository (then named mtpnxk-client-pico, now gma3-surface) (`docs/handoff.md` has the
 context). Move this file into the MCP repo and turn it into an issue or a
 design doc there.
 
