@@ -18,7 +18,7 @@ to drive them too: "there is no reason to not be able to change them".
   encoders are not attributes, so there is no command form to send yet.
 - The surface refuses every strip and rotary event with that reason, and its lights show the slots as unavailable.
 
-## What has to be found out first (console side, GrandMA3MCP)
+## What has to be found out first (console side, gma3-mcp)
 
 1. How the `ColorEditBar`'s encoders are addressed: names and order, what each one edits, their current values, and
    whether they change with the picker's mode (CIE / RGB / fader / swatch book; the screenshot showed CIE with x, y

@@ -1,4 +1,4 @@
-# Note for bdstark/GrandMA3MCP: hardkey and keyboard ops
+# Note for bdstark/gma3-mcp: hardkey and keyboard ops
 
 Drafted 2026-10-09 in mtpnxk-client-pico (`docs/handoff.md` has the
 context). Move this file into the MCP repo and turn it into an issue or a

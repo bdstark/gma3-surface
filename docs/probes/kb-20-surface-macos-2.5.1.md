@@ -3,7 +3,7 @@
 Evidence for [KEYBOARD.md](../../KEYBOARD.md) "KB-20". Run on 2026-10-10 with `mtpnxk_surface` 0.6.0 (imported as
 `mtpnxk.xml` into Plugin 2 of show `mcp-test-disposable` and started from the command line with
 `Plugin 2 "key=... input=fake control=console force"`; `force` because the MCP bridge 0.16.0 ran alongside with
-`input=keyboard` and held no keys, the KB-08 rule), the vendored set 0.10.0 / 0.4.0 / 0.3.0 from GrandMA3MCP `01e1561`,
+`input=keyboard` and held no keys, the KB-08 rule), the vendored set 0.10.0 / 0.4.0 / 0.3.0 from gma3-mcp `01e1561`,
 the release service at this commit. The bridge was used only to select the fixture, set the starting value and read
 the programmer back (`cmd` and `lua` ops); its own control instance stayed idle. Input stayed on the fake backend; only
 the control path was exercised. The show as loaded had none of the earlier sessions' macros, so no Macro 121/123.

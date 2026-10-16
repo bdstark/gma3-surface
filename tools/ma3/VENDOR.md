@@ -1,7 +1,7 @@
 # Vendored console modules
 
 `gma3_mcp_hardkeys.lua`, `gma3_mcp_feedback.lua` and `gma3_mcp_control.lua` are copied **unchanged**
-from [bdstark/GrandMA3MCP](https://github.com/bdstark/GrandMA3MCP) (MIT, see
+from [bdstark/gma3-mcp](https://github.com/bdstark/gma3-mcp) (MIT, see
 [LICENSE.gma3-mcp](LICENSE.gma3-mcp)). They are the console-semantics layer:
 key routes, ownership and leases, read-only state readers, continuous-control admission. The surface plugin
 (`mtpnxk_surface.lua`) only consumes them.
@@ -21,7 +21,7 @@ not identify a revision.
 Rules (from that repository's `docs/modules.md`, "Vendoring into another plugin"):
 
 1. Never edit these files here. A defect found through the surface is fixed in
-   GrandMA3MCP with a regression test, then re-vendored, so console semantics
+   gma3-mcp with a regression test, then re-vendored, so console semantics
    never fork.
 2. Keep them as `ComponentLua` entries after the entry component in
    `mtpnxk_surface.xml`; the console runs every component chunk at import and
@@ -33,5 +33,5 @@ Rules (from that repository's `docs/modules.md`, "Vendoring into another plugin"
    cp "$GMA3MCP"/plugin/gma3_mcp_hardkeys.lua "$GMA3MCP"/plugin/gma3_mcp_feedback.lua "$GMA3MCP"/plugin/gma3_mcp_control.lua tools/ma3/
    ```
 
-   where `GMA3MCP` is the GrandMA3MCP checkout (on this machine `~/Development/GrandMA3`), then update the table above (version, commit, sha256) and run
+   where `GMA3MCP` is the gma3-mcp checkout (on this machine `~/Development/gma3/gma3-mcp`), then update the table above (version, commit, sha256) and run
    `lua tools/ma3/test/surface_plugin_test.lua` and `sh tools/ma3/test/e2e.sh`.

@@ -16,7 +16,7 @@ recorded against KB-07, their owning feature, and are not fixed here.
 | mtpnxk code revision qualified | `2de832e` (KB-07 review, second pass); the KB-08 commits on top of it touch `docs/`, `KEYBOARD.md`, `README.md`, `service/README.md` and `tools/ma3/VENDOR.md` only |
 | `tools/ma3/mtpnxk_surface.lua` 0.1.0 | sha256 `ba4819e760be8f9199fc209cbba8a8a67dc8e8e6e92ea26705dde481e2b46515` |
 | `tools/ma3/mtpnxk_surface.xml` | sha256 `b3f2b7e35abff1e1e41e917b87ab294e373a8828108754aa6aaf6b6e6872d1dd` |
-| `tools/ma3/gma3_mcp_hardkeys.lua` 0.5.0 (API 1) | sha256 `d73a8e10a53260275b9bf45b9182cb5601b48843646ec1812376ff1095f6266e`, identical to `plugin/gma3_mcp_hardkeys.lua` at GrandMA3MCP `2d226dd` (PR #12, merged into `main` as `6e0d9c1`) |
+| `tools/ma3/gma3_mcp_hardkeys.lua` 0.5.0 (API 1) | sha256 `d73a8e10a53260275b9bf45b9182cb5601b48843646ec1812376ff1095f6266e`, identical to `plugin/gma3_mcp_hardkeys.lua` at gma3-mcp `2d226dd` (PR #12, merged into `main` as `6e0d9c1`) |
 | `tools/ma3/gma3_mcp_feedback.lua` 0.2.0 (API 1) | sha256 `349bb2ed1cc88bdbaf197aa20e957811df44306133c04652663da01a585d2cf9`, identical to upstream (`c18559a` and `6e0d9c1`) |
 | Installed copies on the test console | byte-identical to the three files above (hashes checked on 2026-10-09) |
 | Service | `service/` 0.1.0 at `2de832e`, Rust 1.97.1, `nusb` 0.2, release build |

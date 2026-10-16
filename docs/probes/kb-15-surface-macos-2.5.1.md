@@ -2,7 +2,7 @@
 
 Live run of `mtpnxk_surface` 0.2.0 with the vendored `gma3_mcp_hardkeys` 0.10.0 (the
 KB-12 bank, KB-13 owned-Quickey backend, KB-14 mode operation and KB-15 mixed
-backend from bdstark/GrandMA3MCP branch `feat/kb15-mixed-backend`, revision
+backend from bdstark/gma3-mcp branch `feat/kb15-mixed-backend`, revision
 `3960334`). Every observation below was read through the MCP bridge's `lua` op
 (`_G.__mtpnxk_surface`, `CmdObj()`, `SelectionCount()`, `ObjectList()`); the
 key events came from the service's `sim` and `bench` commands.

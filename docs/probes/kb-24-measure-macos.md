@@ -217,7 +217,7 @@ Agreed in this round: "feedback probes missed" is a tenth of the probes rather t
 every run since round 4, inside the 400 ms before the probe's Clear; the console's frame and read timing, not the
 transport). B7 sits at 13 %, just over; the motion runs were not repeated (nothing in this round touches them).
 
-### Review round 1 of PR #9 / GrandMA3MCP PR #28 (2026-10-11) and the re-measurement
+### Review round 1 of PR #9 / gma3-mcp PR #28 (2026-10-11) and the re-measurement
 
 | Finding | Fix |
 | --- | --- |

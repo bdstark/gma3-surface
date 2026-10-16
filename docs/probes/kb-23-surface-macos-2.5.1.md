@@ -1,7 +1,7 @@
 # KB-23 surface live record: the lights rendered from the console context (macOS, onPC 2.5.1.0)
 
 Run on 2026-10-10 (local time) against show `mcp-test-disposable` on onPC 2.5.1.0 with `mtpnxk_surface` **0.9.0**
-(Plugin 2, `input=fake control=console force`, vendored feedback 0.6.0 sha256 `1126d6f3…` from GrandMA3MCP `45945bf`)
+(Plugin 2, `input=fake control=console force`, vendored feedback 0.6.0 sha256 `1126d6f3…` from gma3-mcp `45945bf`)
 next to the bridge 0.18.0 (Plugin 1, used for the console commands and the read-backs). The service was the release
 build of this branch, driven with `mtpnxk --plugin 127.0.0.1:9810 --key-file … sim --script …` (the simulated M-Touch:
 four parameter strips on slots 1-4, playback rows `101,201,301` at bank 1). The `out MTouch …` lines are the device

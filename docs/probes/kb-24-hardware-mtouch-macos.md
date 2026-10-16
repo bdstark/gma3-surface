@@ -61,7 +61,7 @@ over the MCP bridge. Second part of the hardware pass ([NX-K record](kb-24-hardw
 | # | Finding | Status |
 | --- | --- | --- |
 | 1 | colour-picker encoders unsupported | open feature: [work item](../work-item-colour-picker-encoders.md) with a handoff note |
-| 2 | misleading reason with the picker open | fixed: feedback 0.7.1 (GrandMA3MCP `1061735`) names the colour picker's encoders, a covering view (bank selector missing) or missing attribute encoders |
+| 2 | misleading reason with the picker open | fixed: feedback 0.7.1 (gma3-mcp `1061735`) names the colour picker's encoders, a covering view (bank selector missing) or missing attribute encoders |
 | 3 | parameter bars dark at rest | open, no source found: the encoder bar's value is not readable from Lua on onPC 2.5.1. `GetDMXValue`/`GetDMXUniverse` return nil (DMX output not granted without output hardware); the encoder widgets carry no value (`SHOWVALUE=false`, hidden band faders at 0.0); the encoder bar's fixture-sheet grid returns no cell data; the API list has no output-value function. Defaults would match an idle stage but invent a value under a running playback, so nothing is shown rather than a guess |
 | 4 | bar lag while moving | fixed and re-tested: local echo while touched (strips: value at the touch plus detents x one click, Percent readouts; playback faders: the fader position once picked up). The first re-test snapped back to the older read-back at the lift; the bar now holds the echo until the read-back agrees within one LED or 1 s, and the operator confirmed it holds, then settles |
 | 5 | red flash on a bank change | fixed and re-tested: the first fix missed the plugin's interim "context unknown" after each bind; any missing context from a live, answering plugin is now a transition, dark for up to 2 s, and only an unresolved one (or a silent plugin) shows the unavailable pattern. The operator confirmed no flash |
@@ -131,7 +131,7 @@ Cleanup: `Off Page 1.101`; `Delete Page 1.101`, `1.189`, `1.190`.
 
 ### With the pressed-executor refresh (feedback 0.8.0, plugin refreshMs 300)
 
-The plugin re-reads an executor every tick for 300 ms after a playback key on it (feedback `refresh()`, GrandMA3MCP
+The plugin re-reads an executor every tick for 300 ms after a playback key on it (feedback `refresh()`, gma3-mcp
 `4cbbb89`), instead of waiting for its turn in the round robin. Same setup, eleven taps of PFA 1:
 
 | Transition | n | median before → after | slowest before → after |

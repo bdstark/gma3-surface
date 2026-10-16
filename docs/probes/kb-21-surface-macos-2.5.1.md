@@ -2,7 +2,7 @@
 
 mtpnxk_surface 0.7.0 imported as `mtpnxk.xml` into Plugin 2 of show `mcp-test-disposable` on 2026-10-10 and started with
 `Plugin 2 "key=<64 hex> input=fake control=fake force"` (`force` because the MCP bridge 0.17.0 ran alongside as Plugin 1
-with `input=keyboard control=fake`); vendored set hardkeys 0.10.0 / feedback 0.5.0 / control 0.4.0 from GrandMA3MCP
+with `input=keyboard control=fake`); vendored set hardkeys 0.10.0 / feedback 0.5.0 / control 0.4.0 from gma3-mcp
 `ea5bc0d`; the release service at this commit, driven by its `sim` scripts (a simulated M-Touch: the ten playback strips
 and the bank keys enter the service after the decoder; no M-Play was simulated, so its sections stayed `absent` and unbound).
 The bridge was used for `cmd "Page 2"` / `"Page 1"` (a console page change while the surface followed the page) and, through

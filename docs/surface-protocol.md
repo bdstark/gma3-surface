@@ -7,7 +7,7 @@ supersedes the OSC transport in [ma3-feedback.md](ma3-feedback.md); the LED
 findings and the NX-K map in that file still apply.
 
 The console-side building blocks are the reusable modules from
-[bdstark/GrandMA3MCP](https://github.com/bdstark/GrandMA3MCP) (`KEYBOARD.md`
+[bdstark/gma3-mcp](https://github.com/bdstark/gma3-mcp) (`KEYBOARD.md`
 there, KB-01 to KB-06), vendored unchanged into [tools/ma3](../tools/ma3). The
 plugin owns transport, pairing, packet semantics and surface-key mapping; the
 modules own console semantics (key routes, ownership, leases, readers).

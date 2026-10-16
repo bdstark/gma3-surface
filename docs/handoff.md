@@ -60,7 +60,7 @@ own Lua plugin in onPC over a plain UDP socket**, both directions:
 
 - **Lua has sockets after all.** onPC ships LuaSocket and a JSON library
   (`shared/resource/lib_plugins/requirements`; `require("socket")`,
-  `require("json")`). bdstark/GrandMA3MCP's `plugin/gma3_mcp_bridge.lua`
+  `require("json")`). bdstark/gma3-mcp's `plugin/gma3_mcp_bridge.lua`
   is the working reference: a non-blocking TCP server (`settimeout(0)`)
   inside the plugin call, `coroutine.yield()` every frame so the console
   stays responsive, newline-delimited JSON, dispatch to `Cmd()` under
@@ -112,11 +112,11 @@ own Lua plugin in onPC over a plain UDP socket**, both directions:
 
 The only MA3 configuration left is importing and starting the plugin.
 
-### Split with GrandMA3MCP (decided 2026-10-09)
+### Split with gma3-mcp (decided 2026-10-09)
 
 The hardkey layer is solved **once, in the MCP repo**, and consumed here:
 
-- **`hardkeys` Lua module in bdstark/GrandMA3MCP:** Quickey pool (reserve
+- **`hardkeys` Lua module in bdstark/gma3-mcp:** Quickey pool (reserve
   and cache N Quickeys + N parked executor buttons at start, slot per held
   key, press/release), `Keyboard()` wrappers, and the state readers the
   feedback design needs (pending command-line keyword, programmer modes,

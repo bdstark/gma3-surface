@@ -15,7 +15,7 @@ process may hold the device (an LED test started while a listener was open was r
 Hardware protocol qualification does not establish grandMA3 integration
 behaviour. Which console actions a fader, a pressure key or an LED should map
 to is the console-semantics half of KB-16, kept in
-[bdstark/GrandMA3MCP `ENCODERS.md`](https://github.com/bdstark/GrandMA3MCP/blob/main/ENCODERS.md);
+[bdstark/gma3-mcp `ENCODERS.md`](https://github.com/bdstark/gma3-mcp/blob/main/ENCODERS.md);
 wiring these devices into the link is later work (KB-20 and after). The
 `run`, `sim` and `bench` commands remain NX-K only.
 

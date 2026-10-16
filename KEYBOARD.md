@@ -4,7 +4,7 @@
 > Transport update: plugin 0.10.0 / protocol 2 is localhost-only and has no pairing key. Older key, MAC and LAN references below describe historical work, not current setup. See [operator guide](docs/operator-guide.md).
 
 Updated: 2026-10-10 (KB-23 surface half added, see the last section). The feature series KB-01 to KB-09 is defined and tracked in
-[bdstark/GrandMA3MCP `KEYBOARD.md`](https://github.com/bdstark/GrandMA3MCP/blob/main/KEYBOARD.md).
+[bdstark/gma3-mcp `KEYBOARD.md`](https://github.com/bdstark/gma3-mcp/blob/main/KEYBOARD.md).
 KB-01 to KB-06 are complete there (macOS, onPC 2.5.1.0) and provide the reusable
 console modules this repository vendors. KB-07 (the surface consumer) and KB-08
 (documentation and qualification of the surface) live here; KB-09 (shortcut-table
@@ -108,7 +108,7 @@ carries each limit's measured status.
    re-enabling the requested input mode.
 
 Harness: 107 checks (was 87); service: 19 tests; `e2e.sh` passes. The shared module's preference change
-is pushed as GrandMA3MCP `2d226dd` (PR #12, merged) and the vendored copy matches it byte for byte.
+is pushed as gma3-mcp `2d226dd` (PR #12, merged) and the vendored copy matches it byte for byte.
 
 ### Open defects found by KB-08 (owned here, not fixed in KB-08)
 
@@ -161,7 +161,7 @@ acceptance record. Not closed as a pass on the p99 or flood limits.
 
 ## Follow-ups filed
 
-- [bdstark/GrandMA3MCP#12](https://github.com/bdstark/GrandMA3MCP/pull/12) (merged): hardkeys 0.5.0 and the
+- [bdstark/gma3-mcp#12](https://github.com/bdstark/gma3-mcp/pull/12) (merged): hardkeys 0.5.0 and the
   **KB-09** write-up: bounded per-iteration cache of the shortcut rows (lifts the ~10 taps/s ceiling), same-target tie
   resolution, and operator-managed profile shortcuts for Load, Macro and Thru.
 - KB-07 defects D1 and D2 above.
@@ -231,7 +231,7 @@ the live qualification procedure (recorded into `docs/probes/kb-16-hardware-<dev
 every control, report type and output write, idle polls, queued reports at open, unplug and replug), and nothing is wired
 into the link (`run`/`sim`/`bench` remain NX-K only; integration is KB-20+). Hardware protocol
 qualification does not establish grandMA3 behaviour: the console-semantics half of KB-16 lives in
-bdstark/GrandMA3MCP `ENCODERS.md`.
+bdstark/gma3-mcp `ENCODERS.md`.
 
 ## KB-17 — Shared control-context and binding snapshots (surface half, 2026-10-10)
 
@@ -264,7 +264,7 @@ plugin's default `display=1` is the one that answers. Wiring the context into en
 ## KB-18 — Continuous-control transport and admission (surface half, 2026-10-10)
 
 The module half is in the MCP repository (`gma3_mcp_control` 0.1.0, bridge 0.14.0, branch `feat/kb18-control-admission`,
-PR bdstark/GrandMA3MCP#22, live record `docs/probes/kb-18-control-macos-2.5.1.md` there, 30/30). This repository vendors the
+PR bdstark/gma3-mcp#22, live record `docs/probes/kb-18-control-macos-2.5.1.md` there, 30/30). This repository vendors the
 0.10.0/0.3.0/0.1.0 set unchanged from `9f08f87` (both PR #22 review rounds included: late releases end their hold,
 reserved release capacity, batched recovery, rebound holds on the generation change itself, stale snapshots refused,
 binding revisions, releases kept across a rebind, the binding revision required unless a fixed binding is declared, which this plugin does) ([tools/ma3/VENDOR.md](tools/ma3/VENDOR.md)) and adds the surface side:
@@ -310,7 +310,7 @@ KB-18: the adjustment backend, calibration and the meaning of `fine` are KB-19 (
 
 The console half is in the MCP repository (`gma3_mcp_control` 0.2.0 with the **console adjustment backend**,
 `gma3_mcp_feedback` 0.4.0 with each slot's physical range, bridge 0.15.0 `control=console`, branch
-`feat/kb19-adjustment-backend`, PR bdstark/GrandMA3MCP#23, live record `docs/probes/kb-19-adjust-macos-2.5.1.md` there,
+`feat/kb19-adjustment-backend`, PR bdstark/gma3-mcp#23, live record `docs/probes/kb-19-adjust-macos-2.5.1.md` there,
 39/39). This repository vendors the 0.10.0/0.4.0/0.2.0 set unchanged from `107f548` ([tools/ma3/VENDOR.md](tools/ma3/VENDOR.md))
 and adds the surface side:
 
@@ -727,7 +727,7 @@ ten blinking red / blue, PFDs red slow, blue keys slow) and left the dark ones d
 **Review of PR #8 (round 1):** (1) the lights were gated at the caller on `link::lighting_context` so a rebind cannot
 show the previous binding's feedback as current, with a caller-level regression and a verbose diagnostic; re-run live
 (the steady scene lights `lit=21`, a bank change blanks the controls only until the matching context arrives). The
-numeric-only hex finding (2) is the console half (GrandMA3MCP PR #27).
+numeric-only hex finding (2) is the console half (gma3-mcp PR #27).
 
 **Review of PR #8 (round 2):** a REFUSED bind (the plugin keeps its previous binding while the surface already maps the
 new bank) left the old revision current, so `lighting_context` returned the old context and lit the new bank's controls
@@ -812,7 +812,7 @@ agreed at a tenth of the probes (3–5 of 39 are missed in every run since round
 collection stays per tick: gating it shifts the binding revision the KB-21/KB-22 tests expect, with the finding
 recorded; the hardware pass is deferred until the merge.
 
-**Review round 1 (PR #9 / GrandMA3MCP #28, 2026-10-11):** six findings fixed: the early merge runs behind every
+**Review round 1 (PR #9 / gma3-mcp #28, 2026-10-11):** six findings fixed: the early merge runs behind every
 admission guard (P1); both merge paths and the absolute supersede stop at another control's motion on the same
 target; the refused-sequence set is bounded; the load window rotates at the end of the reporting tick so no tick is
 lost; the measurement keeps one session through warm-up, workload and drain; the ordering verdict uses cumulative

@@ -7,7 +7,7 @@ First pass of the hardware qualification that KB-19 … KB-23 deferred.
 | --- | --- |
 | Host | macOS 26.5.1 (Apple silicon, `bdsmbpm401`), onPC 2.5.1.0, show `mcp-test-disposable`, user Admin, US layout, profile `Default` |
 | Device | NX-K `11be:e102`, no serial, bus-powered |
-| Console | `mtpnxk_surface` 0.11.0 (Plugin 2, `input=keyboard control=console force`) and the bridge 0.18.0 (Plugin 1) from main after GrandMA3MCP #28 and mtpnxk #9; modules hardkeys 0.10.0, feedback 0.7.0, control 0.7.0 |
+| Console | `mtpnxk_surface` 0.11.0 (Plugin 2, `input=keyboard control=console force`) and the bridge 0.18.0 (Plugin 1) from main after gma3-mcp #28 and mtpnxk #9; modules hardkeys 0.10.0, feedback 0.7.0, control 0.7.0 |
 | Service | release build of main (`1f15d2e`), `mtpnxk --verbose run`; the removal test re-ran on `fix/kb24-hardware-findings` (the logging fix below) |
 
 | # | Check | Observed | Verdict |
