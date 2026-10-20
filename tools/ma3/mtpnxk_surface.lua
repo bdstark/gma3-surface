@@ -86,7 +86,7 @@ local json   = require("json")
 -- KB-24: the heartbeat reply carries the plugin loop's load since the previous reply (`load`: the longest and the
 -- mean tick in ms, the most datagrams one tick took, how many ticks hit the per-tick budget, ticks): the
 -- measurement harness publishes it next to the service-side latencies. Nothing else changed.
-local VERSION   = "0.12.0"
+local VERSION   = "0.13.0"
 -- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
 local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
 -- Review (PR #6, round 2): the watch list budget covers every supported configuration at once: the ordinary state
@@ -193,10 +193,12 @@ local NXK_PREFER = { ["+"] = "kpAdd", ["-"] = "kpSubtract", ["."] = "kpDecimal",
 -- and shortcut (the text routes need text the keypad does not carry).
 local NXK_QUICKKEY_HOLD_KB10 = { NUM1 = true, NUM5 = true, THRU = true, PLEASE = true, CLEAR = true, STORE = true }
 local SURFACE_METHODS = { quickkey = true, shortcut = true }
+-- KB-29: a code with direct-tap evidence is a Quickey key as well: the surface taps it on key-down (one
+-- Press Quickey, nothing held), so it needs no hold evidence (OOPS: Undo).
 local function quickkeyHold(qualified, logical)
   if type(qualified) ~= "table" then return NXK_QUICKKEY_HOLD_KB10[logical] == true end  -- a module older than the table export
   local q = qualified[logical]
-  return type(q) == "table" and q.hold == true
+  return type(q) == "table" and (q.hold == true or (q.direct == true and state.tapsMode ~= "off"))
 end
 local function mixedPolicy(overrides, qualified)
   local keys = {}
@@ -246,6 +248,7 @@ local function parseArgument(argument)
     elseif l == "stop" or l == "status" or l == "recover" then opts.command = l
     elseif l == "bank" then opts.bankToken = true
     elseif l == "force" then opts.force = true
+    elseif l == "static" then opts.bankStatic = true
     elseif l == "bench" then opts.bench = true
     elseif k then
       k = k:lower()
@@ -262,6 +265,10 @@ local function parseArgument(argument)
         local count = (last ~= "" and (tonumber(last) - tonumber(first) + 1)) or DEFAULTS.maxHolds
         if count < 1 then return nil, "bank executor range is empty" end
         opts.bank = { quickeyFirst = tonumber(q), page = tonumber(page), executorFirst = tonumber(first), executorCount = count }
+      elseif k == "taps" then
+        local m = v:lower()
+        if m ~= "on" and m ~= "off" then return nil, "taps must be on or off" end
+        opts.taps = m
       elseif k == "bankcodes" then
         local m = v:lower()
         if m ~= "hardkeys" and m ~= "qualified" then return nil, "bankcodes must be hardkeys or qualified" end
@@ -295,6 +302,7 @@ local function parseArgument(argument)
   end
   if opts.bankToken then return nil, "bank: expected bank=<quickey>/<page>.<first>[-<last>], \"bank status\", \"bank verify\" or \"bank teardown\"" end
   if opts.bankCodes and not opts.bank then return nil, "bankcodes needs a bank=... range in the same argument" end
+  if opts.bankStatic and not opts.bank then return nil, "static needs a bank=... range in the same argument (one executor per code)" end
   if opts.routes and (opts.input == "fake" or opts.input == "off") then return nil, "route= needs input=keyboard, quickey or mixed" end
   return opts
 end
@@ -382,16 +390,19 @@ local function describeKeys(logReasons)
       if okC and type(r) == "table" then
         -- The surface holds every key (press/release pairs), so a Quickey code needs KB-10 hold evidence.
         local qc = r.method == "quickkey" and type(r.quickkeyCapabilities) == "table" and r.quickkeyCapabilities or nil
-        if r.supported and #(r.unavailable or {}) == 0 and qc and qc.hold == false then
+        -- KB-29: a direct-tap code is tapped on key-down (Press Quickey N), so it needs no hold evidence.
+        local direct = qc ~= nil and qc.direct == true and state.tapsMode ~= "off"
+        if r.supported and #(r.unavailable or {}) == 0 and qc and qc.hold == false and not direct then
           reason = "Quickey code " .. tostring(r.quickkey) .. " has no KB-10 hold evidence" .. (qc.note and (" (" .. qc.note .. ")") or "") .. "; the surface holds every key, route it with shortcut"
         elseif r.supported and #(r.unavailable or {}) == 0 then supported = true
         elseif r.supported then reason = "unavailable: " .. table.concat(r.unavailable, "; ")
         else reason = tostring(r.reason or r.code) end
-        routes[name] = { method = r.method, source = r.methodSource, effective = r.effective, backend = r.dispatchBackend, supported = supported }
+        routes[name] = { method = r.method, source = r.methodSource, effective = r.effective, backend = r.dispatchBackend, supported = supported, direct = direct or nil }
         if supported and logReasons then
           local res = r.resolution
-          log("key %s: %s via %s (%s%s)%s", name, logical, tostring(r.method), tostring(r.dispatchBackend or r.backend or "no backend"),
-              r.effective and (", " .. tostring(r.effective)) or "", (res and res.prefer) and (" preferred row " .. tostring(res.prefer) .. " (" .. tostring(res.shortcut) .. ")") or "")
+          log("key %s: %s via %s (%s%s)%s%s", name, logical, tostring(r.method), tostring(r.dispatchBackend or r.backend or "no backend"),
+              r.effective and (", " .. tostring(r.effective)) or "", (res and res.prefer) and (" preferred row " .. tostring(res.prefer) .. " (" .. tostring(res.shortcut) .. ")") or "",
+              direct and ", direct tap" or "")
         end
       else reason = tostring(r) end
     end
@@ -432,7 +443,7 @@ local function openSession(obj, ip, port, now)
   local sid = randomHex(8)
   while state.sessions[sid] do sid = randomHex(8) end
   local s = { sid = sid, id = obj.id, gen = obj.gen, ip = ip, port = port, openedAt = now, lastSeen = now, lastSeq = 0, outSeq = 0,
-              holds = {}, evSeen = {}, evOrder = {}, evAck = {}, lastEvByKey = {}, keyQueued = {}, rate = { since = now, count = 0 }, state = "active",
+              holds = {}, taps = {}, evSeen = {}, evOrder = {}, evAck = {}, lastEvByKey = {}, keyQueued = {}, rate = { since = now, count = 0 }, state = "active",
               unsyncedHeld = held, lastFullAt = nil, lastState = nil, sessionOpen = false, surface = obj.surface, fw = obj.fw }
   local inst = hk()
   if inst and state.inputEnabled then
@@ -590,6 +601,35 @@ local function handleKey(s, obj, now, fromQueue)
   if not logical then ackEvent(s, ev, false, { code = "unsupported", why = "not a console key" }); return nil end
   local inst = hk()
   if not inst or not state.inputEnabled then ackEvent(s, ev, false, { code = "input-disabled", why = "input is " .. tostring(state.inputMode) }); return nil end
+  -- KB-29: a direct-tap key goes down as one tap (Press Quickey N): nothing is held, its key-up is only acknowledged.
+  local route = state.routes and state.routes[name]
+  if down == 1 and route and route.direct and state.tapsMode ~= "off" then
+    -- bench: the command line before the tap, so the watch measures this tap's effect (review 1 of #13).
+    local before = nil
+    if state.bench and logical:match("^NUM%d$") then pcall(function() before = state.commandText() end) end
+    local r, err = inst:tap(s.sid, now, { key = logical, display = state.display, prefer = NXK_PREFER[name] })
+    if not r then
+      state.counters.refused = state.counters.refused + 1
+      ackEvent(s, ev, false, { code = tostring(err and err.code or "error"), why = tostring(err and err.message or err) })
+      return nil
+    end
+    s.taps = s.taps or {}
+    s.taps[name] = r.id
+    state.counters.taps = (state.counters.taps or 0) + 1
+    state.keyDownThisTick = true
+    state.collectNextTick = true
+    ackEvent(s, ev, true, { hold = r.id, tap = 1 })
+    if state.bench and logical:match("^NUM%d$") then
+      state.benchWatch[#state.benchWatch + 1] = { s = s, ev = ev, at = now, before = before, tickAt = state.counters.ticks }
+    end
+    return nil
+  end
+  if down == 0 and s.taps and s.taps[name] then
+    local hid = s.taps[name]
+    s.taps[name] = nil
+    ackEvent(s, ev, true, { hold = hid, noop = 1, tap = 1 })
+    return nil
+  end
   if down == 1 then
     local r, err = inst:press(s.sid, now, { key = logical, display = state.display, prefer = NXK_PREFER[name] })
     if not r then
@@ -1538,7 +1578,7 @@ local function provisionBank(opts, t)
   local live = inst:bankStatus(t)
   if live.provisioned then log("bank: %s is already live (state %s); the bank= argument is not applied", tostring(live.id), tostring(live.state)); return end
   local spec = { authorized = true, quickeys = { first = opts.bank.quickeyFirst },
-                 executors = { page = opts.bank.page, first = opts.bank.executorFirst, count = opts.bank.executorCount },
+                 executors = { page = opts.bank.page, first = opts.bank.executorFirst, count = opts.bank.executorCount, static = opts.bankStatic or nil },
                  codes = opts.bankCodes or "qualified", label = "mtpnxk NX-K surface" }
   local ok, r, err = pcall(inst.provisionBank, inst, spec, t)
   if not ok then logerr("bank provision raised: %s", tostring(r)); return end
@@ -1791,6 +1831,7 @@ local function start(opts)
   state.execsArg = opts.execs or {}  -- the argument's list (its KB-06 state items); state.execs follows the service's bind
   state.execPage = nil  -- KB-21: set by the service's bind (an explicit page), never by an argument
   state.bench = opts.bench == true
+  state.tapsMode = opts.taps or "on"  -- KB-29: direct-tap keys go down as one tap; taps=off holds every key (press/release pairs)
   state.benchWatch = {}
   state.sessions, state.byId, state.nonces, state.errReplies = {}, {}, {}, {}
   state.log = state.log or {}

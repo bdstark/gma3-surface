@@ -10,7 +10,7 @@ surface plugin and service. Qualified scope: [deployments.md](deployments.md)
 | Component | File(s) | Goes where |
 | --- | --- | --- |
 | Surface plugin entry component | `tools/ma3/mtpnxk_surface.lua` | the onPC user library plugins folder |
-| Vendored console modules (three) | `tools/ma3/gma3_mcp_hardkeys.lua` (0.11.0), `tools/ma3/gma3_mcp_feedback.lua` (0.2.0) | same folder; they are components of the same plugin |
+| Vendored console modules (three) | `tools/ma3/gma3_mcp_hardkeys.lua` (0.12.0), `tools/ma3/gma3_mcp_feedback.lua` (0.2.0) | same folder; they are components of the same plugin |
 | Import wrapper | `tools/ma3/mtpnxk_surface.xml` | same folder |
 | Surface service | `service/` → `mtpnxk` binary | the machine the NX-K is plugged into |
 
@@ -64,7 +64,7 @@ the keyboard backend, display 1. The start log (System Monitor / command-line
 history) lists every NX-K key with the method and backend that would press it
 (`key 1: NUM1 via shortcut (keyboard, shortcut-table)`), ending with
 `keys: 32 supported, 12 unsupported` on the default US profile, then
-`listening on 127.0.0.1:9810 (v0.12.0, protocol 2, gen …)`.
+`listening on 127.0.0.1:9810 (v0.13.0, protocol 2, gen …)`.
 
 ### 3a. Quickey dispatch (KB-15, the preferred path once set up)
 
@@ -95,11 +95,26 @@ does not. At most one key goes down per plugin tick: Quickey keys pressed in one
 console frame reorder in a focused text field (KB-28), so a burst is spread over
 a few ticks (a fast burst can make the service retransmit an unacknowledged
 press; the duplicate is recognised and dropped). `@` inserts nothing in the Edit
-Command pop-up (a console behaviour, KB-28). A Quickey key that goes down while another
-held Quickey key is still down is refused when either is one of the KB-28 codes
-(digits, `+ - . /`, `@`, `Thru` and the keywords): the module qualified those
-pairs only inside a combo, so let the previous key come up first. Plugin 0.13.0
-taps these keys instead of holding them, which removes the limit.
+Command pop-up (a console behaviour, KB-28).
+
+Direct taps (plugin 0.13.0, KB-29): a key whose code has direct-tap evidence (every
+Quickey key of the NX-K, `Undo` included) goes down as one `Press Quickey N`: no
+executor is used, nothing is held, and the key-up is only acknowledged. The start
+log ends those lines with `, direct tap`, and the command history shows one line
+per key. `taps=off` holds every key instead (press/release through an executor,
+as in 0.12.0; `Undo` then goes back to the shortcut table). With held keys, a
+Quickey key that goes down while another held Quickey key is still down is refused
+when either is one of the KB-28 codes (digits, `+ - . /`, `@`, `Thru` and the
+keywords): the module qualified those pairs only inside a combo, so let the previous
+key come up first. Direct taps hold nothing, so the limit does not apply to them.
+
+Static executors (`static` next to `bank=...`, KB-29): every code of the bank gets
+its own executor, assigned once when the bank is created, so a held key needs no
+Assign. The range must cover the codes (33 with hardkeys 0.12.0), for example
+`Plugin "mtpnxk_surface" "bank=940/1.301-333 static input=mixed"`. Keep it clear of
+show executors (an executor in the range that holds anything else refuses the whole
+setup). With direct taps the NX-K holds nothing, so the executors only matter for
+`taps=off` and for other consumers of the module.
 `input=quickey` uses Quickeys only (the other keys are reported unsupported).
 Rules the module enforces, reported to the service as refusals and never
 worked around: a Quickey route without a bank or for a code without evidence is
