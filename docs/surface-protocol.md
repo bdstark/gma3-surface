@@ -27,6 +27,7 @@ distinction end to end: every state item is tri-state, and the service renders
 | `ma` | `maState` (`Root().MASTATE`) | console | `0`, `1`, `"?"` | aggregate of every Shift source; never the surface's own hold |
 | `shortcuts` | `shortcutsActive` | profile | `0`, `1`, `"?"` | shortcut-table routes need 1; the service shows it on the Link LED pattern |
 | `pending` | derived from `commandText` (`CmdObj().cmdtext`) | ui | lower-case first word (`"store"`, `"edit"`, …), `""` (none), `"?"` | the keyword awaiting input. Derivation: first alphabetic word of the command line, lower-cased, if it is in the plugin's keyword list; otherwise `""`. Raw text is not sent. |
+| `ebank` | derived from `commandText` | ui | `1`, `0`, `"?"` | KB-30: `1` while the command line starts with `Select EncoderBank` (what Swap Prog placed there, waiting for the bank number), `0` otherwise, `"?"` when the command line is not readable. The NX-K lights Swap Prog from it. |
 | `page` | `page` (`CurrentExecPage()`) | user | integer, `"?"` | current executor page number |
 | `freeze` | `freeze` | show | always `"?"` | KB-01 found no readable state |
 | `x<n>` | `sequenceActive` via `executor[n]` assignment | show/page | `0`, `1`, `"?"` | executor n on the current page has an active playback (`"?"` when empty) |
@@ -170,6 +171,16 @@ plugin  → service  welcome { t:"welcome", v:2, sid, nonce, gen, lease, hb, key
   was already released). `ok:0` carries the module's error `code`
   (`unsupported`, `input-disabled`, `conflict`, `exclusive-hold`,
   `route-changed`, `capacity`, …).
+- KB-30: Swap Prog (with `encmacro=<n>`) is not a module key. Its press is
+  acknowledged `ok:1, encmacro:n` (and `cleared:1` when text on the command line
+  was cleared first) once `Go+ Macro n` answered OK, which is the dispatch, as
+  for any key. Refusals: `unsupported` (no macro configured), `input-disabled`,
+  `missing` / `not-owned` / `changed` (the macro failed its check: nothing run),
+  `unreadable`, `clear-failed`, `refused` (the console's answer is in `why`). Its
+  release is acknowledged `ok:1, noop:1`. Key events after an accepted press wait
+  in the key queue until the command line reads `Select EncoderBank` (or
+  `encBankGateMs`, 400 ms), so they are acknowledged later than usual; the
+  service's retransmissions of them are absorbed as for any queued key.
 - The service retransmits an unacknowledged `key` event up to 4 times at 60 ms
   spacing (the measured ack round trip on onPC is 34 ms median, 53 ms p99), then
   drops it and counts it as lost. `ctl` motion (`rel`, `abs`) is never
@@ -423,6 +434,7 @@ user profile's shortcut table; unresolved keys are reported in
 | `Rotary1`–`Rotary4` (turn and press) | encoder slots 1–4 of the bound display (`ctl` events, section 3a) | since KB-18 admitted by the vendored control module against the binding generation; the fake backend records them and nothing moves on the console until KB-19 |
 | M-Touch `Strip1`–`Strip4` (the base-channel faders, `dev: "mtouch"`) | encoder slots `--strip-slots`..+3 (`ctl` events: `touch` down/up around the gesture, `rel` detents from the drag, or `abs` positions in absolute mode) | since KB-20; the strip's own key is its `fine` (relative) or takeover (absolute) modifier and is never a console key |
 | `Bank`, `Swap Prog`, `Link` | none | Bank is the `fine` modifier of the rotaries (held) and otherwise unsupported as a key; Link is the link LED; the pre-KB-18 `wheel` message is still answered `unsupported` |
+| `Swap Prog` with `encmacro=<n>` (KB-30) | none: the plugin runs its own Macro n (`Select EncoderBank`, Execute No) | clears text on the command line (`CmdObj():ClearCmd()`), runs `Go+ Macro n`, then holds the key queue until the line reads `Select EncoderBank`; the operator types the bank and Enter on the keypad |
 
 Hardkeys 0.5.0 resolves any `Enums.VirtualKeyCode` name through the shortcut
 table (the fixed `MA` and native `PLEASE` routes stay special), and lets the

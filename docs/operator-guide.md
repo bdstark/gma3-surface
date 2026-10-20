@@ -64,7 +64,7 @@ the keyboard backend, display 1. The start log (System Monitor / command-line
 history) lists every NX-K key with the method and backend that would press it
 (`key 1: NUM1 via shortcut (keyboard, shortcut-table)`), ending with
 `keys: 32 supported, 12 unsupported` on the default US profile, then
-`listening on 127.0.0.1:9810 (v0.13.1, protocol 2, gen …)`.
+`listening on 127.0.0.1:9810 (v0.14.0, protocol 2, gen …)`.
 
 ### 3a. Quickey dispatch (KB-15, the preferred path once set up)
 
@@ -163,8 +163,45 @@ Options, appended to the same quoted string:
 | `bank=900/1.178-189`, `bankcodes=…`, `route=…` | section 3a |
 | `input=off` | feedback only: LEDs follow the console, no key is ever pressed |
 | `input=fake` | lifecycle testing: events are recorded and acknowledged, no key is pressed |
+| `encmacro=950` | Swap Prog enters the encoder bank (feature group) on the command line, through Macro 950 (section 3b) |
 | `bench` | report press-to-effect timing for digit taps (measurement only) |
 | `force` | start even though the MCP bridge reports input enabled (see "Exclusive input") |
+
+### 3b. Changing the feature group from the panel (Swap Prog, KB-30)
+
+```text
+Plugin "mtpnxk_surface" "bank=900/1.178-189 input=mixed control=console encmacro=950"
+```
+
+The feature group the encoder bar shows is its encoder bank: `Dimmer`, `Position`, `Gobo`, `Color`, `Beam`, `Focus`,
+`Control`, … numbered in the order of your user profile's encoder bar (1 Dimmer, 2 Position, 3 Gobo, 4 Color, 5 Beam,
+6 Focus in the default bar). With `encmacro=<n>`, **Swap Prog** puts `Select EncoderBank ` on the command line; type
+the bank's number on the keypad and press Enter. `Swap Prog 4 Enter` shows Color, one-handed. The rotaries follow on
+their own: the service reads the encoder bar back, and motion produced against the old bank is refused, not applied
+to the new one. Swap Prog's LED is lit while `Select EncoderBank` waits on the command line.
+
+- Text already on the command line is cleared first. Only the text goes: the selection and the programmer are not
+  touched. `Clear`, or `Enter` without a number, leaves the bar as it is.
+- A bank comes back on the page it was last on, as clicking its tab does.
+- A bank the current selection has no attributes for is refused by the console (`Not allowed`, for example
+  Position with only LED washes selected). With nothing selected, every bank that has pages is offered. A bank
+  without pages (Shapers and Video in the default bar) is always `Not allowed`.
+- `bank.page` (`Swap Prog 4 . 2 Enter`) also works, but the console does not check it. With a selection that has
+  nothing for that bank it answers OK and changes nothing, and a page the selection hides is replaced by the first
+  page. Prefer the bank number alone.
+- `encmacro=<n>` is the operator's decision to create one show object: Macro n, named `mtpnxk EncoderBank`, with one
+  line `Select EncoderBank` (Execute No), marked as the plugin's in its note. An empty number gets the macro, later
+  starts adopt the plugin's own, and any other macro at that number is reported and never changed (Swap Prog then
+  stays unsupported). Save the show for the macro to survive a reload. Every press checks the macro again, because a
+  show load can put another show's Macro n there: an edited, foreign or missing macro is refused and nothing runs.
+- `Plugin "mtpnxk_surface" "encmacro status"` checks the macro, and `"encmacro teardown"` deletes it, but only while it
+  is still exactly what the plugin created. A marked macro you edited (its line, Execute, another line) is yours: it is
+  refused and kept. Without `encmacro=`, Swap Prog stays a local key and is acknowledged `unsupported`.
+- Lua cannot write the command line, so the macro is how the keyword gets there: the command history shows one
+  `Go+ Macro n` line per press. Keys pressed right after Swap Prog wait until the command line shows the keyword (at
+  most 0.4 s; 50–70 ms on onPC 2.5.1), so a fast `Swap Prog 4 Enter` still arrives in order. If the keyword has not
+  appeared by then, the log says so and the keys go on to whatever the command line holds.
+- With `input=off` or `input=fake`, Swap Prog is refused and the command line is left alone.
 
 ### 4. Start the service
 
@@ -248,7 +285,7 @@ level. `--lights off` disables all of this but the pickup span;
 | --- | --- | --- |
 | `Load`, `Macro`, `Thru` | no keyboard shortcut maps to them in the default profile | add a shortcut for `LOAD`, `MACRO`, `THRU` in your user profile; the plugin resolves them at its next start. KB-09 (MCP repository) plans a guided way to do this |
 | `Fade`, `Delay`, `Snap Shot`, `Back` | not grandMA3 hardkeys (not in `Enums.VirtualKeyCode`) | nothing; they stay unsupported |
-| `Bank`, `Swap Prog`, `Link` | not console keys: Bank is the rotaries' fine modifier (held), Link is the link LED | nothing; Bank only modifies the rotaries |
+| `Bank`, `Swap Prog`, `Link` | not console keys: Bank is the rotaries' fine modifier (held), Link is the link LED | nothing for Bank and Link; Swap Prog enters the encoder bank with `encmacro=<n>` (section 3b, then it is a supported key) |
 
 The four rotaries are not keys: with the plugin started with `control=console` (KB-19) a detent on rotary n adjusts
 encoder slot n of the console's encoder bar for the current selection (`--rotary-slots 2` maps them to slots 2–5),
@@ -305,7 +342,8 @@ Link LED carries the difference: off while paired with fresh console state,
 slow blink while unpaired, link down or state stale. Keyword keys (Record,
 Update, Edit, …) follow the pending command-line keyword, HighLight blinks while
 highlight mode is on, Clear/Undo/Next/Last/Menu light while held, Bank lights
-itself and the four encoder LEDs while held.
+itself and the four encoder LEDs while held. Swap Prog lights while
+`Select EncoderBank` is pending on the command line (KB-30, section 3b).
 
 ## Recovery
 

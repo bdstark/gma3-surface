@@ -897,3 +897,34 @@ bank on the same objects supersedes it. Tests: `surface_plugin_test.lua` 287 (ne
 and pressed, `bank status` listing A's record, a second start in B not logging it again, back in A taking A's record
 back with nothing created, teardown per show, an unreadable show identity at adoption followed by provisioning and
 teardown of the current bank, a set-aside record refused at adoption kept and then superseded), `e2e.sh` passed.
+
+## KB-30 — Changing the encoder feature group from the panel (surface only, 2026-10-20)
+
+**Request:** the four rotaries drive whatever feature group the console's encoder bar shows, and only a click on the
+console changed it. The operator wanted to change it from the NX-K with one hand: Swap Prog puts the command on the
+command line, they type the number and press Enter.
+
+**Probe** ([record](docs/probes/kb-30-encoder-bank-macos-2.5.1.md)): the feature group is the bar's encoder bank.
+`Select EncoderBank <n>` switches it in 34–84 ms, the context reader reports it, a bank the selection has nothing for
+answers `Not allowed`, and a bank keeps its last page. `PresetType` does not switch the bar. `FeatureGroup`, `Feature`
+and the `bank.page` form answer OK and change nothing when the selection lacks the bank. Lua cannot write the command
+line, but a macro line with Execute No places its text there (appended, whatever AddToCmdline says).
+`CmdObj():ClearCmd()` clears only the text.
+
+**Surface (plugin 0.14.0, no module change):**
+
+- `encmacro=<n>` creates the plugin's Macro n (`mtpnxk EncoderBank`, one line `Select EncoderBank`, Execute No, note
+  `mtpnxk_surface encmacro v1`), adopts it on later starts, and refuses any other macro at that number.
+  `encmacro status` checks it and `encmacro teardown` deletes it, only while it is still exactly what the plugin
+  created (review round 1: an edited macro carrying the mark is refused and kept).
+- Swap Prog key-down re-verifies the macro, clears text on the command line, runs `Go+ Macro n` and is acknowledged
+  at dispatch (`encmacro`, `cleared`). The key queue then waits until the command line reads `Select EncoderBank` (at
+  most 400 ms), so `Swap Prog 4 Enter` typed fast arrives in order. Refusals: `unsupported`, `input-disabled`,
+  `missing`, `not-owned`, `changed`, `unreadable`, `clear-failed`, `refused`.
+- The state carries `ebank` (1 while `Select EncoderBank` is pending), and the service lights Swap Prog from it.
+- Tests: `surface_plugin_test.lua` 322 after merging #19 (35 new), `cargo test` 111 (1 new), `e2e.sh` passed.
+
+**Live (onPC 2.5.1.0, `test-fixture-disposable`, `input=keyboard control=console encmacro=950`):** from `mtpnxk sim`
+and from the physical NX-K, `Swap Prog 4 Enter` took the bar from Dimmer to Color with the selection kept, and a typed
+`1` was cleared first. With MegaHexes selected, `Swap Prog 2 Enter` was `Not allowed` and the bar stayed. Quickey
+dispatch was not run live: a stale bank record from Shehds blocked `input=mixed` (the show switch fix above, #19, merged since).

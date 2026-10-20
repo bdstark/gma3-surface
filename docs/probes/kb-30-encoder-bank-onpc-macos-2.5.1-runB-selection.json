@@ -1,0 +1,1586 @@
+{
+ "show": "test-fixture-disposable",
+ "build": {
+  "hostType": "onPC",
+  "codeType": "Release",
+  "version": "2.5.1.0"
+ },
+ "bridge": "0.25.1",
+ "feedback": {
+  "version": "0.8.0",
+  "loaded": true
+ },
+ "runs": [
+  {
+   "command": "Select EncoderBank 2",
+   "reset": "OK",
+   "base": {
+    "generation": 47,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "Not allowed",
+   "reads": 25,
+   "changedMs": null,
+   "first": {
+    "generation": 47,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 47,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  },
+  {
+   "command": "Select EncoderBank \"Color\"",
+   "reset": "OK",
+   "base": {
+    "generation": 47,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "OK",
+   "reads": 2,
+   "changedMs": 84,
+   "first": {
+    "generation": 48,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Color",
+     "index": 4,
+     "pages": 3
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "RGB"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "ColorRGB_R",
+     "ColorRGB_G",
+     "ColorRGB_B",
+     "ColorRGB_RY",
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 48,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Color",
+     "index": 4,
+     "pages": 3
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "RGB"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "ColorRGB_R",
+     "ColorRGB_G",
+     "ColorRGB_B",
+     "ColorRGB_RY",
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "RGB",
+    "selection": 4,
+    "featureGroup": "Color"
+   }
+  },
+  {
+   "command": "Select EncoderBank 3.2",
+   "reset": "OK",
+   "base": {
+    "generation": 49,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "OK",
+   "reads": 24,
+   "changedMs": null,
+   "first": {
+    "generation": 49,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 49,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  },
+  {
+   "command": "Select EncoderBank \"Color\".\"Color\"",
+   "reset": "OK",
+   "base": {
+    "generation": 49,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "OK",
+   "reads": 2,
+   "changedMs": 68,
+   "first": {
+    "generation": 50,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Color",
+     "index": 4,
+     "pages": 3
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "RGB"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "ColorRGB_R",
+     "ColorRGB_G",
+     "ColorRGB_B",
+     "ColorRGB_RY",
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 50,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Color",
+     "index": 4,
+     "pages": 3
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "RGB"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "ColorRGB_R",
+     "ColorRGB_G",
+     "ColorRGB_B",
+     "ColorRGB_RY",
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  },
+  {
+   "command": "EncoderBank 5",
+   "reset": "OK",
+   "base": {
+    "generation": 51,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "OK",
+   "reads": 2,
+   "changedMs": 67,
+   "first": {
+    "generation": 52,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Beam",
+     "index": 5,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Beam"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Shutter1",
+     "EFFECTWHEEL",
+     "EFFECTWHEEL2",
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 52,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Beam",
+     "index": 5,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Beam"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Shutter1",
+     "EFFECTWHEEL",
+     "EFFECTWHEEL2",
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Beam",
+    "selection": 4,
+    "featureGroup": "Beam"
+   }
+  },
+  {
+   "command": "PresetType 2",
+   "reset": "OK",
+   "base": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "Object not found",
+   "reads": 24,
+   "changedMs": null,
+   "first": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  },
+  {
+   "command": "PresetType \"Gobo\"",
+   "reset": "OK",
+   "base": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "Object not found",
+   "reads": 24,
+   "changedMs": null,
+   "first": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  },
+  {
+   "command": "Select PresetType 4",
+   "reset": "OK",
+   "base": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "OK",
+   "reads": 25,
+   "changedMs": null,
+   "first": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  },
+  {
+   "command": "FeatureGroup 6",
+   "reset": "OK",
+   "base": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "OK",
+   "reads": 24,
+   "changedMs": null,
+   "first": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  },
+  {
+   "command": "Select FeatureGroup \"Beam\"",
+   "reset": "OK",
+   "base": {
+    "generation": 53,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "OK",
+   "reads": 1,
+   "changedMs": 34,
+   "first": {
+    "generation": 54,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Beam",
+     "index": 5,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Beam"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Shutter1",
+     "EFFECTWHEEL",
+     "EFFECTWHEEL2",
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 54,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Beam",
+     "index": 5,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Beam"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Shutter1",
+     "EFFECTWHEEL",
+     "EFFECTWHEEL2",
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Beam",
+    "selection": 4,
+    "featureGroup": "Beam"
+   }
+  },
+  {
+   "command": "Feature 2.1",
+   "reset": "OK",
+   "base": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "OK",
+   "reads": 24,
+   "changedMs": null,
+   "first": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  },
+  {
+   "command": "Select EncoderBank 8",
+   "reset": "OK",
+   "base": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "Not allowed",
+   "reads": 25,
+   "changedMs": null,
+   "first": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  },
+  {
+   "command": "Select EncoderBank 11",
+   "reset": "OK",
+   "base": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "Object not found",
+   "reads": 24,
+   "changedMs": null,
+   "first": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  },
+  {
+   "command": "Select EncoderBank 2.5",
+   "reset": "OK",
+   "base": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "Object not found",
+   "reads": 24,
+   "changedMs": null,
+   "first": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  },
+  {
+   "command": "Select EncoderBank \"Nope\"",
+   "reset": "OK",
+   "base": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "feedback": "Object not found",
+   "reads": 25,
+   "changedMs": null,
+   "first": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "after": {
+    "generation": 55,
+    "available": true,
+    "reason": null,
+    "bank": {
+     "name": "Dimmer",
+     "index": 1,
+     "pages": 1
+    },
+    "page": {
+     "slots": 5,
+     "index": 1,
+     "name": "Dimmer"
+    },
+    "context": "Default",
+    "banks": 10,
+    "poolUnavailable": null,
+    "slotsAvailable": true,
+    "slotsReason": null,
+    "slots": [
+     "Dimmer",
+     null,
+     null,
+     null,
+     null
+    ],
+    "selection": 4
+   },
+   "sideBefore": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   },
+   "sideAfter": {
+    "feature": "Dimmer",
+    "selection": 4,
+    "featureGroup": "Dimmer"
+   }
+  }
+ ],
+ "before": {
+  "generation": 47,
+  "available": true,
+  "reason": null,
+  "bank": {
+   "name": "Dimmer",
+   "index": 1,
+   "pages": 1
+  },
+  "page": {
+   "slots": 5,
+   "index": 1,
+   "name": "Dimmer"
+  },
+  "context": "Default",
+  "banks": 10,
+  "poolUnavailable": null,
+  "slotsAvailable": true,
+  "slotsReason": null,
+  "slots": [
+   "Dimmer",
+   null,
+   null,
+   null,
+   null
+  ],
+  "selection": 4
+ },
+ "end": {
+  "generation": 55,
+  "available": true,
+  "reason": null,
+  "bank": {
+   "name": "Dimmer",
+   "index": 1,
+   "pages": 1
+  },
+  "page": {
+   "slots": 5,
+   "index": 1,
+   "name": "Dimmer"
+  },
+  "context": "Default",
+  "banks": 10,
+  "poolUnavailable": null,
+  "slotsAvailable": true,
+  "slotsReason": null,
+  "slots": [
+   "Dimmer",
+   null,
+   null,
+   null,
+   null
+  ],
+  "selection": 4
+ }
+}

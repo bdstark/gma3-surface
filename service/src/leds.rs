@@ -108,7 +108,8 @@ impl Renderer {
         }
         // Link: off when paired and fresh; blink otherwise (unpaired, link down, or stale state).
         want.insert(nxk::LINK_LED, if console.fresh { LED_OFF } else { LED_BLINK });
-        set(&mut want, "Swap Prog", LED_OFF);
+        // KB-30: Swap Prog enters `Select EncoderBank` (the plugin's macro); lit while the console's command line holds it.
+        set(&mut want, "Swap Prog", if console.fresh && tri("ebank") == Tri::On { LED_ON } else { LED_OFF });
 
         let mut writes = Vec::new();
         for (id, v) in want {
@@ -163,6 +164,30 @@ mod tests {
         let w = r.render(&view(None, true), &held, 3.0);
         assert_eq!(val(&w, "Edit"), Some(LED_OFF));
         assert_eq!(w.iter().find(|(i, _)| *i == nxk::LINK_LED).unwrap().1, LED_BLINK);
+    }
+
+    #[test]
+    fn swap_prog_lights_while_select_encoderbank_is_pending() {
+        let mut r = Renderer::new();
+        let held = BTreeSet::new();
+        let w = r.render(&view(None, false), &held, 0.0);
+        assert_eq!(val(&w, "Swap Prog"), Some(LED_OFF), "unknown is off");
+        let m = items(json!({"ebank":1,"pending":"select"}));
+        let w = r.render(&view(Some(&m), true), &held, 1.0);
+        assert_eq!(val(&w, "Swap Prog"), Some(LED_ON));
+        assert_eq!(val(&w, "Record"), None, "a pending Select lights no keyword key");
+        let m = items(json!({"ebank":0,"pending":"fixture"}));
+        let w = r.render(&view(Some(&m), true), &held, 1.1);
+        assert_eq!(val(&w, "Swap Prog"), Some(LED_OFF));
+        let m = items(json!({"ebank":1}));
+        r.render(&view(Some(&m), true), &held, 1.2);
+        let m = items(json!({"ebank":"?"}));
+        let w = r.render(&view(Some(&m), true), &held, 1.3);
+        assert_eq!(val(&w, "Swap Prog"), Some(LED_OFF), "unknown turns it off");
+        let m = items(json!({"ebank":1}));
+        r.render(&view(Some(&m), true), &held, 1.4);
+        let w = r.render(&view(None, true), &held, 3.0);
+        assert_eq!(val(&w, "Swap Prog"), Some(LED_OFF), "stale feedback turns it off");
     }
 
     #[test]

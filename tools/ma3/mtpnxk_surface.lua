@@ -26,6 +26,14 @@
 --   Plugin "mtpnxk_surface" "bankcodes=hardkeys"   provision every command-area code (94 Quickeys)
 --   Plugin "mtpnxk_surface" "force"                start even though the MCP bridge has input enabled
 --   Plugin "mtpnxk_surface" "bench"                report press-to-effect timing for NUM taps
+--   Plugin "mtpnxk_surface" "encmacro=950 input=mixed bank=..."
+--                                                          KB-30: Swap Prog puts "Select EncoderBank " on the
+--                                                          command line (the operator types the bank number
+--                                                          and Enter) through Macro 950, which the plugin
+--                                                          creates (one line, Execute No) or adopts when it is
+--                                                          its own; a foreign Macro 950 is never touched
+--   Plugin "mtpnxk_surface" "encmacro status" | "encmacro teardown"
+--                                                          (teardown: delete the verified owned macro)
 --   Plugin "mtpnxk_surface" "stop" | "status" | "recover"   (recover: re-attempt unresolved key releases)
 --   Plugin "mtpnxk_surface" "bank status" | "bank verify" | "bank teardown"
 --                                                          (teardown: delete the verified owned Quickeys and
@@ -88,7 +96,15 @@ local json   = require("json")
 -- KB-24: the heartbeat reply carries the plugin loop's load since the previous reply (`load`: the longest and the
 -- mean tick in ms, the most datagrams one tick took, how many ticks hit the per-tick budget, ticks): the
 -- measurement harness publishes it next to the service-side latencies. Nothing else changed.
-local VERSION   = "0.13.1"
+-- KB-30 (0.14.0): Swap Prog enters the encoder bank (the feature group the encoder bar shows) from the panel. A
+-- plugin-owned macro (operator argument encmacro=<n>: one line "Select EncoderBank", Execute No) places the keyword
+-- text on the operator's command line; Lua cannot write the command line itself (CmdObj().cmdtext and
+-- Set("CmdText") are ignored on onPC 2.5.1). Text already on the line is cleared first (CmdObj():ClearCmd(): the text
+-- only, never the selection), and the key queue waits until the command line reads back "Select EncoderBank" so the
+-- digits typed right after land behind it. The bank switch itself is the operator's Enter; the service follows the
+-- encoder bar through the context as before. The state's `ebank` item lights Swap Prog while the keyword is pending.
+-- Probe: docs/probes/kb-30-encoder-bank-macos-2.5.1.md.
+local VERSION   = "0.14.0"
 -- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
 local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
 -- Review (PR #6, round 2): the watch list budget covers every supported configuration at once: the ordinary state
@@ -111,6 +127,7 @@ local DEFAULTS = {
   maxDatagram = 512,
   maxPacketsPerTick = 32,
   maxKeyQueue = 64,        -- KB-28: key events waiting for their tick (one key-down per tick); beyond it a key is refused
+  encBankGateMs = 400,     -- KB-30: how long the key queue waits for "Select EncoderBank" on the command line (live: 50-70 ms)
 
   maxPacketsPerSecond = 400,  -- per session
   evWindow = 64,         -- event ids remembered per session for deduplication
@@ -217,6 +234,11 @@ local function quickeyPolicy(overrides)
 end
 -- Keys the service may send that are not console keys (acknowledged unsupported, never an error).
 local NXK_LOCAL = { Bank = true, ["Swap Prog"] = true, Link = true, Rotary1 = true, Rotary2 = true, Rotary3 = true, Rotary4 = true }
+-- KB-30: the key that enters the encoder bank, the text its macro places, and how the plugin marks the macro it owns.
+local ENCBANK_KEY     = "Swap Prog"
+local ENCBANK_COMMAND = "Select EncoderBank"
+local ENCBANK_MARK    = "mtpnxk_surface encmacro v1"
+local ENCBANK_NAME    = "mtpnxk EncoderBank"
 
 -- Preview environment names (previewMode reader) that mean on/off; anything else is unknown.
 local PREVIEW_ENV = { Preview = 1, Live = 0, Normal = 0 }
@@ -247,6 +269,8 @@ local function parseArgument(argument)
     local l = tok:lower()
     local k, v = tok:match("^(%a+)=(.*)$")
     if opts.bankToken and (l == "status" or l == "verify" or l == "teardown") then opts.command = "bank-" .. l; opts.bankToken = nil
+    elseif opts.encToken and (l == "status" or l == "teardown") then opts.command = "encmacro-" .. l; opts.encToken = nil
+    elseif l == "encmacro" then opts.encToken = true
     elseif l == "stop" or l == "status" or l == "recover" then opts.command = l
     elseif l == "bank" then opts.bankToken = true
     elseif l == "force" then opts.force = true
@@ -267,6 +291,10 @@ local function parseArgument(argument)
         local count = (last ~= "" and (tonumber(last) - tonumber(first) + 1)) or DEFAULTS.maxHolds
         if count < 1 then return nil, "bank executor range is empty" end
         opts.bank = { quickeyFirst = tonumber(q), page = tonumber(page), executorFirst = tonumber(first), executorCount = count }
+      elseif k == "encmacro" then
+        local n = tonumber(v)
+        if not n or n ~= math.floor(n) or n < 1 or n > 9999 then return nil, "encmacro must be a macro number 1..9999, e.g. encmacro=950" end
+        opts.encMacro = n
       elseif k == "taps" then
         local m = v:lower()
         if m ~= "on" and m ~= "off" then return nil, "taps must be on or off" end
@@ -303,6 +331,7 @@ local function parseArgument(argument)
     else return nil, "unknown token '" .. tok .. "'" end
   end
   if opts.bankToken then return nil, "bank: expected bank=<quickey>/<page>.<first>[-<last>], \"bank status\", \"bank verify\" or \"bank teardown\"" end
+  if opts.encToken then return nil, "encmacro: expected encmacro=<macro number>, \"encmacro status\" or \"encmacro teardown\"" end
   if opts.bankCodes and not opts.bank then return nil, "bankcodes needs a bank=... range in the same argument" end
   if opts.bankStatic and not opts.bank then return nil, "static needs a bank=... range in the same argument (one executor per code)" end
   if opts.routes and (opts.input == "fake" or opts.input == "off") then return nil, "route= needs input=keyboard, quickey or mixed" end
@@ -378,6 +407,104 @@ local function closeSession(s, now, reason)
   log("session %s (%s from %s:%d) closed: %s", s.sid, s.id, s.ip, s.port, reason)
 end
 
+-------------------------------------------------------------------------------
+-- KB-30: the encoder-bank macro (Swap Prog). One line, "Select EncoderBank", Execute No: running it places the text on
+-- the operator's command line (onPC 2.5.1 appends whatever AddToCmdline says, so the plugin clears the line first).
+-- The macro is the plugin's when its Note carries ENCBANK_MARK; anything else at that number is never changed.
+-------------------------------------------------------------------------------
+local function objectAt(ref)
+  local ok, l = pcall(ObjectList, ref)
+  if ok and type(l) == "table" then return l[1] end
+  return nil
+end
+local function propOf(obj, k)
+  local ok, v = pcall(function() return obj:Get(k) end)
+  if ok then return v end
+  return nil
+end
+local function yesValue(v)
+  local t = tostring(v):lower()
+  return v == true or t == "yes" or t == "true" or t == "on" or t == "1"
+end
+
+-- nil, code, why when Macro n is not the plugin's own one-line macro (missing, foreign or changed); true otherwise.
+local function verifyEncMacro(n)
+  local m = objectAt("Macro " .. n)
+  if not m then return nil, "missing", "Macro " .. n .. " does not exist" end
+  local note = tostring(propOf(m, "Note") or "")
+  if note ~= ENCBANK_MARK then return nil, "not-owned", string.format("Macro %d '%s' is not this plugin's encoder-bank macro (note '%s')", n, tostring(m.name), note) end
+  local okC, count = pcall(function() return m:Count() end)
+  if not okC or count ~= 1 then return nil, "changed", string.format("Macro %d has %s line(s), expected 1", n, okC and tostring(count) or "an unreadable number of") end
+  local line = objectAt("Macro " .. n .. ".1")
+  if not line then return nil, "changed", "Macro " .. n .. ".1 is not readable" end
+  local command, execute, enabled = propOf(line, "Command"), propOf(line, "Execute"), propOf(line, "Enabled")
+  if tostring(command) ~= ENCBANK_COMMAND then return nil, "changed", string.format("Macro %d.1 reads '%s', expected '%s'", n, tostring(command), ENCBANK_COMMAND) end
+  if execute == nil or yesValue(execute) then return nil, "changed", string.format("Macro %d.1 has Execute %s, expected No (it would run the command instead of placing it)", n, tostring(execute)) end
+  if enabled ~= nil and not yesValue(enabled) then return nil, "changed", string.format("Macro %d.1 is disabled", n) end
+  return true
+end
+
+-- The operator's argument encmacro=<n> is the authorization: an empty number gets the plugin's macro, the plugin's own
+-- macro is adopted, anything else is reported and left alone (Swap Prog then stays unsupported).
+local function provisionEncMacro(n)
+  state.encMacroActive = false
+  local existing = objectAt("Macro " .. n)
+  if existing then
+    local ok, code, why = verifyEncMacro(n)
+    if not ok then logerr("encmacro: refused [%s]: %s; Swap Prog stays unsupported (choose another number, or fix or delete that macro)", code, why); return false end
+    state.encMacroNo, state.encMacroActive = n, true
+    log("encmacro: Macro %d adopted (%s, Execute No); Swap Prog enters %s", n, ENCBANK_COMMAND, ENCBANK_COMMAND)
+    return true
+  end
+  local function fail(why)
+    logerr("encmacro: creating Macro %d failed: %s; Swap Prog stays unsupported", n, why)
+    if objectAt("Macro " .. n) then
+      local fb = Cmd("Delete Macro " .. n .. " /NoConfirmation")
+      if objectAt("Macro " .. n) then logerr("encmacro: Macro %d (created by this start) could not be removed again (%s); delete it by hand", n, tostring(fb)) end
+    end
+    return false
+  end
+  local fb = Cmd("Store Macro " .. n)
+  local m = objectAt("Macro " .. n)
+  if not m then return fail("Store Macro " .. n .. " answered " .. tostring(fb) .. " and no macro exists") end
+  local okS, serr = pcall(function() m:Set("Name", ENCBANK_NAME); m:Set("Note", ENCBANK_MARK) end)
+  if not okS then return fail("setting its name and note raised " .. tostring(serr)) end
+  fb = Cmd("Store Macro " .. n .. ".1")
+  local line = objectAt("Macro " .. n .. ".1")
+  if not line then return fail("Store Macro " .. n .. ".1 answered " .. tostring(fb) .. " and no line exists") end
+  local okL, lerr = pcall(function() line:Set("Command", ENCBANK_COMMAND); line:Set("Execute", "No") end)
+  if not okL then return fail("setting its line raised " .. tostring(lerr)) end
+  local ok, code, why = verifyEncMacro(n)
+  if not ok then return fail("read back [" .. tostring(code) .. "]: " .. tostring(why)) end
+  state.encMacroNo, state.encMacroActive = n, true
+  log("encmacro: Macro %d created ('%s': %s, Execute No); Swap Prog enters %s", n, ENCBANK_NAME, ENCBANK_COMMAND, ENCBANK_COMMAND)
+  return true
+end
+
+-- Deletes the verified owned macro (Plugin "mtpnxk_surface" "encmacro teardown").
+local function teardownEncMacro()
+  local n = state.encMacroNo
+  if not n then log("encmacro teardown: no encoder-bank macro is known (start once with encmacro=<n>)"); return end
+  local m = objectAt("Macro " .. n)
+  if not m then state.encMacroNo, state.encMacroActive = nil, false; log("encmacro teardown: Macro %d does not exist any more; nothing deleted", n); return end
+  -- Review (PR #20): the whole macro must still be what the plugin created, not only its mark: an operator's edit to
+  -- a marked macro (its line, Execute, more lines) is theirs and is never deleted along with it.
+  local ok, code, why = verifyEncMacro(n)
+  if not ok then logerr("encmacro teardown refused [%s]: %s; nothing deleted (delete it by hand if that is intended)", tostring(code), tostring(why)); return end
+  local fb = Cmd("Delete Macro " .. n .. " /NoConfirmation")
+  if objectAt("Macro " .. n) then logerr("encmacro teardown: Delete Macro %d answered %s and the macro is still there", n, tostring(fb)); return end
+  state.encMacroNo, state.encMacroActive = nil, false
+  log("encmacro teardown: Macro %d deleted; Swap Prog is unsupported until a start with encmacro=<n>", n)
+end
+
+local function logEncMacro()
+  local n = state.encMacroNo
+  if not n then log("encmacro: none (start with encmacro=<n>)"); return end
+  local ok, code, why = verifyEncMacro(n)
+  if ok then log("encmacro: Macro %d verified (%s, Execute No); Swap Prog %s", n, ENCBANK_COMMAND, state.encMacroActive and "enters it" or "is not active in this run")
+  else logerr("encmacro: Macro %d [%s]: %s", n, tostring(code), tostring(why)) end
+end
+
 -- Resolution of every surface key through the routing policy (KB-15: the method decided per key, the
 -- route it selects now and the backend part that would press it), reported in the welcome as two sorted
 -- name lists (the datagram stays small) and logged per key at start. A route is usable only when the
@@ -411,7 +538,16 @@ local function describeKeys(logReasons)
     if supported then ok[#ok + 1] = name else unsupported[#unsupported + 1] = name; reasons[name] = reason end
   end
   state.routes = routes
-  for name in pairs(NXK_LOCAL) do unsupported[#unsupported + 1] = name; reasons[name] = "not a console key" end
+  for name in pairs(NXK_LOCAL) do
+    if name == ENCBANK_KEY and state.encMacroActive then
+      ok[#ok + 1] = name
+      routes[name] = { method = "encmacro", supported = true, macro = state.encMacroNo }
+      if logReasons then log("key %s: %s via Macro %d (Execute No; the operator types the bank and Enter)", name, ENCBANK_COMMAND, state.encMacroNo) end
+    else
+      unsupported[#unsupported + 1] = name
+      reasons[name] = (name == ENCBANK_KEY) and "not a console key; with encmacro=<n> it enters " .. ENCBANK_COMMAND .. " (KB-30)" or "not a console key"
+    end
+  end
   table.sort(ok); table.sort(unsupported)
   if logReasons then
     for _, name in ipairs(unsupported) do log("key %s unsupported: %s", name, reasons[name]) end
@@ -570,6 +706,63 @@ end
 -------------------------------------------------------------------------------
 -- Packet handlers
 -------------------------------------------------------------------------------
+-- KB-30: Swap Prog. Key-down: re-verify the owned macro (a show load or an edit may have changed what that number is),
+-- clear text already on the command line, run the macro, and gate the key queue until the line reads back. The key is
+-- acknowledged at dispatch, as every key is; the read-back is the gate's (see serviceKeyGate). Key-up: nothing to do.
+local function encoderBankKey(s, ev, down, now)
+  if down == 0 then ackEvent(s, ev, true, { noop = 1 }); return nil end
+  local n = state.encMacroNo
+  if not state.encMacroActive or not n then
+    ackEvent(s, ev, false, { code = "unsupported", why = "no encoder-bank macro: start the plugin with encmacro=<n> (KB-30)" }); return nil
+  end
+  if not state.inputEnabled or state.inputMode == "fake" then
+    ackEvent(s, ev, false, { code = "input-disabled", why = "input is " .. tostring(state.inputMode) .. "; the command line is left alone" }); return nil
+  end
+  local ok, code, why = verifyEncMacro(n)
+  if not ok then
+    state.counters.encBankRefused = (state.counters.encBankRefused or 0) + 1
+    ackEvent(s, ev, false, { code = code, why = why .. "; nothing run (restart with encmacro=<n> after fixing it)" }); return nil
+  end
+  local okT, text = pcall(state.commandText)
+  if not okT then ackEvent(s, ev, false, { code = "unreadable", why = "the command line cannot be read: " .. tostring(text) }); return nil end
+  local cleared = nil
+  if type(text) == "string" and text:match("%S") then
+    local okC, cerr = pcall(function() CmdObj():ClearCmd() end)
+    if not okC then ackEvent(s, ev, false, { code = "clear-failed", why = "clearing '" .. text .. "' raised " .. tostring(cerr) .. "; nothing run" }); return nil end
+    cleared = text
+  end
+  local fb = Cmd("Go+ Macro " .. n)
+  if tostring(fb) ~= "OK" then
+    state.counters.encBankRefused = (state.counters.encBankRefused or 0) + 1
+    ackEvent(s, ev, false, { code = "refused", why = "Go+ Macro " .. n .. " answered " .. tostring(fb), cleared = cleared and 1 or nil }); return nil
+  end
+  state.keyGate = { untilT = now + DEFAULTS.encBankGateMs / 1000, at = now, macro = n }
+  state.keyDownThisTick = true
+  state.collectNextTick = true
+  state.counters.encBank = (state.counters.encBank or 0) + 1
+  ackEvent(s, ev, true, { encmacro = n, cleared = cleared and 1 or nil })
+  return nil
+end
+
+-- KB-30: the gate opens once the command line starts with "Select EncoderBank" (the queued keys then follow in order),
+-- or after encBankGateMs (counted and logged: the keys go on to whatever the line holds; the LED shows the truth).
+local function encBankPendingText(t)
+  return type(t) == "string" and t:lower():match("^%s*select%s+encoderbank") ~= nil
+end
+local function serviceKeyGate(now)
+  local g = state.keyGate
+  if not g then return end
+  local okT, text = pcall(state.commandText)
+  if okT and encBankPendingText(text) then
+    state.keyGate = nil
+    state.counters.encBankVerified = (state.counters.encBankVerified or 0) + 1
+  elseif now >= g.untilT then
+    state.keyGate = nil
+    state.counters.encBankUnverified = (state.counters.encBankUnverified or 0) + 1
+    logerr("Swap Prog: the command line reads '%s' %d ms after Go+ Macro %d, not '%s'; the queued keys go on", okT and tostring(text) or ("unreadable: " .. tostring(text)), math.floor((now - g.at) * 1000 + 0.5), g.macro, ENCBANK_COMMAND)
+  end
+end
+
 local function handleKey(s, obj, now, fromQueue)
   local ev, name, down = obj.ev, obj.k, obj.d
   if type(ev) ~= "number" or ev ~= math.floor(ev) or ev < 0 then return "bad-ev" end
@@ -582,7 +775,8 @@ local function handleKey(s, obj, now, fromQueue)
   -- read and admitted every tick, so heartbeats and other messages are never held behind a burst.
   s.keyQueued = s.keyQueued or {}
   if s.keyQueued[ev] then return nil end
-  if not fromQueue and (state.keyDownThisTick or #state.keyQueue > 0) then
+  -- KB-30: while the command line has not shown Swap Prog's "Select EncoderBank" yet, every key event waits as well.
+  if not fromQueue and (state.keyDownThisTick or #state.keyQueue > 0 or state.keyGate) then
     if #state.keyQueue >= DEFAULTS.maxKeyQueue then
       state.counters.keyQueueOverflow = (state.counters.keyQueueOverflow or 0) + 1
       ackEvent(s, ev, false, { code = "overloaded", why = string.format("%d key events are already waiting for their tick; nothing dispatched", DEFAULTS.maxKeyQueue) })
@@ -599,6 +793,7 @@ local function handleKey(s, obj, now, fromQueue)
     ackEvent(s, ev, false, { code = "superseded", why = "a newer event for this key was already processed; nothing dispatched" })
     return nil
   end
+  if name == ENCBANK_KEY then return encoderBankKey(s, ev, down, now) end
   local logical = NXK_KEYS[name]
   if not logical then ackEvent(s, ev, false, { code = "unsupported", why = "not a console key" }); return nil end
   local inst = hk()
@@ -943,6 +1138,12 @@ local function pendingOf(item)
   return word:lower():sub(1, 16)
 end
 
+-- KB-30: 1 while the command line starts with "Select EncoderBank" (Swap Prog's LED), 0 otherwise, "?" when unknown.
+local function encBankOf(item)
+  if not item or item.available ~= true or item.stale then return "?" end
+  return encBankPendingText(tostring(item.value)) and 1 or 0
+end
+
 -- One tri-state table from the feedback snapshot. "?" for unavailable, stale or identity-uncertain.
 local function collectState(now)
   local inst = fb()
@@ -957,6 +1158,7 @@ local function collectState(now)
     previewBar = tri(get("previewBar[display=" .. state.display .. "]")),
     ma = tri(get("maState")), shortcuts = tri(get("shortcutsActive")),
     pending = pendingOf(get("commandText")),
+    ebank = encBankOf(get("commandText")),
     freeze = "?",
   }
   local pm = get("previewMode")
@@ -1439,7 +1641,8 @@ local function tick(now)
   -- Key events queued by earlier ticks run first, in arrival order: every release, and at most one key-down.
   state.keyQueue = state.keyQueue or {}
   local q = state.keyQueue
-  while #q > 0 do
+  serviceKeyGate(now)
+  while #q > 0 and not state.keyGate do
     local item = q[1]
     if item.obj.d == 1 and state.keyDownThisTick then break end
     table.remove(q, 1)
@@ -1948,6 +2151,9 @@ local function start(opts)
     log("feedback: watching %d item(s)", w.watched)
   end
   state.commandText = function() return CmdObj().cmdtext end
+  state.keyGate = nil
+  state.encMacroActive = false
+  if opts.encMacro then provisionEncMacro(opts.encMacro) end
   state.inputRequested, state.forceRequested = opts.input, opts.force
   state.routeOverrides = opts.routes
   state.backendName = nil
@@ -1992,6 +2198,8 @@ local function MainImpl(display_handle, argument)
     elseif state.controlUnresolved and #state.controlUnresolved > 0 then log("control recover: not running; %d record(s) kept for the next start with control=fake|console", #state.controlUnresolved) end
     return
   end
+  if opts.command == "encmacro-status" then logEncMacro(); return end
+  if opts.command == "encmacro-teardown" then teardownEncMacro(); return end
   if opts.command and opts.command:match("^bank%-") then
     local inst = hk()
     if not inst then
@@ -2025,6 +2233,7 @@ local function MainImpl(display_handle, argument)
   end
   if opts.command == "status" then
     log("%s", describe())
+    logEncMacro()
     local inst0 = hk()
     if inst0 then
       local okR, rr = pcall(inst0.routingReport, inst0)

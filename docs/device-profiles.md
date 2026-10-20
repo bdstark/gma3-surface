@@ -59,7 +59,7 @@ Four rotaries with push, 42 keys, single-colour LEDs under most keys. Roles: `se
 | `Snap Shot` | **unmapped** (no grandMA3 hardkey; the plugin answers `bad-key`) | on while held (local echo) |
 | `Back` | **unmapped** (no grandMA3 hardkey; `bad-key`) | off |
 | `Bank` | **local modifier**: held, the rotaries and the M-Touch parameter strips move at the console's Fine resolution (a tenth of a click). Never sent to the console (acked "not a console key") | on while held, with all four encoder LEDs |
-| `Swap Prog` | **unmapped** (local, nothing bound) | off |
+| `Swap Prog` | with the plugin's `encmacro=<n>` (KB-30): **encoder bank entry**. The plugin clears text on the command line and runs its Macro n, which places `Select EncoderBank ` there; the operator types the bank (feature group) number and Enter on the keypad (`Swap Prog 4 Enter`: Color in the default bar). Keys pressed right after it wait until the keyword is on the command line. Without `encmacro=`: **unmapped** (acked `unsupported`) | on while `Select EncoderBank` is pending on the command line |
 | `Link` | **unmapped** key; its LED is the link indicator | off while console feedback is fresh, blinking while the link is down, unpaired or the state is stale |
 
 Which of these resolve depends on the user profile: on the `Default` US profile of the test show 32 keys
@@ -77,7 +77,9 @@ down, up to the plugin's hold limit (12 simultaneous, 60 s).
 
 The slots follow the console: the encoder bank (feature group) and the page the console shows for the current
 selection are read back (`context`), and the surface's motion is refused `stale-generation` when it was produced
-against an older context. Slots that are empty, phaser/editor slots (`other`) and slots of a non-Absolute layer
+against an older context. The feature group can be changed from the panel with `Swap Prog <bank> Enter` (KB-30, see
+the Keys table); the console refuses a bank the selection has no attributes for (`Not allowed`), and the slots move
+to the new bank once the context shows it. Slots that are empty, phaser/editor slots (`other`) and slots of a non-Absolute layer
 are refused by the console backend and reported.
 
 ## M-Touch (PID `f808`)
@@ -191,4 +193,6 @@ pairs again on its own, with nothing re-pressed.
 - Encoder presses, executor encoders, phaser/editor slots and non-Absolute layers are refused `unsupported`.
 - The M-Touch's parameter bars show value, never colour; the parameter colour scheme is textual there.
 - Fade, Delay, Snap Shot and Back on the NX-K have no console hardkey on 2.5.1.
+- Swap Prog's encoder bank entry places the keyword only; which bank the number selects, and whether the console
+  allows it for the selection, is the console's (the `bank.page` form is not checked by the console: KB-30 probe).
 - Nothing here emulates the grandMA3 hardware's own key layout, its encoders' acceleration or its displays.
