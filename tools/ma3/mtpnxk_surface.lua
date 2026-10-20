@@ -604,6 +604,9 @@ local function handleKey(s, obj, now, fromQueue)
   -- KB-29: a direct-tap key goes down as one tap (Press Quickey N): nothing is held, its key-up is only acknowledged.
   local route = state.routes and state.routes[name]
   if down == 1 and route and route.direct and state.tapsMode ~= "off" then
+    -- bench: the command line before the tap, so the watch measures this tap's effect (review 1 of #13).
+    local before = nil
+    if state.bench and logical:match("^NUM%d$") then pcall(function() before = state.commandText() end) end
     local r, err = inst:tap(s.sid, now, { key = logical, display = state.display, prefer = NXK_PREFER[name] })
     if not r then
       state.counters.refused = state.counters.refused + 1
@@ -616,6 +619,9 @@ local function handleKey(s, obj, now, fromQueue)
     state.keyDownThisTick = true
     state.collectNextTick = true
     ackEvent(s, ev, true, { hold = r.id, tap = 1 })
+    if state.bench and logical:match("^NUM%d$") then
+      state.benchWatch[#state.benchWatch + 1] = { s = s, ev = ev, at = now, before = before, tickAt = state.counters.ticks }
+    end
     return nil
   end
   if down == 0 and s.taps and s.taps[name] then

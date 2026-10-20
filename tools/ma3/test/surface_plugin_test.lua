@@ -1326,6 +1326,22 @@ check("...and releases it there", pressedCount() == 0 and pool.cmds[#pool.cmds] 
 state.running = true; Main(nil, "bank teardown"); state.ignoreNextCleanup = false; Cleanup()
 state.bankRecord = nil
 
+-- #13 review: bench mode measures direct digit taps too (the command line read before the tap).
+pageWithExecutors(1, 300, 12)
+reset("bank=950/1.300-311 input=mixed bench")
+push({ t = "hello", v = 2, id = "nxk-b", gen = 1, nonce = "9999999999999993" }); tick()
+welcome = ofType(drain(), "welcome")[1]; sid, seq = welcome.sid, 0
+console.cmdtext = ""
+send({ t = "key", ev = 1, k = "1", d = 1 }); tick(); drain()
+console.cmdtext = "1"
+tick(0.02)
+local beff = ofType(drain(), "effect")[1]
+check("bench mode reports the effect of a direct digit tap", beff and beff.ev == 1 and beff.frames == 1, J(beff))
+send({ t = "key", ev = 2, k = "1", d = 0 }); tick(); drain()
+console.cmdtext = ""
+state.running = true; Main(nil, "bank teardown"); state.ignoreNextCleanup = false; Cleanup()
+state.bankRecord = nil
+
 -------------------------------------------------------------------------------
 -- KB-16 review: a shortcut-mode restoration dispose() hands back (KB-14) is kept across stop/start,
 -- adopted as unresolved (presses refused), reported by status, and restored by recover.
