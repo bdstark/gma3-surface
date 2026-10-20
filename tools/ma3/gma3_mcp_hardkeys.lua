@@ -149,7 +149,7 @@
 --   * Input is disabled on a new instance. enableInput(adapter) is the operator's explicit decision.
 
 local NAME        = "gma3_mcp_hardkeys"
-local VERSION     = "0.10.0"
+local VERSION     = "0.11.0"
 local API_VERSION = 1
 
 -- Logical keys with special handling in describeKey() and press(). Since 0.5.0 every other
@@ -192,11 +192,11 @@ local KEYBOARD_LIMITATIONS = {
 -- What the owned-Quickey backend can and cannot promise (KB-10/KB-12/KB-13 evidence, onPC 2.5.1.0).
 local QUICKEY_LIMITATIONS = {
   "every event goes through the KB-12 bank: a code is dispatched only when its owned Quickey re-reads as the bank's (show identity, marker, Code, Name) right before the press; a missing, changed or replaced object refuses and nothing is repaired",
-  "only codes with KB-10 evidence are dispatched (NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE, MA1, OOPS), each only for the operations evidenced for it (tap / hold / chord); discovered-only codes are refused before dispatch",
+  "only codes with KB-10/KB-28 evidence are dispatched (KB-10: NUM1, NUM5, THRU, FIXTURE, PLEASE, CLEAR, STORE, MA1, OOPS; KB-28: NUM0-NUM9, PLUS, MINUS, DOT, SLASH, AT, FULL, UPDATE, EDIT, COPY, MOVE, DELETE, CUE, GROUP, MACRO, PREVIEW, HIGHLIGHT), each only for the operations evidenced for it (tap / hold / chord); discovered-only codes are refused before dispatch",
   "a Quickey addressed directly is always a complete tap (KB-10), so every tap, hold and chord is an executor press: the code's Quickey is assigned to a reserved executor and Press / Unpress Page P.E is issued; one reserved executor per concurrently held key",
   "no per-key readback exists: a press and a release are reported as dispatched, never confirmed; only the aggregate MASTATE is observable (MA1)",
   "a release is issued only on the recorded executor and only while it still holds the recorded Quickey; an executor emptied, reassigned or deleted during a hold leaves the key down on the console and the record unresolved until the operator restores the assignment and recovery runs; a direct Unpress Quickey is never issued (it re-activates non-latching keys)",
-  "effects are synchronous in the issuing chunk, except that with the Edit Command pop-up or another text field focused digits land one frame after keywords and all text keys go to the focused field (KB-10); nothing here reads the command line",
+  "effects are synchronous in the issuing chunk, except that with the Edit Command pop-up or another text field focused digits land one frame after keywords and all text keys go to the focused field (KB-10); keys pressed in separate requests (separate frames) kept their order in the pop-up (KB-28: 1 Thru 5, 2 + 3, 9 - 4), so a consumer that needs order in text fields dispatches at most one press per frame; nothing here reads the command line",
   "OOPS on an empty command line is Undo (it reverts show data) and PLEASE executes the command line; neither is checked or prevented here",
   "no PC-key or text dispatch and no mode change (capabilities.keyboard = false, char = false, modeChange = false): the shortcut, shortcutOrType and type methods are unavailable on this backend",
 }
@@ -667,19 +667,42 @@ local BANK_EXECUTOR_FUNCTIONS = { FLASH = true, BLACK = true, KILL = true, RATE1
 -- aliases are deduplicated by value with the alphabetically first name and reported.
 local BANK_ALIASES = { UNDO = "OOPS" }
 
--- KB-10 evidence per code (onPC 2.5.1.0, macOS, executor path for holds). Everything else is
--- discovered only. `tap` is a direct Press Quickey or an executor press/release pair; `hold` is an
--- executor Press kept down until Unpress; `chord` is a hold next to another held bank key.
+-- KB-10 evidence per code (onPC 2.5.1.0, macOS, executor path for holds), extended by KB-28 (the NX-K's
+-- remaining keys: docs/probes/kb-28-quickey-codes-macos-2.5.1.md). Everything else is discovered only.
+-- `tap` is a direct Press Quickey or an executor press/release pair; `hold` is an executor Press kept
+-- down until Unpress; `chord` is a hold next to another held bank key (KB-28: the second key goes down
+-- before the first comes up and the line equals two sequential taps). Every KB-28 code is qualified on
+-- the executor path only; stuck-key recovery (a direct Unpress Quickey) stays qualified for MA1 alone.
+local KB28_DIGIT = { tap = true, hold = true, chord = true }
 local BANK_QUALIFIED = {
-  NUM1    = { tap = true, hold = true,  chord = false },
+  NUM1    = { tap = true, hold = true,  chord = true },
   NUM5    = { tap = true, hold = true,  chord = true, note = "a direct Unpress Quickey re-activates it: stuck-key recovery is NOT qualified for NUM5" },
-  THRU    = { tap = true, hold = true,  chord = false },
+  THRU    = { tap = true, hold = true,  chord = true },
   FIXTURE = { tap = true, hold = true,  chord = false },
   PLEASE  = { tap = true, hold = true,  chord = false, note = "executes the command line; immediately after digits it is accepted in the same chunk outside a text pop-up" },
   CLEAR   = { tap = true, hold = true,  chord = false },
   STORE   = { tap = true, hold = true,  chord = true, note = "a 2 s executor hold did not open the Store Settings pop-up" },
   MA1     = { tap = false, hold = true, chord = true, note = "a direct tap holds nothing; qualified as an executor hold (MA1+STORE gave Record); the only code whose stuck-key recovery (direct Unpress Quickey) is qualified" },
   OOPS    = { tap = true, hold = false, chord = false, note = "Undo on an empty command line: it can revert show data, never use it as a clear" },
+  -- KB-28
+  NUM0 = KB28_DIGIT, NUM2 = KB28_DIGIT, NUM3 = KB28_DIGIT, NUM4 = KB28_DIGIT,
+  NUM6 = KB28_DIGIT, NUM7 = KB28_DIGIT, NUM8 = KB28_DIGIT, NUM9 = KB28_DIGIT,
+  PLUS    = { tap = true, hold = true,  chord = true },
+  MINUS   = { tap = true, hold = true,  chord = true },
+  DOT     = { tap = true, hold = true,  chord = true },
+  SLASH   = { tap = true, hold = true,  chord = true },
+  AT      = { tap = true, hold = true,  chord = true, note = "in the Edit Command pop-up it inserted nothing (at the start and mid-line)" },
+  UPDATE  = { tap = true, hold = true,  chord = true },
+  EDIT    = { tap = true, hold = true,  chord = true },
+  CUE     = { tap = true, hold = true,  chord = true },
+  GROUP   = { tap = true, hold = true,  chord = true },
+  PREVIEW = { tap = true, hold = true,  chord = true, note = "the Preview keyword on the command line, not the preview-mode toggle" },
+  COPY    = { tap = true, hold = true,  chord = false, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
+  MOVE    = { tap = true, hold = true,  chord = false, note = "after a digit it dropped the digit even as sequential taps, and the rolled pair executed on release: chord not qualified" },
+  DELETE  = { tap = true, hold = true,  chord = false, note = "a digit rolled into it opened the delete confirmation for the sheet's selected object: chord not tested further" },
+  MACRO   = { tap = true, hold = true,  chord = false, note = "not rolled: a digit before it would run a show macro" },
+  FULL    = { tap = true, hold = true,  chord = false, note = "executes At Full on the selection (Dimmer 100) on Press; nothing on an empty selection" },
+  HIGHLIGHT = { tap = true, hold = true, chord = false, note = "toggles Highlight once per Press (the mode reads a frame later); Unpress leaves it" },
 }
 -- Discovered codes with evidence that they do NOT behave as command-area keys through a Quickey.
 local BANK_UNQUALIFIED_NOTES = { ESC = "as a Quickey, ESC never touched the command line (direct and executor path)" }
@@ -2458,13 +2481,39 @@ function Instance:adoptBank(record, now)
                  codes = {}, byName = {}, byIndex = {}, executors = {}, exclusions = record.exclusions or {}, aliases = record.aliases or {}, unresolvedAliases = record.unresolvedAliases or {},
                  enumEntries = record.enumEntries, counters = { created = 0, reused = 0, verifications = 0, targetChecks = 0, refusedTargets = 0 } }
   local hasPlaceholder = false
+  -- A record kept by an older module carries that module's qualification. The flags are evidence about the
+  -- code, not about the objects, so they are recomputed from this module's table (KB-28 qualified codes a
+  -- 0.10.0 record lists as discovered); requalified names the codes whose flags changed.
+  local requalified = {}
   for _, c in ipairs(record.codes) do
     if type(c) == "table" and type(c.name) == "string" and type(c.index) == "number" then
       local e = { name = c.name, value = c.value, index = c.index, qualified = c.qualified, note = c.note, placeholder = c.placeholder and true or nil, state = "unverified" }
-      if e.placeholder then hasPlaceholder = true end
+      if e.placeholder then hasPlaceholder = true else
+        local q = BANK_QUALIFIED[e.name]
+        local now_ = q and shallowCopy(q) or false
+        local was = type(c.qualified) == "table" and c.qualified or false
+        if (now_ == false) ~= (was == false) or (now_ and (now_.tap ~= was.tap or now_.hold ~= was.hold or now_.chord ~= was.chord)) then requalified[#requalified + 1] = e.name end
+        e.qualified, e.note = now_, (q and q.note) or BANK_UNQUALIFIED_NOTES[e.name]
+      end
       bank.codes[#bank.codes + 1] = e; bank.byName[e.name], bank.byIndex[e.index] = e, e
     end
   end
+  -- Qualified codes the kept bank does not contain (a "qualified" bank provisioned before they had evidence):
+  -- adoption creates nothing, so they stay unavailable until the operator tears the bank down and provisions it
+  -- again. An explicit code list is the operator's choice and is not reported.
+  local missing = {}
+  if s.codes == "qualified" then
+    -- Only codes this console has (Enums.VirtualKeyCode, read best-effort: unreadable means nothing is reported).
+    local d = self:_bankDeps()
+    local okV, vk = pcall(function() return d and d.virtualKeyCodes() end)
+    if okV and type(vk) == "table" then
+      local q = discoverBankCodes(vk, "qualified")
+      for _, c in ipairs(q and q.codes or {}) do if not bank.byName[c.name] then missing[#missing + 1] = c.name end end
+      table.sort(missing)
+    end
+  end
+  bank.requalified = #requalified > 0 and requalified or nil
+  bank.missingQualified = #missing > 0 and missing or nil
   if #bank.codes == 0 then return fail("bad-argument", "the record lists no codes") end
   -- A partially torn-down bank legitimately lacks the placeholder (deleted with the rest): it is adopted for
   -- cleanup only. A complete record without it predates the executor reservation and is refused.
@@ -2529,8 +2578,9 @@ function Instance:_bankSummary(now, extra)
                 codeCount = #codes, qualifiedCount = qualified, discoveredCount = discovered, problemCount = problems,
                 codes = codes, placeholder = placeholder, executors = executors, exclusions = bank.exclusions, aliases = bank.aliases, unresolvedAliases = bank.unresolvedAliases, enumEntries = bank.enumEntries,
                 createdAt = bank.createdAt, adoptedAt = bank.adoptedAt, verifiedAt = bank.verifiedAt, checkedAt = bank.checkedAt, counters = shallowCopy(bank.counters), problems = bank.problems,
-                record = self:_bankRecord(),
-                note = "qualified = KB-10 evidence per code (tap/hold/chord); discovered codes are provisioned but a backend must not advertise them; reserved executors hold the bank's code-less placeholder Quickey so the claim is visible to other consumers; every dispatch re-reads the show identity and its Quickey (bankTarget) and nothing is ever repaired" }
+                record = self:_bankRecord(), requalified = bank.requalified, missingQualified = bank.missingQualified,
+                reprovision = bank.missingQualified and ("this bank lacks " .. #bank.missingQualified .. " qualified code(s) (" .. table.concat(bank.missingQualified, " ") .. "): tear it down and provision it again to route them as Quickeys") or nil,
+                note = "qualified = KB-10/KB-28 evidence per code (tap/hold/chord); discovered codes are provisioned but a backend must not advertise them; reserved executors hold the bank's code-less placeholder Quickey so the claim is visible to other consumers; every dispatch re-reads the show identity and its Quickey (bankTarget) and nothing is ever repaired" }
   if extra then for k, v in pairs(extra) do out[k] = v end end
   return out
 end

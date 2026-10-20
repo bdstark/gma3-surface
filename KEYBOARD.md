@@ -826,3 +826,34 @@ M-Play through `run` for every KB-16 … KB-23 scenario, two connected surfaces,
 changes and stale feedback on the physical lights, the agreed thresholds, and the records
 `docs/probes/kb-24-hardware-*.md`. Versions: service crate 0.1.0, plugin 0.11.0, protocol 2, module set
 unchanged (VENDOR.md hashes equal upstream `plugin/modules.lock.json` at `9535ded`).
+
+## KB-28 — Every qualified NX-K key as a Quickey (surface half, 2026-10-20)
+
+**Request:** the shortcut-table route does not reach pop-ups and dialogs (an encoder's calculator, the Edit Command
+pop-up), so the digits and `+ - . /` typed nothing there. Move every key that can be a Quickey to the Quickey path.
+
+**Module half:** bdstark/gma3-mcp#74 (hardkeys 0.11.0, pinned at `ca38200`): a live probe qualified 24 more codes for
+the executor-held Quickey path, with the record in `docs/probes/kb-28-quickey-codes-macos-2.5.1.md` there.
+
+**Surface (plugin 0.12.0):**
+
+- `input=mixed` routes a key through its Quickey whenever the loaded module's `BANK_QUALIFIED` gives its code hold
+  evidence, instead of a fixed six-key list: the digits, `+ - . /`, `@`, `Thru`, `Full`, `Enter`, `Record`, `Clear`,
+  `Update`, `Edit`, `Copy`, `Move`, `Delete`, `Cue`, `Group`, `Macro`, `Preview`, `HighLight`. `Undo` (tap-only
+  evidence), `Next`, `Last` and `Menu` (not probed) stay on the shortcut table. A module without the table export
+  falls back to the KB-10 list.
+- At most one key goes down per plugin tick. Quickey presses issued in one console frame reorder in a focused text
+  field (digits land after keywords, KB-10/KB-28); presses one frame apart keep their order. The datagrams behind a
+  key-down wait in the socket for the next tick; releases do not count.
+- The start log names the codes a kept bank lacks and the remedy (`bank teardown`, then `bank=...`) when the module
+  reports them (`reprovision`), and the codes whose qualification the adoption refreshed.
+- Tests: `surface_plugin_test.lua` 249 (the mixed and quickey sections follow the 0.11.0 qualification; two key-downs
+  in one tick are dispatched one per tick in order, releases are not held back), `e2e.sh` passed.
+
+**Live (onPC 2.5.1.0, `test-fixture-disposable`, `bank=900/1.178-189 input=mixed control=console`, the NX-K's
+service running and a second simulated surface, `mtpnxk sim --id sim-kb28`):** the start reported 34 keys supported,
+10 unsupported. With the Edit Command pop-up open, `1 Thru 5 2 + 3` sent with every key-down at the same instant
+showed `1 Thru 52 +3`, in order; the service retransmitted the presses whose acknowledgement came after their release
+and dropped those retransmissions (the originals were processed). Fixture 101 selected with `1 0 1 Enter`, the Dimmer
+calculator opened, `6 2 . 5` (simultaneous downs) showed `62.5` and `Enter` stored it (the encoder bar read 63).
+Physical NX-K keys were not pressed in this pass; the operator's check on the hardware is the remaining step.
