@@ -860,3 +860,26 @@ and dropped those retransmissions (the originals were processed). Fixture 101 se
 calculator opened, `6 2 . 5` (simultaneous downs) showed `62.5` and `Enter` stored it (the encoder bar read 63).
 **Hardware (2026-10-20):** the operator typed a value into an encoder's calculator dialog on the physical NX-K
 (`mtpnxk run`, same plugin start) and it was entered as expected.
+
+## KB-29 — Direct taps and static executor banks (surface half, 2026-10-20)
+
+**Request:** a key on the Quickey path cost an `Assign`, a `Press Page` and an `Unpress Page` (three command-history
+lines and the reads behind them); the operator asked for less noise and work, and for static executors.
+
+**Module half:** bdstark/gma3-mcp#75 (hardkeys 0.12.0, pinned at `f20a5bf`): direct Quickey taps for every code with
+evidence (all of the NX-K's Quickey keys) and `executors.static`.
+
+**Surface (plugin 0.13.0):**
+
+- A key whose route is a direct-tap Quickey goes down as one `tap()` (one `Press Quickey N`); its key-up is acknowledged
+  (`noop`, `tap`). `Undo` (OOPS: tap evidence, no hold evidence) becomes a Quickey key this way. `taps=off` keeps
+  press/release holds for every key (and `Undo` on the shortcut table). One key-down per tick and the key queue apply
+  to taps as before.
+- `static` (with `bank=...`) provisions a static bank; the start log reports it by its id (`@q940.s1.301-333`).
+- Tests: `surface_plugin_test.lua` 262 (the KB-15 hold tests run with `taps=off`; new: direct taps on key-down, key-up
+  acknowledged, `Undo` as a tap, rapid taps one per tick, a static bank's press without Assign), `e2e.sh` passed.
+
+**Live (onPC 2.5.1.0, `test-fixture-disposable`, `bank=940/1.301-333 static input=mixed control=console`):** executors
+1.301–333 held one code each; the start log reported every Quickey key as `direct tap`. Through `mtpnxk sim`, `1 0 1
+Enter` selected Fixture 101 and `3 7 . 5 Enter` (all key-downs at once) into the Dimmer calculator stored 37.5; the
+command history showed one `Press Quickey N` line per key, no Assign, Press Page or Unpress Page.
