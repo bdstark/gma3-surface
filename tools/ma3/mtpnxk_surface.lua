@@ -104,7 +104,8 @@ local json   = require("json")
 -- digits typed right after land behind it. The bank switch itself is the operator's Enter; the service follows the
 -- encoder bar through the context as before. The state's `ebank` item lights Swap Prog while the keyword is pending.
 -- Probe: docs/probes/kb-30-encoder-bank-macos-2.5.1.md.
-local VERSION   = "0.14.0"
+-- 0.14.1 (PR #20 review round 2): encmacro status and teardown follow the number of the latest start, even a refused one.
+local VERSION   = "0.14.1"
 -- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
 local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
 -- Review (PR #6, round 2): the watch list budget covers every supported configuration at once: the ordinary state
@@ -448,11 +449,18 @@ end
 -- macro is adopted, anything else is reported and left alone (Swap Prog then stays unsupported).
 local function provisionEncMacro(n)
   state.encMacroActive = false
+  -- Review (PR #20, round 2): the requested number is the one status and teardown act on from now on, whether or not
+  -- it can be used; a previous macro of the plugin at another number is left as it is (never deleted implicitly).
+  local previous = state.encMacroNo
+  state.encMacroNo = n
+  if previous and previous ~= n then
+    log("encmacro: Macro %d (the previous encoder-bank macro) is left as it is; to remove it, start with encmacro=%d and run \"encmacro teardown\"", previous, previous)
+  end
   local existing = objectAt("Macro " .. n)
   if existing then
     local ok, code, why = verifyEncMacro(n)
     if not ok then logerr("encmacro: refused [%s]: %s; Swap Prog stays unsupported (choose another number, or fix or delete that macro)", code, why); return false end
-    state.encMacroNo, state.encMacroActive = n, true
+    state.encMacroActive = true
     log("encmacro: Macro %d adopted (%s, Execute No); Swap Prog enters %s", n, ENCBANK_COMMAND, ENCBANK_COMMAND)
     return true
   end
@@ -476,7 +484,7 @@ local function provisionEncMacro(n)
   if not okL then return fail("setting its line raised " .. tostring(lerr)) end
   local ok, code, why = verifyEncMacro(n)
   if not ok then return fail("read back [" .. tostring(code) .. "]: " .. tostring(why)) end
-  state.encMacroNo, state.encMacroActive = n, true
+  state.encMacroActive = true
   log("encmacro: Macro %d created ('%s': %s, Execute No); Swap Prog enters %s", n, ENCBANK_NAME, ENCBANK_COMMAND, ENCBANK_COMMAND)
   return true
 end

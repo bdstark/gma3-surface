@@ -64,7 +64,7 @@ the keyboard backend, display 1. The start log (System Monitor / command-line
 history) lists every NX-K key with the method and backend that would press it
 (`key 1: NUM1 via shortcut (keyboard, shortcut-table)`), ending with
 `keys: 32 supported, 12 unsupported` on the default US profile, then
-`listening on 127.0.0.1:9810 (v0.14.0, protocol 2, gen …)`.
+`listening on 127.0.0.1:9810 (v0.14.1, protocol 2, gen …)`.
 
 ### 3a. Quickey dispatch (KB-15, the preferred path once set up)
 
@@ -196,7 +196,9 @@ to the new one. Swap Prog's LED is lit while `Select EncoderBank` waits on the c
   show load can put another show's Macro n there: an edited, foreign or missing macro is refused and nothing runs.
 - `Plugin "mtpnxk_surface" "encmacro status"` checks the macro, and `"encmacro teardown"` deletes it, but only while it
   is still exactly what the plugin created. A marked macro you edited (its line, Execute, another line) is yours: it is
-  refused and kept. Without `encmacro=`, Swap Prog stays a local key and is acknowledged `unsupported`.
+  refused and kept. Both act on the number of the latest start with `encmacro=`, even when that number was refused:
+  moving to another number leaves the previous macro as it is (the start log says so); to remove it, start once with
+  its number and run `encmacro teardown`. Without `encmacro=`, Swap Prog stays a local key and is acknowledged `unsupported`.
 - Lua cannot write the command line, so the macro is how the keyword gets there: the command history shows one
   `Go+ Macro n` line per press. Keys pressed right after Swap Prog wait until the command line shows the keyword (at
   most 0.4 s; 50–70 ms on onPC 2.5.1), so a fast `Swap Prog 4 Enter` still arrives in order. If the keyword has not

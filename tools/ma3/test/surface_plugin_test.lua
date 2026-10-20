@@ -1751,10 +1751,21 @@ do
   check("a foreign macro is reported and left alone; Swap Prog stays unsupported",
     findLog("encmacro: refused %[not%-owned%]: Macro 951 'Operator's macro'") and #cmdsFor(951) == 0 and pool.macros[951].lines[1].Command == "Go+ Sequence 1" and not state.encMacroActive and state.keyReasons["Swap Prog"] ~= nil,
     J({ tostring(cmdsFor(951)), lastLog() }))
+  -- Review (PR #20, round 2): the refused number is the one status and teardown act on; the previous macro is kept.
+  check("a start that names a refused number moves status and teardown to it and leaves the previous macro alone",
+    state.encMacroNo == 951 and findLog("encmacro: Macro 950 %(the previous encoder%-bank macro%) is left as it is") and pool.macros[950] ~= nil, J({ tostring(state.encMacroNo), lastLog() }))
+  Main(nil, "encmacro status")
+  check("encmacro status then reports the requested macro", findLog("encmacro: Macro 951 %[not%-owned%]"), lastLog())
+  Main(nil, "encmacro teardown")
+  check("encmacro teardown then refuses the foreign macro and deletes neither", pool.macros[951] ~= nil and pool.macros[950] ~= nil and findLog("encmacro teardown refused %[not%-owned%]: Macro 951"), lastLog())
   pool.macroLineFails = true
   reset("input=keyboard encmacro=952")
   pool.macroLineFails = nil
   check("a creation that fails half-way removes the macro it created", pool.macros[952] == nil and findLog("encmacro: creating Macro 952 failed") and J(cmdsFor(952)) == J({ "Store Macro 952", "Store Macro 952.1", "Delete Macro 952 /NoConfirmation" }) and not state.encMacroActive, J(cmdsFor(952)))
+  Main(nil, "encmacro status")
+  check("after a failed creation status reports the requested macro as missing, not the previous one", state.encMacroNo == 952 and findLog("encmacro: Macro 952 %[missing%]") and pool.macros[950] ~= nil, lastLog())
+  Main(nil, "encmacro teardown")
+  check("teardown after a failed creation deletes nothing and forgets the number", pool.macros[950] ~= nil and pool.macros[951] ~= nil and state.encMacroNo == nil and findLog("encmacro teardown: Macro 952 does not exist any more; nothing deleted"), lastLog())
 
   -- status and teardown.
   reset("input=keyboard encmacro=950")
