@@ -1212,12 +1212,27 @@ end
 
 local function sameBank(a, b) return type(a) == "table" and type(b) == "table" and a.id == b.id and a.show == b.show end
 
-local function setAsideBank(record, show)
+local function insertAsideBank(record)
   state.bankAside = state.bankAside or {}
   local slot = #state.bankAside + 1
   -- The same bank of the same show (same objects): the newer record replaces the older one.
   for i, r in ipairs(state.bankAside) do if sameBank(r, record) then slot = i; break end end
   state.bankAside[slot] = record
+end
+
+-- A newer record of the same bank (kept from a run, or a bank provisioned on the same objects) supersedes a set-aside one.
+local function supersedeAsideBank(record)
+  local aside = state.bankAside or {}
+  for i = #aside, 1, -1 do
+    if sameBank(aside[i], record) then
+      table.remove(aside, i)
+      log("bank: the set-aside record %s (show '%s') is superseded by the current record of the same bank", tostring(record.id), tostring(record.show))
+    end
+  end
+end
+
+local function setAsideBank(record, show)
+  insertAsideBank(record)
   log("bank: record %s belongs to show '%s'%s; set aside, not adopted (it is adopted again at a start in that show; \"bank status\" lists it)",
     tostring(record.id), tostring(record.show), show and (", the current show is '" .. show .. "'") or "")
 end
@@ -1233,14 +1248,15 @@ end
 local function logAsideBanks(prefix)
   local aside = state.bankAside or {}
   if #aside == 0 then return end
-  log("%s: %d record(s) of other shows set aside (each is adopted again when its show is loaded, and torn down only from there)", prefix, #aside)
-  for _, r in ipairs(aside) do log("%s: set aside %s show='%s' (%d code(s))", prefix, tostring(r.id), tostring(r.show), #(r.codes or {})) end
+  log("%s: %d record(s) set aside (each is adopted again at a start in its show, and torn down only from there)", prefix, #aside)
+  for _, r in ipairs(aside) do log("%s: set aside %s show='%s' (%d code(s))%s", prefix, tostring(r.id), tostring(r.show), #(r.codes or {}), r.refused and ("; adoption refused " .. tostring(r.refused)) or "") end
 end
 
 -- A record handed back by dispose(). A different kept record (left unadopted at this start) is set aside, not overwritten.
 local function keepBankRecord(record)
   local kept = state.bankRecord
   if type(kept) == "table" and not sameBank(kept, record) then setAsideBank(kept, nil) end
+  supersedeAsideBank(record)
   state.bankRecord = record
 end
 
@@ -1631,7 +1647,15 @@ local function adoptKeptBank(t)
   if type(inst.adoptBank) ~= "function" then logerr("bank: a record is kept but the loaded module has no adoptBank()"); return end
   local ok, r, err = pcall(inst.adoptBank, inst, record, t)
   if not ok then logerr("bank adopt raised: %s; the record is kept", tostring(r)); return end
-  if not r then logerr("bank adopt refused [%s]: %s; the record is dropped (provision again with bank=...)", tostring(err and err.code), tostring(err and err.message)); state.bankRecord = nil; return end
+  if not r then
+    -- The record may still be the only one naming objects that exist: it is set aside with the refusal, never
+    -- dropped. It is tried again at the next start in its show, and a bank provisioned on the same objects supersedes it.
+    record.refused = string.format("[%s] %s", tostring(err and err.code), tostring(err and err.message))
+    state.bankRecord = nil
+    insertAsideBank(record)
+    logerr("bank adopt refused %s; the record is set aside, not dropped (\"bank status\" lists it; bank=... provisions this show's bank, and one on the same objects supersedes the record)", record.refused)
+    return
+  end
   state.bankRecord = nil
   logBank("bank adopt", r)
 end
@@ -1657,6 +1681,7 @@ local function provisionBank(opts, t)
     return
   end
   log("bank provision: %d Quickey(s) created, %d reused", r.created or 0, r.reused or 0)
+  supersedeAsideBank({ id = r.id, show = r.show })
   logBank("bank provision", r)
 end
 

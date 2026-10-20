@@ -141,7 +141,10 @@ records`), and the other show's record is set aside in turn. `bank status` lists
 the set-aside records (`set aside <id> show='…'`), also while the plugin is not
 running. There is no command that forgets one: a set-aside record goes away only
 through `bank teardown` in its own show, which deletes its objects first. `bank teardown`
-removes only the live bank and its record; any other kept record stays. The
+removes only the live bank and its record; any other kept record stays. A record the
+module refuses to adopt back in its show (`bank adopt refused …`) stays set aside
+with the refusal, listed by `bank status`; it is tried again at each start there,
+and `bank=` on the same objects supersedes it. The
 records live in the plugin's Lua state, so an onPC restart clears them as it
 always did; the objects stay in the saved shows, and `bank=` reuses them there.
 

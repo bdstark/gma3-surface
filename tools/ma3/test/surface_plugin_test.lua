@@ -1390,7 +1390,7 @@ check("show B: a key goes down through show B's bank", sa and sa.ok == 1 and scm
 logs = {}
 state.running = true; Main(nil, "bank status")
 check("bank status lists the set-aside record next to the live bank",
-  findLog("bank status: bank " .. esc(SHOW_BANK) .. " state=ready") and findLog("bank status: 1 record%(s%) of other shows set aside")
+  findLog("bank status: bank " .. esc(SHOW_BANK) .. " state=ready") and findLog("bank status: 1 record%(s%) set aside")
   and findLog("bank status: set aside " .. esc(SHOW_BANK) .. esc(" show='" .. showA .. "|Default' (23 code(s))")), J(logs))
 state.ignoreNextCleanup = false; Cleanup()
 check("stop in show B keeps show B's record; show A's stays set aside", state.bankRecord and state.bankRecord.show == "show-b|Default" and #state.bankAside == 1 and state.bankAside[1].show == showA .. "|Default", J({ tostring(state.bankRecord and state.bankRecord.show), state.bankAside }))
@@ -1451,6 +1451,30 @@ reset("input=mixed")
 check("in A the record is taken back and adopted", liveBank().show == showA .. "|Default" and liveBank().state == "ready" and #state.bankAside == 0, J({ tostring(liveBank().show), #state.bankAside }))
 state.running = true; Main(nil, "bank teardown"); state.ignoreNextCleanup = false; Cleanup()
 check("teardown in A leaves no record anywhere", state.bankRecord == nil and #state.bankAside == 0 and quickeyCount() == 0)
+-- PR #19 review (Codex): a set-aside record whose adoption is refused back in its show stays set aside with the
+-- refusal (its objects still exist), and a bank provisioned on the same objects supersedes it.
+reset(BANK .. " input=mixed")
+state.running = true; state.ignoreNextCleanup = false; Cleanup()
+loadShow("show-b")
+reset("input=mixed")
+state.running = true; state.ignoreNextCleanup = false; Cleanup()
+state.bankAside[1].owner = "another-owner"  -- a record this module can no longer adopt
+loadShow(showA)
+reset("input=mixed")
+check("a set-aside record refused at adoption stays set aside with the refusal; nothing is adopted",
+  findLog("bank adopt refused %[bank%-foreign%-owner%]") and findLog("set aside, not dropped") and #state.bankAside == 1 and state.bankAside[1].refused and state.bankRecord == nil
+  and not liveBank().provisioned and quickeyCount() == 23, J({ #state.bankAside, tostring(state.bankRecord), logs }))
+logs = {}
+state.running = true; Main(nil, "bank status")
+check("bank status lists the refused record with its refusal", findLog("bank status: set aside " .. esc(SHOW_BANK) .. esc(" show='" .. showA .. "|Default' (23 code(s)); adoption refused [bank-foreign-owner]")), J(logs))
+state.ignoreNextCleanup = false; Cleanup()
+check("a stop keeps the refused record set aside", #state.bankAside == 1 and state.bankAside[1].refused ~= nil)
+reset(BANK .. " input=mixed")
+check("bank= reuses the bank's objects in its show and the refused record of the same bank is superseded",
+  findLog("bank provision: 0 Quickey%(s%) created, 23 reused") and findLog("is superseded by the current record of the same bank") and #state.bankAside == 0
+  and liveBank().show == showA .. "|Default" and liveBank().state == "ready" and state.inputEnabled == true, J({ #state.bankAside, logs }))
+state.running = true; Main(nil, "bank teardown"); state.ignoreNextCleanup = false; Cleanup()
+check("teardown leaves no record anywhere after the refusal", state.bankRecord == nil and #state.bankAside == 0 and quickeyCount() == 0)
 
 -------------------------------------------------------------------------------
 -- KB-16 review: a shortcut-mode restoration dispose() hands back (KB-14) is kept across stop/start,

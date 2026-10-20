@@ -892,7 +892,8 @@ restarted. The plugin now reads the show identity (the module's `consoleDeps().s
 of another show is set aside (one log line), a set-aside record of the current show is taken back and adopted, and
 `bank status` lists the set-aside records. Nothing forgets a record; it goes only through `bank teardown` in its own
 show, and `bank teardown` clears only the torn-down bank's record (a record left unadopted because the show identity
-was unreadable at that start stays kept). Tests: `surface_plugin_test.lua` 282 (new: a stale run in show A taken over in show B, B's own bank provisioned
+was unreadable at that start stays kept), and a record refused at adoption stays set aside with the refusal until a
+bank on the same objects supersedes it. Tests: `surface_plugin_test.lua` 287 (new: a stale run in show A taken over in show B, B's own bank provisioned
 and pressed, `bank status` listing A's record, a second start in B not logging it again, back in A taking A's record
 back with nothing created, teardown per show, an unreadable show identity at adoption followed by provisioning and
-teardown of the current bank), `e2e.sh` passed.
+teardown of the current bank, a set-aside record refused at adoption kept and then superseded), `e2e.sh` passed.
