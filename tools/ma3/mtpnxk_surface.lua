@@ -485,7 +485,10 @@ local function teardownEncMacro()
   if not n then log("encmacro teardown: no encoder-bank macro is known (start once with encmacro=<n>)"); return end
   local m = objectAt("Macro " .. n)
   if not m then state.encMacroNo, state.encMacroActive = nil, false; log("encmacro teardown: Macro %d does not exist any more; nothing deleted", n); return end
-  if tostring(propOf(m, "Note") or "") ~= ENCBANK_MARK then logerr("encmacro teardown refused: Macro %d '%s' is not this plugin's (note '%s'); nothing deleted", n, tostring(m.name), tostring(propOf(m, "Note"))); return end
+  -- Review (PR #20): the whole macro must still be what the plugin created, not only its mark: an operator's edit to
+  -- a marked macro (its line, Execute, more lines) is theirs and is never deleted along with it.
+  local ok, code, why = verifyEncMacro(n)
+  if not ok then logerr("encmacro teardown refused [%s]: %s; nothing deleted (delete it by hand if that is intended)", tostring(code), tostring(why)); return end
   local fb = Cmd("Delete Macro " .. n .. " /NoConfirmation")
   if objectAt("Macro " .. n) then logerr("encmacro teardown: Delete Macro %d answered %s and the macro is still there", n, tostring(fb)); return end
   state.encMacroNo, state.encMacroActive = nil, false

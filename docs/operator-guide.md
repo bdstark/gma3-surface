@@ -174,8 +174,9 @@ to the new one. Swap Prog's LED is lit while `Select EncoderBank` waits on the c
   starts adopt the plugin's own, and any other macro at that number is reported and never changed (Swap Prog then
   stays unsupported). Save the show for the macro to survive a reload. Every press checks the macro again, because a
   show load can put another show's Macro n there: an edited, foreign or missing macro is refused and nothing runs.
-- `Plugin "mtpnxk_surface" "encmacro status"` checks the macro, and `"encmacro teardown"` deletes it (only when it
-  carries the plugin's mark). Without `encmacro=`, Swap Prog stays a local key and is acknowledged `unsupported`.
+- `Plugin "mtpnxk_surface" "encmacro status"` checks the macro, and `"encmacro teardown"` deletes it, but only while it
+  is still exactly what the plugin created. A marked macro you edited (its line, Execute, another line) is yours: it is
+  refused and kept. Without `encmacro=`, Swap Prog stays a local key and is acknowledged `unsupported`.
 - Lua cannot write the command line, so the macro is how the keyword gets there: the command history shows one
   `Go+ Macro n` line per press. Keys pressed right after Swap Prog wait until the command line shows the keyword (at
   most 0.4 s; 50–70 ms on onPC 2.5.1), so a fast `Swap Prog 4 Enter` still arrives in order. If the keyword has not

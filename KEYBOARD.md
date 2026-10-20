@@ -901,13 +901,14 @@ line, but a macro line with Execute No places its text there (appended, whatever
 
 - `encmacro=<n>` creates the plugin's Macro n (`mtpnxk EncoderBank`, one line `Select EncoderBank`, Execute No, note
   `mtpnxk_surface encmacro v1`), adopts it on later starts, and refuses any other macro at that number.
-  `encmacro status` checks it and `encmacro teardown` deletes it.
+  `encmacro status` checks it and `encmacro teardown` deletes it, only while it is still exactly what the plugin
+  created (review round 1: an edited macro carrying the mark is refused and kept).
 - Swap Prog key-down re-verifies the macro, clears text on the command line, runs `Go+ Macro n` and is acknowledged
   at dispatch (`encmacro`, `cleared`). The key queue then waits until the command line reads `Select EncoderBank` (at
   most 400 ms), so `Swap Prog 4 Enter` typed fast arrives in order. Refusals: `unsupported`, `input-disabled`,
   `missing`, `not-owned`, `changed`, `unreadable`, `clear-failed`, `refused`.
 - The state carries `ebank` (1 while `Select EncoderBank` is pending), and the service lights Swap Prog from it.
-- Tests: `surface_plugin_test.lua` 295 (32 new), `cargo test` 111 (1 new), `e2e.sh` passed.
+- Tests: `surface_plugin_test.lua` 298 (35 new), `cargo test` 111 (1 new), `e2e.sh` passed.
 
 **Live (onPC 2.5.1.0, `test-fixture-disposable`, `input=keyboard control=console encmacro=950`):** from `mtpnxk sim`
 and from the physical NX-K, `Swap Prog 4 Enter` took the bar from Dimmer to Color with the selection kept, and a typed

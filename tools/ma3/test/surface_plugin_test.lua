@@ -1629,9 +1629,22 @@ do
   check("encmacro status verifies the macro", findLog("encmacro: Macro 950 verified"), lastLog())
   Main(nil, "encmacro teardown")
   check("encmacro teardown deletes the owned macro and Swap Prog becomes unsupported", pool.macros[950] == nil and findLog("encmacro teardown: Macro 950 deleted") and not state.encMacroActive and state.encMacroNo == nil, lastLog())
+  -- Review (PR #20): a marked macro the operator edited is theirs: teardown refuses it like dispatch does.
+  reset("input=keyboard encmacro=950")
+  state.running = true
+  pool.macros[950].lines[1].Command = "Go+ Sequence 1"
+  Main(nil, "encmacro teardown")
+  check("teardown refuses a marked macro whose line was edited, and keeps it", pool.macros[950] ~= nil and pool.macros[950].lines[1].Command == "Go+ Sequence 1" and findLog("encmacro teardown refused %[changed%]: Macro 950%.1 reads 'Go%+ Sequence 1'") and state.encMacroNo == 950, lastLog())
+  pool.macros[950].lines[1].Command = "Select EncoderBank"
+  pool.macros[950].lines[2] = { Command = "Go+ Sequence 2", Execute = "Yes", Enabled = "Yes" }
+  Main(nil, "encmacro teardown")
+  check("teardown refuses a marked macro with an added line, and keeps it", pool.macros[950] ~= nil and #pool.macros[950].lines == 2 and findLog("encmacro teardown refused %[changed%]: Macro 950 has 2 line"), lastLog())
+  pool.macros[950].lines[2] = nil
+  Main(nil, "encmacro teardown")
+  check("restored to what the plugin created, teardown deletes it", pool.macros[950] == nil and findLog("encmacro teardown: Macro 950 deleted"), lastLog())
   state.encMacroNo = 951
   Main(nil, "encmacro teardown")
-  check("teardown never deletes a macro that is not the plugin's", pool.macros[951] ~= nil and findLog("encmacro teardown refused: Macro 951"), lastLog())
+  check("teardown never deletes a macro that is not the plugin's", pool.macros[951] ~= nil and findLog("encmacro teardown refused %[not%-owned%]: Macro 951"), lastLog())
   state.encMacroNo, pool.macros[951] = nil, nil
   state.ignoreNextCleanup = false; Cleanup()
 end
