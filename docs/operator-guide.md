@@ -10,7 +10,7 @@ surface plugin and service. Qualified scope: [deployments.md](deployments.md)
 | Component | File(s) | Goes where |
 | --- | --- | --- |
 | Surface plugin entry component | `tools/ma3/mtpnxk_surface.lua` | the onPC user library plugins folder |
-| Vendored console modules (three) | `tools/ma3/gma3_mcp_hardkeys.lua` (0.10.0), `tools/ma3/gma3_mcp_feedback.lua` (0.2.0) | same folder; they are components of the same plugin |
+| Vendored console modules (three) | `tools/ma3/gma3_mcp_hardkeys.lua` (0.11.0), `tools/ma3/gma3_mcp_feedback.lua` (0.2.0) | same folder; they are components of the same plugin |
 | Import wrapper | `tools/ma3/mtpnxk_surface.xml` | same folder |
 | Surface service | `service/` → `mtpnxk` binary | the machine the NX-K is plugged into |
 
@@ -64,7 +64,7 @@ the keyboard backend, display 1. The start log (System Monitor / command-line
 history) lists every NX-K key with the method and backend that would press it
 (`key 1: NUM1 via shortcut (keyboard, shortcut-table)`), ending with
 `keys: 32 supported, 12 unsupported` on the default US profile, then
-`listening on 127.0.0.1:9810 (v0.10.0, protocol 2, gen …)`.
+`listening on 127.0.0.1:9810 (v0.12.0, protocol 2, gen …)`.
 
 ### 3a. Quickey dispatch (KB-15, the preferred path once set up)
 
@@ -73,9 +73,11 @@ Plugin "mtpnxk_surface" "bank=900/1.178-189 input=mixed"
 ```
 
 `bank=<quickey>/<page>.<first>-<last>` is the operator's decision to create show
-objects: one Quickey per hardkey code with KB-10 evidence (nine on onPC 2.5.1:
-`MA1 FIXTURE STORE NUM1 NUM5 THRU PLEASE OOPS CLEAR`, names `MCP <CODE>`, from
-pool index 900) plus a code-less `MCP RESERVED` placeholder, and the executor
+objects: one Quickey per hardkey code with KB-10/KB-28 evidence (33 on onPC 2.5.1 with
+hardkeys 0.11.0: `MA1 FIXTURE STORE PLEASE OOPS CLEAR THRU`, the digits `NUM0`–`NUM9`,
+`PLUS MINUS DOT SLASH AT FULL UPDATE EDIT COPY MOVE DELETE CUE GROUP MACRO PREVIEW
+HIGHLIGHT`, names `MCP <CODE>`, from pool index 900, so 900–932) plus a code-less
+`MCP RESERVED` placeholder (933), and the executor
 range reserved for holds (12 executors, one per concurrently held key; the
 range must be empty, an unowned object anywhere in it refuses the whole setup
 and nothing is created). The bank is verified at every start, kept as a record
@@ -83,9 +85,21 @@ across `stop`, re-verified by `bank verify`, shown by `bank status`, and removed
 only by `bank teardown` (refused while a Quickey is held). The show must be
 saved for the objects to survive a reload.
 
-`input=mixed` presses the keys with hold evidence (`1`, `5`, `Thru`, `Enter`,
-`Record`, `Clear`) as executor presses of their Quickeys and every other key
-through the shortcut table as before; the start log names the part per key.
+`input=mixed` presses every key with hold evidence (plugin 0.12.0: the digits,
+`+ - . /`, `@`, `Thru`, `Full`, `Enter`, `Record`, `Clear`, `Update`, `Edit`,
+`Copy`, `Move`, `Delete`, `Cue`, `Group`, `Macro`, `Preview`, `HighLight`) as
+executor presses of their Quickeys, and `Undo`, `Next`, `Last` and `Menu` through
+the shortcut table; the start log names the part per key. Quickeys reach pop-ups
+and dialogs (the Edit Command pop-up, an encoder's calculator), the shortcut table
+does not. At most one key goes down per plugin tick: Quickey keys pressed in one
+console frame reorder in a focused text field (KB-28), so a burst is spread over
+a few ticks (a fast burst can make the service retransmit an unacknowledged
+press; the duplicate is recognised and dropped). `@` inserts nothing in the Edit
+Command pop-up (a console behaviour, KB-28). A Quickey key that goes down while another
+held Quickey key is still down is refused when either is one of the KB-28 codes
+(digits, `+ - . /`, `@`, `Thru` and the keywords): the module qualified those
+pairs only inside a combo, so let the previous key come up first. Plugin 0.13.0
+taps these keys instead of holding them, which removes the limit.
 `input=quickey` uses Quickeys only (the other keys are reported unsupported).
 Rules the module enforces, reported to the service as refusals and never
 worked around: a Quickey route without a bank or for a code without evidence is
@@ -97,7 +111,13 @@ default profile (it has no shortcut row).
 `route=<key>:<method>,…` overrides single keys (`quickkey` or `shortcut`); an
 override the backend cannot serve, or that resolves to no usable route, refuses
 the start instead of being accepted inert. `bankcodes=hardkeys` provisions every
-command-area code (94 Quickeys) instead of the qualified nine.
+command-area code (94 Quickeys) instead of the qualified 33.
+
+Upgrading from plugin 0.11.0 (hardkeys 0.10.0): the bank kept from the older
+version has only the nine KB-10 codes. It is adopted and verified as before, the
+start log names the qualified codes it lacks, and their keys are refused until the
+bank is provisioned again: `Plugin "mtpnxk_surface" "bank teardown"`, then start
+with `bank=...` (the Quickey range must have room for 34 objects).
 
 Options, appended to the same quoted string:
 

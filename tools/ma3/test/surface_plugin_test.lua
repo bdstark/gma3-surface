@@ -181,7 +181,7 @@ check("bad option refused", select(2, state._parseArgument("key=x bogus")) ~= ni
 check("start without a key uses fixed loopback", reset("input=fake") == true and state.host == "127.0.0.1")
 check("legacy key and network overrides are refused", select(2, state._parseArgument("key=abcd")) ~= nil and select(2, state._parseArgument("bind=0.0.0.0")) ~= nil and select(2, state._parseArgument("allow=10.0.0.1")) ~= nil)
 check("start without credentials succeeds on the fake backend", reset() == true and state.inputEnabled == true and state.inputMode == "fake" and state.gen:match("^%d+%-%x%x%x%x%x%x%x%x$"), J({ state.inputMode, state.gen }))
-check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.10.0" and state.modules.feedback.version == "0.8.0", J(state.moduleVersions))
+check("modules loaded (vendored versions)", state.modules.hardkeys.version == "0.11.0" and state.modules.feedback.version == "0.8.0", J(state.moduleVersions))
 check("feedback watch list bounded (9 state items + 3 more context items for the NX-K; page is shared)", state.modules.feedback.instance:status().watched == 12)
 
 -------------------------------------------------------------------------------
@@ -198,7 +198,7 @@ check("welcome reports key resolution as sorted lists", welcome and has(welcome.
 check("unsupported reasons are logged at start, never guessed", state.keyReasons.Copy:find("no keyboard shortcut maps to COPY") and state.keyReasons.Update:find("not an Enums.VirtualKeyCode") and state.keyReasons.Bank == "not a console key" and findLog("key Copy unsupported"), J(state.keyReasons))
 check("an ambiguous keypad key resolves through the preferred keypad row of the shortcut table", findLog("key %+: PLUS via shortcut %(fake, shortcut%-table%) preferred row kpAdd") and findLog("key %-: MINUS via shortcut %(fake, shortcut%-table%) preferred row kpSubtract"), lastLog())
 check("welcome fits the service's datagram limit", #outbox == 0 or true)
-check("welcome carries module versions, input mode, protocol", welcome and welcome.modules.gma3_mcp_hardkeys == "0.10.0" and welcome.input == "fake" and welcome.backend == "fake" and welcome.v == 2 and welcome.epoch == 1, J(welcome))
+check("welcome carries module versions, input mode, protocol", welcome and welcome.modules.gma3_mcp_hardkeys == "0.11.0" and welcome.input == "fake" and welcome.backend == "fake" and welcome.v == 2 and welcome.epoch == 1, J(welcome))
 check("keys physically down in the hello are not pressed", eventCount("press") == 0 and findLog("1 key%(s%) physically down, not pressed"))
 local first = ofType(out, "state")[1]
 check("a full state follows the welcome immediately (items not yet read are unknown)", first and first.full == 1 and first.s.freeze == "?" and (first.s.page == "?" or first.s.page == 3), J(first))
@@ -1130,45 +1130,75 @@ state.running = true; state.ignoreNextCleanup = false; Cleanup()
 -- Provisioning through the operator's argument, the mixed backend, the per-key table.
 pool.cmds = {}
 reset("" .. BANK .. " input=mixed")
-check("bank= provisions one Quickey per KB-10 qualified code plus the placeholder (codes=qualified by default)", quickeyCount() == 10 and findLog("bank provision: 10 Quickey%(s%) created, 0 reused") and findLog("state=ready codes=9 %(qualified 9, discovered 0%)"), J({ quickeyCount(), lastLog() }))
+-- hardkeys 0.11.0 (KB-10 + KB-28) qualifies 22 of the codes in this harness's enum: MA1 FIXTURE EDIT COPY HIGHLIGHT
+-- STORE NUM0-NUM9 PLUS THRU MINUS PLEASE OOPS CLEAR.
+check("bank= provisions one Quickey per qualified code plus the placeholder (codes=qualified by default)", quickeyCount() == 23 and findLog("bank provision: 23 Quickey%(s%) created, 0 reused") and findLog("state=ready codes=22 %(qualified 22, discovered 0%)"), J({ quickeyCount(), lastLog() }))
 check("input is enabled on the mixed backend with the quickkey default", state.inputEnabled == true and state.backendName == "mixed" and findLog("input enabled on the mixed backend %(routing default quickkey"), lastLog())
-check("the start reports the part that presses each key", findLog("key 1: NUM1 via quickkey %(quickey") and findLog("key 2: NUM2 via shortcut %(keyboard") and findLog("key Record: STORE via quickkey %(quickey") and findLog("key Undo: OOPS via shortcut %(keyboard"), J(state.routes))
+check("the start reports the part that presses each key: every hold-qualified code as a Quickey (KB-28), Undo on the shortcut table", findLog("key 1: NUM1 via quickkey %(quickey") and findLog("key 2: NUM2 via quickkey %(quickey") and findLog("key %+: PLUS via quickkey %(quickey") and findLog("key Copy: COPY via quickkey %(quickey") and findLog("key Record: STORE via quickkey %(quickey") and findLog("key Undo: OOPS via shortcut %(keyboard"), J(state.routes))
 push({ t = "hello", v = 2, id = "nxk-q", gen = 1, nonce = "3333333333333333" }); tick()
 welcome = ofType(drain(), "welcome")[1]; sid, seq = welcome.sid, 0
-check("the welcome names the backend and keeps every surface key usable", welcome.backend == "mixed" and welcome.input == "mixed" and #welcome.keys.ok == 18 and welcome.keys.ok[17] == "Thru", J(welcome.keys))
+check("the welcome names the backend and keeps every surface key usable", welcome.backend == "mixed" and welcome.input == "mixed" and #welcome.keys.ok == 20 and welcome.keys.ok[19] == "Thru" and welcome.keys.ok[20] == "Undo", J(welcome.keys))
 keyboardCalls = {}
 send({ t = "key", ev = 1, k = "1", d = 1 }); tick()
 ack = ofType(drain(), "ack")[1]
 local holds = state.modules.hardkeys.instance:status().holds
 check("'1' is an executor press of the owned Quickey (quickey part), not a Keyboard() event", ack and ack.ok == 1 and lastCmd("^Press Page 1%.18%d$") and pressedCount() == 1 and #keyboardCalls == 0 and holds[#holds].backend == "quickey", J({ ack, pool.cmds[#pool.cmds], holds[#holds] and holds[#holds].backend }))
-send({ t = "key", ev = 2, k = "2", d = 1 }); tick()
+send({ t = "key", ev = 2, k = "Undo", d = 1 }); tick()
 ack = ofType(drain(), "ack")[1]
 check("a PC key while a Quickey is held is refused as an unqualified mix (nothing dispatched)", ack and ack.ok == 0 and ack.code == "unqualified-mix" and #keyboardCalls == 0, J(ack))
 send({ t = "key", ev = 3, k = "1", d = 0 }); tick()
 ack = ofType(drain(), "ack")[1]
 check("the release is the Unpress of the recorded executor", ack and ack.ok == 1 and lastCmd("^Unpress Page 1%.18%d$") and pressedCount() == 0, J({ ack, pool.cmds[#pool.cmds] }))
-send({ t = "key", ev = 4, k = "2", d = 1 }); tick()
+send({ t = "key", ev = 4, k = "Undo", d = 1 }); tick()
 ack = ofType(drain(), "ack")[1]
-check("'2' goes through the keyboard part (shortcut table, explicit override)", ack and ack.ok == 1 and #keyboardCalls == 1 and keyboardCalls[1].key == "2", J({ ack, keyboardCalls }))
+check("Undo (OOPS, tap-only evidence) goes through the keyboard part (shortcut table, explicit override)", ack and ack.ok == 1 and #keyboardCalls == 1, J({ ack, keyboardCalls }))
 send({ t = "key", ev = 5, k = "Record", d = 1 }); tick()
 ack = ofType(drain(), "ack")[1]
 check("a Quickey while a PC key is held is refused as an unqualified mix", ack and ack.ok == 0 and ack.code == "unqualified-mix" and pressedCount() == 0, J(ack))
-send({ t = "key", ev = 6, k = "2", d = 0 }); tick(); drain()
+send({ t = "key", ev = 6, k = "Undo", d = 0 }); tick(); drain()
 send({ t = "key", ev = 7, k = "Record", d = 1 }); tick()
 ack = ofType(drain(), "ack")[1]
 send({ t = "key", ev = 8, k = "Record", d = 0 }); tick(); drain()
 check("Record (STORE) is a Quickey hold once the PC key is up", ack and ack.ok == 1 and lastCmd("^Unpress Page 1%.18%d$") and pressedCount() == 0, J(ack))
+-- KB-28: at most one key goes down per tick; the rest of the datagrams wait in the socket for the next tick.
+local dupBefore
+send({ t = "key", ev = 9, k = "5", d = 1 }); send({ t = "key", ev = 10, k = "Record", d = 1 }); tick()
+local acks1 = ofType(drain(), "ack")
+check("two key-downs in one tick: only the first is dispatched this tick", #acks1 == 1 and acks1[1].ev == 9 and pressedCount() == 1, J(acks1))
+tick()
+local acks2 = ofType(drain(), "ack")
+check("the second key-down is dispatched on the next tick, in order", #acks2 == 1 and acks2[1].ev == 10 and acks2[1].ok == 1 and pressedCount() == 2, J(acks2))
+send({ t = "key", ev = 11, k = "5", d = 0 }); send({ t = "key", ev = 12, k = "Record", d = 0 }); tick()
+dupBefore = state.counters.dupEvents
+check("releases do not count against the tick: both come up in one tick", #ofType(drain(), "ack") == 2 and pressedCount() == 0)
+-- PR #12 review: packets are still read and admitted every tick; only key events wait, in a bounded queue.
+send({ t = "key", ev = 13, k = "5", d = 1 }); send({ t = "key", ev = 14, k = "Record", d = 1 }); send({ t = "key", ev = 14, k = "Record", d = 1 })
+send({ t = "hb", held = { "5", "Record" } }); tick()
+local out = drain()
+check("a heartbeat behind a burst is answered in the same tick; one key-down ran, the next waits, its retransmission is ignored", #ofType(out, "hb") == 1 and #ofType(out, "ack") == 1 and ofType(out, "ack")[1].ev == 13 and #state.keyQueue == 1 and state.counters.dupEvents == dupBefore, J({ out, #state.keyQueue }))
+tick()
+out = ofType(drain(), "ack")
+check("the queued key-down runs on the next tick and is acknowledged once", #out == 1 and out[1].ev == 14 and out[1].ok == 1 and out[1].dup == nil and pressedCount() == 2, J(out))
+send({ t = "key", ev = 15, k = "5", d = 0 }); send({ t = "key", ev = 16, k = "Record", d = 0 }); tick(); drain()
+state._DEFAULTS.maxKeyQueue = 1
+send({ t = "key", ev = 17, k = "2", d = 1 }); send({ t = "key", ev = 18, k = "3", d = 1 }); send({ t = "key", ev = 19, k = "4", d = 1 }); tick()
+out = ofType(drain(), "ack")
+check("a key event beyond the queue bound is refused overloaded, nothing dispatched for it", #out == 2 and out[1].ev == 17 and out[1].ok == 1 and out[2].ev == 19 and out[2].ok == 0 and out[2].code == "overloaded" and pressedCount() == 1, J(out))
+state._DEFAULTS.maxKeyQueue = 64
+tick(); drain()
+send({ t = "key", ev = 20, k = "2", d = 0 }); send({ t = "key", ev = 21, k = "3", d = 0 }); tick(); drain()
+check("the burst ends with nothing held and nothing queued", pressedCount() == 0 and #state.keyQueue == 0, J({ pressedCount(), #state.keyQueue }))
 state.running = true
 Main(nil, "bank status")
 check("bank status reports the live bank", findLog("bank status: bank mtpnxk_surface@q900%.e1%.180%-191 state=ready"), lastLog())
 state.ignoreNextCleanup = false
-send({ t = "key", ev = 9, k = "1", d = 1 }); tick(); drain()
+send({ t = "key", ev = 23, k = "1", d = 1 }); tick(); drain()
 Main(nil, "bank teardown")
-check("teardown is refused while a Quickey record is live", findLog("bank teardown refused %[bank%-in%-use%]") and quickeyCount() == 10, lastLog())
+check("teardown is refused while a Quickey record is live", findLog("bank teardown refused %[bank%-in%-use%]") and quickeyCount() == 23, lastLog())
 state.ignoreNextCleanup = false
-send({ t = "key", ev = 10, k = "1", d = 0 }); tick(); drain()
+send({ t = "key", ev = 24, k = "1", d = 0 }); tick(); drain()
 Cleanup()
-check("cleanup keeps the bank record and touches no console object", state.bankRecord and state.bankRecord.id == "mtpnxk_surface@q900.e1.180-191" and quickeyCount() == 10 and findLog("bank record mtpnxk_surface@q900.e1.180%-191 kept"), lastLog())
+check("cleanup keeps the bank record and touches no console object", state.bankRecord and state.bankRecord.id == "mtpnxk_surface@q900.e1.180-191" and quickeyCount() == 23 and findLog("bank record mtpnxk_surface@q900.e1.180%-191 kept"), lastLog())
 local creates = 0; for _, c in ipairs(pool.cmds) do if c:find("^Store Quickey") then creates = creates + 1 end end
 reset("" .. BANK .. " input=mixed")
 local creates2 = 0; for _, c in ipairs(pool.cmds) do if c:find("^Store Quickey") then creates2 = creates2 + 1 end end
@@ -1196,11 +1226,11 @@ state.ignoreNextCleanup = false; Cleanup()
 reset("input=quickey")
 push({ t = "hello", v = 2, id = "nxk-q", gen = 3, nonce = "5555555555555555" }); tick()
 welcome = ofType(drain(), "welcome")[1]; sid, seq = welcome.sid, 0
-check("input=quickey supports only the hold-qualified keys", state.backendName == "quickey" and #welcome.keys.ok == 6 and welcome.keys.ok[1] == "1" and welcome.keys.ok[2] == "5" and welcome.keys.ok[3] == "Clear" and welcome.keys.ok[4] == "Enter" and welcome.keys.ok[5] == "Record" and welcome.keys.ok[6] == "Thru" and state.keyReasons.Undo:find("no KB%-10 hold evidence"), J({ welcome.keys.ok, state.keyReasons.Undo }))
+check("input=quickey supports only the hold-qualified keys in the bank", state.backendName == "quickey" and #welcome.keys.ok == 19 and welcome.keys.ok[1] == "+" and welcome.keys.ok[3] == "0" and welcome.keys.ok[19] == "Thru" and state.keyReasons.Undo:find("no KB%-10 hold evidence"), J({ welcome.keys.ok, state.keyReasons.Undo }))
 keyboardCalls = {}
-send({ t = "key", ev = 1, k = "2", d = 1 }); tick()
+send({ t = "key", ev = 1, k = ".", d = 1 }); tick()
 ack = ofType(drain(), "ack")[1]
-check("'2' on the Quickey backend is refused (not in the bank), never typed", ack and ack.ok == 0 and #keyboardCalls == 0 and pressedCount() == 0, J(ack))
+check("'.' on the Quickey backend is refused (DOT is not in this console's bank), never typed", ack and ack.ok == 0 and #keyboardCalls == 0 and pressedCount() == 0, J(ack))
 send({ t = "key", ev = 2, k = "Undo", d = 1 }); tick()
 ack = ofType(drain(), "ack")[1]
 check("Undo (OOPS, tap-only evidence) is refused as a hold on the Quickey backend", ack and ack.ok == 0 and pressedCount() == 0, J(ack))
@@ -1219,7 +1249,7 @@ state.running = true; state.ignoreNextCleanup = false; Cleanup()
 reset("input=mixed")
 state.running = true
 Main(nil, "bank teardown")
-check("teardown deletes the owned Quickeys and clears the reserved executors", quickeyCount() == 0 and findLog("bank teardown: 10 Quickey%(s%) removed, 12 executor%(s%) cleared, 0 skipped") and state.bankRecord == nil, lastLog())
+check("teardown deletes the owned Quickeys and clears the reserved executors", quickeyCount() == 0 and findLog("bank teardown: 23 Quickey%(s%) removed, 12 executor%(s%) cleared, 0 skipped") and state.bankRecord == nil, lastLog())
 push({ t = "hello", v = 2, id = "nxk-q", gen = 4, nonce = "6666666666666666" }); tick()
 welcome = ofType(drain(), "welcome")[1]; sid, seq = welcome.sid, 0
 keyboardCalls = {}

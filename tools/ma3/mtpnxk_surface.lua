@@ -12,10 +12,13 @@
 --   Plugin "mtpnxk_surface" "input=fake"           lifecycle testing: events recorded, no key pressed
 --   Plugin "mtpnxk_surface" "bank=900/1.180-191 input=mixed"
 --                                                          KB-15: provision the owned Quickey bank (one
---                                                          Quickey per KB-10 qualified code, 12 reserved
---                                                          executors) and press the qualified keys as
---                                                          executor presses of those Quickeys; every other
---                                                          key through Keyboard() (explicit per-key table)
+--                                                          Quickey per qualified code, KB-10 + KB-28, 12
+--                                                          reserved executors) and press every hold-qualified
+--                                                          key as an executor press of its Quickey (they reach
+--                                                          pop-ups and dialogs); the rest (Undo, Next, Last,
+--                                                          Menu) through Keyboard() (explicit per-key table).
+--                                                          KB-28: at most one key goes down per tick (the
+--                                                          rest wait in a bounded key queue)
 --   Plugin "mtpnxk_surface" "bank=... input=quickey"  Quickeys only: unqualified keys are refused
 --   Plugin "mtpnxk_surface" "input=mixed route=Undo:quickkey,2:shortcut"
 --                                                          per-key override of the dispatch method; an
@@ -83,7 +86,7 @@ local json   = require("json")
 -- KB-24: the heartbeat reply carries the plugin loop's load since the previous reply (`load`: the longest and the
 -- mean tick in ms, the most datagrams one tick took, how many ticks hit the per-tick budget, ticks): the
 -- measurement harness publishes it next to the service-side latencies. Nothing else changed.
-local VERSION   = "0.11.0"
+local VERSION   = "0.12.0"
 -- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
 local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
 -- Review (PR #6, round 2): the watch list budget covers every supported configuration at once: the ordinary state
@@ -105,6 +108,8 @@ local DEFAULTS = {
   feedbackMinMs = 250,   -- KB-23: a changed value/level/activity/colour resends the context after at most this
   maxDatagram = 512,
   maxPacketsPerTick = 32,
+  maxKeyQueue = 64,        -- KB-28: key events waiting for their tick (one key-down per tick); beyond it a key is refused
+
   maxPacketsPerSecond = 400,  -- per session
   evWindow = 64,         -- event ids remembered per session for deduplication
   nonceMs = 60000,       -- hello nonces remembered this long
@@ -179,17 +184,24 @@ local NXK_KEYS = {
 -- enablement, the collision check and the route rechecks before every release.
 local NXK_PREFER = { ["+"] = "kpAdd", ["-"] = "kpSubtract", ["."] = "kpDecimal", ["/"] = "kpDivide" }
 -- KB-15 dispatch methods. On the mixed backend the default is quickkey (an executor press of the owned
--- Quickey, KB-13) and every surface key whose code has no KB-10 HOLD evidence is routed explicitly through
--- the shortcut table instead (the module validates each override against the attached backend; nothing
--- here is inert). The surface sends press/release pairs, so a code qualified for taps only (OOPS) is not
--- a Quickey key. Operators change single keys with route=<key>:<method>; the two methods the surface
--- offers are quickkey and shortcut (the text routes need text the keypad does not carry).
-local NXK_QUICKKEY_HOLD = { NUM1 = true, NUM5 = true, THRU = true, PLEASE = true, CLEAR = true, STORE = true }
+-- Quickey, KB-13) and every surface key whose code has no HOLD evidence in the loaded module's
+-- BANK_QUALIFIED (KB-10; KB-28 added the digits, + - . /, At, Full and the keywords, hardkeys 0.11.0) is
+-- routed explicitly through the shortcut table instead (the module validates each override against the
+-- attached backend; nothing here is inert). Quickeys reach pop-ups and dialogs, the shortcut table does not.
+-- The surface sends press/release pairs, so a code qualified for taps only (OOPS) is not a Quickey key.
+-- Operators change single keys with route=<key>:<method>; the two methods the surface offers are quickkey
+-- and shortcut (the text routes need text the keypad does not carry).
+local NXK_QUICKKEY_HOLD_KB10 = { NUM1 = true, NUM5 = true, THRU = true, PLEASE = true, CLEAR = true, STORE = true }
 local SURFACE_METHODS = { quickkey = true, shortcut = true }
-local function mixedPolicy(overrides)
+local function quickkeyHold(qualified, logical)
+  if type(qualified) ~= "table" then return NXK_QUICKKEY_HOLD_KB10[logical] == true end  -- a module older than the table export
+  local q = qualified[logical]
+  return type(q) == "table" and q.hold == true
+end
+local function mixedPolicy(overrides, qualified)
   local keys = {}
   for name, logical in pairs(NXK_KEYS) do
-    if not NXK_QUICKKEY_HOLD[logical] then keys[logical] = { method = "shortcut" } end
+    if not quickkeyHold(qualified, logical) then keys[logical] = { method = "shortcut" } end
   end
   for logical, method in pairs(overrides or {}) do keys[logical] = { method = method } end
   return { default = "quickkey", keys = keys }
@@ -420,7 +432,7 @@ local function openSession(obj, ip, port, now)
   local sid = randomHex(8)
   while state.sessions[sid] do sid = randomHex(8) end
   local s = { sid = sid, id = obj.id, gen = obj.gen, ip = ip, port = port, openedAt = now, lastSeen = now, lastSeq = 0, outSeq = 0,
-              holds = {}, evSeen = {}, evOrder = {}, evAck = {}, lastEvByKey = {}, rate = { since = now, count = 0 }, state = "active",
+              holds = {}, evSeen = {}, evOrder = {}, evAck = {}, lastEvByKey = {}, keyQueued = {}, rate = { since = now, count = 0 }, state = "active",
               unsyncedHeld = held, lastFullAt = nil, lastState = nil, sessionOpen = false, surface = obj.surface, fw = obj.fw }
   local inst = hk()
   if inst and state.inputEnabled then
@@ -545,12 +557,30 @@ end
 -------------------------------------------------------------------------------
 -- Packet handlers
 -------------------------------------------------------------------------------
-local function handleKey(s, obj, now)
+local function handleKey(s, obj, now, fromQueue)
   local ev, name, down = obj.ev, obj.k, obj.d
   if type(ev) ~= "number" or ev ~= math.floor(ev) or ev < 0 then return "bad-ev" end
   if type(name) ~= "string" or (NXK_KEYS[name] == nil and not NXK_LOCAL[name]) then return "bad-key" end
   if down ~= 0 and down ~= 1 then return "bad-d" end
-  if seenEvent(s, ev) then replayAck(s, ev); return nil end
+  if s.evSeen[ev] then replayAck(s, ev); return nil end
+  -- KB-28: at most one key goes down per tick (Quickey presses in one console frame reorder in a focused text
+  -- field). Once a key went down this tick, or while earlier key events wait, a key event joins the queue in
+  -- arrival order and is acknowledged when it runs; its retransmissions are ignored meanwhile. Packets are still
+  -- read and admitted every tick, so heartbeats and other messages are never held behind a burst.
+  s.keyQueued = s.keyQueued or {}
+  if s.keyQueued[ev] then return nil end
+  if not fromQueue and (state.keyDownThisTick or #state.keyQueue > 0) then
+    if #state.keyQueue >= DEFAULTS.maxKeyQueue then
+      state.counters.keyQueueOverflow = (state.counters.keyQueueOverflow or 0) + 1
+      ackEvent(s, ev, false, { code = "overloaded", why = string.format("%d key events are already waiting for their tick; nothing dispatched", DEFAULTS.maxKeyQueue) })
+      return nil
+    end
+    s.keyQueued[ev] = true
+    state.keyQueue[#state.keyQueue + 1] = { s = s, obj = obj }
+    state.counters.keyQueued = (state.counters.keyQueued or 0) + 1
+    return nil
+  end
+  seenEvent(s, ev)
   if superseded(s, name, ev) then
     state.counters.superseded = state.counters.superseded + 1
     ackEvent(s, ev, false, { code = "superseded", why = "a newer event for this key was already processed; nothing dispatched" })
@@ -569,6 +599,7 @@ local function handleKey(s, obj, now)
     end
     s.holds[name] = r.id
     state.counters.presses = state.counters.presses + 1
+    if not r.duplicate then state.keyDownThisTick = true end
     state.collectNextTick = true  -- KB-24: read the console state on the next tick (the key's effect), not at the cadence
     if r.duplicate then ackEvent(s, ev, true, { hold = r.id, duplicate = 1 }) else ackEvent(s, ev, true, { hold = r.id }) end
     if state.bench and logical:match("^NUM%d$") then
@@ -1289,8 +1320,21 @@ local function tick(now)
   for sid, s in pairs(state.sessions) do
     if now - s.lastSeen > DEFAULTS.forgetMs / 1000 then closeSession(s, now, "silent") end
   end
-  -- 3: bounded packet processing.
+  -- 3: bounded packet processing. At most one key goes down per tick (KB-28): Quickey presses issued in one
+  -- console frame reorder in a focused text field (digits land after keywords), presses one frame apart keep
+  -- their order. The datagrams behind a key-down stay in the socket for the next tick.
   local n = 0
+  state.keyDownThisTick = false
+  -- Key events queued by earlier ticks run first, in arrival order: every release, and at most one key-down.
+  state.keyQueue = state.keyQueue or {}
+  local q = state.keyQueue
+  while #q > 0 do
+    local item = q[1]
+    if item.obj.d == 1 and state.keyDownThisTick then break end
+    table.remove(q, 1)
+    item.s.keyQueued[item.obj.ev] = nil
+    if state.sessions[item.s.sid] == item.s then handleKey(item.s, item.obj, now, true) end
+  end
   while n < DEFAULTS.maxPacketsPerTick do
     local ok, data, ip, port = pcall(function() return state.sock:receivefrom() end)
     if not ok or data == nil then break end
@@ -1357,10 +1401,11 @@ local function now()
 end
 
 local function resetCounters()
+  state.keyQueue = {}   -- KB-28: key events waiting for their tick (see handleKey)
   state.counters = { received = 0, sent = 0, sendErrors = 0, rejected = 0, oversized = 0, notAllowed = 0, noSession = 0,
                      oldSeq = 0, rateDropped = 0, dupEvents = 0, superseded = 0, refused = 0, presses = 0, releases = 0, wheels = 0, lostReleases = 0,
                      replayedHello = 0, fullStates = 0, deltaStates = 0, contexts = 0, ticks = 0,
-                     ctl = 0, ctlRefused = 0, ctlLost = 0, ctlCoalesced = 0, ctlApplied = 0, ctlStaleDropped = 0, ctlExpired = 0 }
+                     ctl = 0, ctlRefused = 0, ctlLost = 0, ctlCoalesced = 0, ctlApplied = 0, ctlStaleDropped = 0, ctlExpired = 0, keyQueued = 0, keyQueueOverflow = 0 }
 end
 
 local function loadModules()
@@ -1464,6 +1509,10 @@ local function logBank(prefix, b)
     prefix, tostring(b.id), tostring(b.state), b.codeCount or 0, b.qualifiedCount or 0, b.discoveredCount or 0, b.problemCount or 0,
     b.spec.quickeys.first, b.spec.executors.page, b.spec.executors.first, b.spec.executors.first + b.spec.executors.count - 1, tostring(b.show))
   for _, p in ipairs(b.problems or {}) do logerr("%s: problem %s %s: %s", prefix, tostring(p.kind), tostring(p.index or p.executor or ""), tostring(p.detail)) end
+  -- hardkeys 0.11.0 (KB-28 review): a bank kept from an older module lacks the newly qualified codes; their keys
+  -- are refused until the operator re-provisions (Plugin "mtpnxk_surface" "bank teardown", then start with bank=...).
+  if b.requalified then log("%s: qualification refreshed for %s", prefix, table.concat(b.requalified, " ")) end
+  if b.reprovision then logerr("%s: %s (Plugin \"mtpnxk_surface\" \"bank teardown\", then start again with bank=...)", prefix, tostring(b.reprovision)) end
 end
 
 -- At start: a record kept from the previous run is adopted (every object re-verified, nothing created).
@@ -1531,7 +1580,10 @@ end
 -- (shortcut) unless the operator overrides single keys; quickey is quickkey only; mixed is the explicit
 -- per-key table above plus the operator's overrides.
 local function routingFor(mode, overrides)
-  if mode == "mixed" then return mixedPolicy(overrides) end
+  if mode == "mixed" then
+    local rec = state.modules.hardkeys
+    return mixedPolicy(overrides, rec and rec.module and rec.module.BANK_QUALIFIED)
+  end
   if mode == "quickey" then return quickeyPolicy(overrides) end
   if overrides and next(overrides) then
     local keys = {}
