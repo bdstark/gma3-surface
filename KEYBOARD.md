@@ -866,7 +866,7 @@ calculator opened, `6 2 . 5` (simultaneous downs) showed `62.5` and `Enter` stor
 **Request:** a key on the Quickey path cost an `Assign`, a `Press Page` and an `Unpress Page` (three command-history
 lines and the reads behind them); the operator asked for less noise and work, and for static executors.
 
-**Module half:** bdstark/gma3-mcp#75 (hardkeys 0.12.0, pinned at `a1303a0`): direct Quickey taps for every code with
+**Module half:** bdstark/gma3-mcp#75 (hardkeys 0.12.0, pinned at `7f4bcf4`): direct Quickey taps for every code with
 evidence (all of the NX-K's Quickey keys) and `executors.static`.
 
 **Surface (plugin 0.13.0):**
