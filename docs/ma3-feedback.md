@@ -110,7 +110,7 @@ decides on its own, which also covers running with no plugin.
 | Bank | 0x4332 | wheel modifier | on while held | local |
 | Encoders 1-4 | 0x5901, 0x5911, 0x5921, 0x5931 | `/wheel/N`, `/key/WheelN` | on while Bank is held (wheels 101-104 active) | local |
 | Link (red) | 0x6108 | unmapped | off when the plugin is alive, slow blink after 5 s without `/sfb/alive` | local |
-| Swap Prog | 0x6411 | unmapped | off | |
+| Swap Prog | 0x6411 | `Select EncoderBank` on the command line with `encmacro=<n>` (KB-30), else unmapped | `ebank`: on while `Select EncoderBank` is pending | |
 | Back | 0x5215 | Backspace (HID) | probably none; check with `L5215 0001` | |
 
 Digits, `.`, `/`, `-`, `+`, `@`, Enter, Thru and Full have no LED.

@@ -45,14 +45,28 @@ GetDisplayByIndex = function(n) if n == 1 then return h({ PreviewBarActive = con
 Root = function() return { Get = function(_, k) if k == "MAState" then return console.ma end end,
                            VirtualKeys = { Count = function() return 1 end, Ptr = function() return h({ Code = "PLEASE", KeyCode = "Enter" }) end },
                            MANetSocket = { Get = function() return console.showFile end } } end
-CmdObj = function() if console.cmdRaise then error("CmdObj exploded") end return { cmdtext = console.cmdtext, lastcommand = "" } end
+-- KB-30: ClearCmd() clears the command-line text only (live: the selection stays), counted for the checks.
+CmdObj = function() if console.cmdRaise then error("CmdObj exploded") end
+  return { cmdtext = console.cmdtext, lastcommand = "", ClearCmd = function() if console.clearRaise then error("ClearCmd exploded") end console.clears = (console.clears or 0) + 1; console.cmdtext = "" end } end
 ShowData = function() return { Masters = { Grand = { Blind = h({ FaderEnabled = console.blind }), Highlight = h({ FaderEnabled = console.highlight }), Solo = h({ FaderEnabled = console.solo }) } } } end
 CurrentExecPage = function() return { name = "Page " .. console.page, Get = function(_, k) if k == "No" then return console.page end end } end
 CurrentUser = function() return { name = console.user } end
 SelectedSequence = function() return nil end
 -- Fake Quickey pool and executor page (KB-12/KB-13): the console objects the vendored module creates,
 -- verifies and presses through ObjectList()/Cmd(); the commands issued are recorded for the checks.
-local pool = { quickeys = {}, executors = {}, pages = { [1] = true }, pressed = {}, cmds = {}, failUnpress = false, sequences = {} }
+local pool = { quickeys = {}, executors = {}, pages = { [1] = true }, pressed = {}, cmds = {}, failUnpress = false, sequences = {}, macros = {} }
+-- KB-30: a stub macro pool (Macro N with MacroLine children). A line with Execute No places its command on the command
+-- line one frame later, appended (onPC 2.5.1 appends whatever AddToCmdline says): console.macroText holds it until the
+-- harness's next tick, console.holdMacroText keeps it from ever arriving.
+local function macroHandle(m)
+  return { name = m.name, GetClass = function() return "Macro" end, Count = function() return #m.lines end,
+           Get = function(_, k) if k == "Note" then return m.note elseif k == "Name" then return m.name end end,
+           Set = function(_, k, v) if k == "Name" then m.name = v elseif k == "Note" then m.note = v end end }
+end
+local function macroLineHandle(l)
+  return { GetClass = function() return "MacroLine" end, Get = function(_, k) return l[k] end,
+           Set = function(_, k, v) if pool.macroLineSetRaise then error("line Set exploded") end l[k] = v end }
+end
 -- KB-22: a stub Sequence assigned to an executor (pool.executors[key] = { sequence = n }): the console objects the
 -- vendored feedback reads (Object, KeyPress/Fader with the display role, HasActivePlayback, GetFader) and the console
 -- backend operates (Press/Unpress and Fader<Fn> ... At recorded as commands; every key function is momentary here).
@@ -92,11 +106,35 @@ ObjectList = function(ref)
   end
   local p = ref:match("^Page (%d+)$")
   if p and pool.pages[tonumber(p)] then return { { name = "Page " .. p } } end
+  local mn, ml = ref:match("^Macro (%d+)%.(%d+)$")
+  if mn then local m = pool.macros[tonumber(mn)]; local l = m and m.lines[tonumber(ml)]; if l then return { macroLineHandle(l) } end return {} end
+  mn = ref:match("^Macro (%d+)$")
+  if mn then local m = pool.macros[tonumber(mn)]; if m then return { macroHandle(m) } end return {} end
   return {}
 end
 DataPool = function() return { name = "Default" } end
 Cmd = function(line)
   pool.cmds[#pool.cmds + 1] = line
+  local mn = line:match("^Store Macro (%d+)$")
+  if mn then if not pool.macroStoreFails then pool.macros[tonumber(mn)] = pool.macros[tonumber(mn)] or { name = "Macro " .. mn, note = "", lines = {} } end return "OK" end
+  local ml
+  mn, ml = line:match("^Store Macro (%d+)%.(%d+)$")
+  if mn then
+    local m = pool.macros[tonumber(mn)]
+    if not m then return "Object not found" end
+    if not pool.macroLineFails and tonumber(ml) == #m.lines + 1 then m.lines[#m.lines + 1] = { Command = "", Execute = "Yes", Enabled = "Yes", AddToCmdline = "No" } end
+    return "OK"
+  end
+  mn = line:match("^Delete Macro (%d+) /NoConfirmation$")
+  if mn then if not pool.macroDeleteFails then pool.macros[tonumber(mn)] = nil end return "OK" end
+  mn = line:match("^Go%+ Macro (%d+)$")
+  if mn then
+    if pool.macroGoAnswer then return pool.macroGoAnswer end
+    local m = pool.macros[tonumber(mn)]
+    if not m then return "Object not found" end
+    for _, l in ipairs(m.lines) do if tostring(l.Execute) == "No" then console.macroText = (console.macroText or console.cmdtext) .. l.Command .. " " end end
+    return "OK"
+  end
   local n = line:match("^Store Quickey (%d+)")
   if n then pool.quickeys[tonumber(n)] = pool.quickeys[tonumber(n)] or { name = "Quickey " .. n, code = "", note = "" }; return "OK" end
   n = line:match("^Delete Quickey (%d+)")
@@ -156,7 +194,11 @@ local function findLog(pat) for i = #logs, 1, -1 do if logs[i]:find(pat) then re
 
 local function pkt(obj) return state._encodePacket(obj) end
 local function push(obj, ip, port) inbox[#inbox + 1] = { data = type(obj) == "string" and obj or pkt(obj), ip = ip or "127.0.0.1", port = port or 40000 } end
-local function tick(dt) clock.t = clock.t + (dt or 0.016); state._tick(clock.t) end
+local function tick(dt)
+  clock.t = clock.t + (dt or 0.016)
+  if console.macroText and not console.holdMacroText then console.cmdtext, console.macroText = console.macroText, nil end
+  state._tick(clock.t)
+end
 local sid, seq = nil, 0
 local function send(obj) seq = seq + 1; obj.sid = sid; obj.seq = seq; push(obj) end
 local function tickAlive(dt) send({ t = "hb", held = {} }); tick(dt) end
@@ -1407,6 +1449,192 @@ Cleanup()
 check("cleanup after a control call leaves the running plugin alone", state.running == true and eventCount("release") == 0)
 Cleanup()
 check("a real cleanup releases every hold and disposes the modules", state.running == false and eventCount("release") == 1 and next(state.modules) == nil, J({ state.running, eventCount("release"), lastLog() }))
+
+-------------------------------------------------------------------------------
+-- KB-30: Swap Prog enters the encoder bank through the plugin-owned macro
+-------------------------------------------------------------------------------
+do
+  local o30 = state._parseArgument("encmacro=950 input=mixed")
+  check("encmacro= parses a macro number", o30 and o30.encMacro == 950, J(o30))
+  check("encmacro must be a number 1..9999", select(2, state._parseArgument("encmacro=0")) ~= nil and select(2, state._parseArgument("encmacro=x")) ~= nil and select(2, state._parseArgument("encmacro=10000")) ~= nil and select(2, state._parseArgument("encmacro=1.5")) ~= nil)
+  check("encmacro status / teardown are control commands; a bare encmacro is refused",
+    state._parseArgument("encmacro status").command == "encmacro-status" and state._parseArgument("encmacro teardown").command == "encmacro-teardown" and select(2, state._parseArgument("encmacro")) ~= nil)
+
+  local function pair30(nonce)
+    push({ t = "hello", v = 2, id = "nxk-30", gen = 1, nonce = nonce }); tick()
+    local w = ofType(drain(), "welcome")[1]; sid, seq = w.sid, 0
+    return w
+  end
+  local function gos() local n = 0; for _, c in ipairs(pool.cmds) do if c:match("^Go%+ Macro") then n = n + 1 end end return n end
+  local function cmdsFor(n) local out = {}; for _, c in ipairs(pool.cmds) do if c:match("Macro " .. n .. "[%. ]") or c:match("Macro " .. n .. "$") then out[#out + 1] = c end end return out end
+  local function keyPresses(k) local n = 0; for _, c in ipairs(keyboardCalls) do if c.key == k and c.kind == "press" then n = n + 1 end end return n end
+
+  -- Without encmacro: Swap Prog stays a local key, refused with the hint, nothing run.
+  pool.macros, pool.cmds, console.cmdtext, console.clears = {}, {}, "", 0
+  reset("input=keyboard")
+  local w = pair30("3030303030303001")
+  check("without encmacro Swap Prog is unsupported with the KB-30 hint", has(w.keys.unsupported, "Swap Prog") and state.keyReasons["Swap Prog"]:find("encmacro=<n>"), J(state.keyReasons["Swap Prog"]))
+  send({ t = "key", ev = 1, k = "Swap Prog", d = 1 }); tick()
+  local a = ofType(drain(), "ack")[1]
+  check("without encmacro a Swap Prog press is refused unsupported and runs nothing", a and a.ok == 0 and a.code == "unsupported" and a.why:find("encmacro") and gos() == 0, J(a))
+
+  -- Provisioning on an empty number.
+  pool.cmds = {}
+  reset("input=keyboard encmacro=950")
+  local m = pool.macros[950]
+  check("encmacro creates the owned macro: one line Select EncoderBank, Execute No, marked",
+    m and m.note == "mtpnxk_surface encmacro v1" and m.name == "mtpnxk EncoderBank" and #m.lines == 1 and m.lines[1].Command == "Select EncoderBank" and m.lines[1].Execute == "No"
+      and findLog("encmacro: Macro 950 created") and state.encMacroActive == true, J({ tostring(m), lastLog() }))
+  check("creating it took Store Macro, Store Macro .1 and nothing else", J(cmdsFor(950)) == J({ "Store Macro 950", "Store Macro 950.1" }), J(cmdsFor(950)))
+  w = pair30("3030303030303002")
+  check("with encmacro Swap Prog is a supported key", has(w.keys.ok, "Swap Prog") and not has(w.keys.unsupported, "Swap Prog") and state.routes["Swap Prog"].method == "encmacro", J(w.keys))
+
+  -- A press with text on the command line: cleared, macro run, acked at dispatch; a digit right behind it waits for the text.
+  console.cmdtext = "Fixture 1 Thru"
+  pool.cmds, keyboardCalls = {}, {}
+  send({ t = "key", ev = 2, k = "Swap Prog", d = 1 })
+  send({ t = "key", ev = 3, k = "Swap Prog", d = 0 })
+  send({ t = "key", ev = 4, k = "5", d = 1 })
+  send({ t = "key", ev = 5, k = "5", d = 0 })
+  tick()
+  local acks = {}
+  for _, x in ipairs(ofType(drain(), "ack")) do acks[x.ev] = x end
+  check("Swap Prog clears the typed text, runs Go+ Macro 950 and is acked at dispatch",
+    console.clears == 1 and pool.cmds[1] == "Go+ Macro 950" and acks[2] and acks[2].ok == 1 and acks[2].encmacro == 950 and acks[2].cleared == 1, J({ tostring(console.clears), tostring(pool.cmds), tostring(acks[2]) }))
+  check("the keys behind it wait while the command line does not show the keyword yet", acks[4] == nil and keyPresses("5") == 0 and state.keyGate ~= nil and #state.keyQueue == 3, J({ tostring(acks[4]), tostring(keyPresses("5")), tostring(#state.keyQueue) }))
+  tick()  -- the macro's text arrives (harness: one frame later); the gate opens and the queue goes on, one key-down per tick
+  tick(); tick()
+  for _, x in ipairs(ofType(drain(), "ack")) do acks[x.ev] = x end
+  check("once the line reads Select EncoderBank the queued keys follow in order",
+    console.cmdtext == "Select EncoderBank " and state.keyGate == nil and acks[3] and acks[3].ok == 1 and acks[3].noop == 1 and acks[4] and acks[4].ok == 1 and keyPresses("5") == 1 and state.counters.encBankVerified == 1,
+    J({ tostring(console.cmdtext), tostring(acks[3]), tostring(acks[4]), tostring(keyPresses("5")) }))
+
+  -- A retransmitted press is answered from the remembered ack, never run twice.
+  pool.cmds = {}
+  send({ t = "key", ev = 2, k = "Swap Prog", d = 1 }); tick()
+  a = ofType(drain(), "ack")[1]
+  check("a retransmitted Swap Prog press replays its ack and runs nothing", a and a.ev == 2 and a.dup == 1 and a.ok == 1 and gos() == 0, J(a))
+
+  -- Behind another key-down in the same tick, Swap Prog runs from the queue in its turn.
+  console.cmdtext, pool.cmds, keyboardCalls = "", {}, {}
+  send({ t = "key", ev = 100, k = "1", d = 1 })
+  send({ t = "key", ev = 101, k = "Swap Prog", d = 1 })
+  tick()
+  local ranFirstTick = gos()
+  tick()
+  for _ = 1, 3 do tick() end
+  for _, x in ipairs(ofType(drain(), "ack")) do acks[x.ev] = x end
+  check("a Swap Prog queued behind a key-down runs on the next tick, from the queue", ranFirstTick == 0 and gos() == 1 and keyPresses("1") == 1 and acks[101] and acks[101].ok == 1, J({ tostring(ranFirstTick), tostring(gos()), tostring(acks[101] and acks[101].ok) }))
+  send({ t = "key", ev = 102, k = "1", d = 0 }); tick(); tick(); drain()
+
+  -- An empty command line is not cleared.
+  console.cmdtext, console.clears, pool.cmds = "", 0, {}
+  send({ t = "key", ev = 206, k = "Swap Prog", d = 1 }); tick()
+  a = ofType(drain(), "ack")[1]
+  check("an empty command line is not cleared, the macro still runs", a and a.ok == 1 and a.cleared == nil and console.clears == 0 and pool.cmds[1] == "Go+ Macro 950", J({ tostring(a), tostring(console.clears) }))
+  tick(); tick()
+
+  -- LED state: ebank follows the command line.
+  console.cmdtext = "Select EncoderBank 4"
+  local on30
+  for _ = 1, 8 do tickAlive(0.05); for _, x in ipairs(ofType(drain(), "state")) do if x.s.ebank ~= nil then on30 = x.s.ebank end end; if on30 == 1 then break end end
+  check("ebank is 1 while Select EncoderBank is pending on the command line", on30 == 1, J(on30))
+  console.cmdtext = "Fixture 1"
+  local off30
+  for _ = 1, 8 do tickAlive(0.05); for _, x in ipairs(ofType(drain(), "state")) do if x.s.ebank ~= nil then off30 = x.s.ebank end end; if off30 == 0 then break end end
+  check("ebank is 0 for any other command line", off30 == 0, J(off30))
+  console.cmdRaise = true
+  local unk30
+  for _ = 1, 8 do tickAlive(0.05); for _, x in ipairs(ofType(drain(), "state")) do if x.s.ebank ~= nil then unk30 = x.s.ebank end end; if unk30 == "?" then break end end
+  console.cmdRaise = false
+  check("ebank is unknown when the command line cannot be read", unk30 == "?", J(unk30))
+  console.cmdtext = ""
+
+  -- The text never arrives: the gate times out, the queued key goes on, it is counted and logged.
+  console.holdMacroText = true
+  keyboardCalls = {}
+  send({ t = "key", ev = 207, k = "Swap Prog", d = 1 })
+  send({ t = "key", ev = 208, k = "5", d = 1 })
+  tick()
+  for _ = 1, 10 do tick(0.03) end
+  check("the gate holds the keys for at most encBankGateMs", keyPresses("5") == 0 and state.keyGate ~= nil, J({ tostring(keyPresses("5")), tostring(state.keyGate) }))
+  for _ = 1, 10 do tick(0.03) end
+  check("after the gate times out the queued key goes on, counted and logged",
+    state.keyGate == nil and keyPresses("5") == 1 and state.counters.encBankUnverified == 1 and findLog("Swap Prog: the command line reads '' %d+ ms after Go%+ Macro 950"), J({ tostring(keyPresses("5")), tostring(state.counters.encBankUnverified), lastLog() }))
+  console.holdMacroText, console.macroText, console.cmdtext = nil, nil, ""
+  send({ t = "key", ev = 209, k = "5", d = 0 }); tick(); tick(); drain()
+
+  -- Changed under the plugin: never run.
+  pool.macros[950].lines[1].Command = "Go+ Sequence 1"
+  pool.cmds = {}
+  send({ t = "key", ev = 210, k = "Swap Prog", d = 1 }); tick()
+  a = ofType(drain(), "ack")[1]
+  check("an edited macro line is refused changed and not run", a and a.ok == 0 and a.code == "changed" and gos() == 0 and state.keyGate == nil, J(a))
+  pool.macros[950].lines[1].Command, pool.macros[950].lines[1].Execute = "Select EncoderBank", "Yes"
+  send({ t = "key", ev = 211, k = "Swap Prog", d = 1 }); tick()
+  a = ofType(drain(), "ack")[1]
+  check("Execute Yes is refused (the macro would run the command, not place it)", a and a.ok == 0 and a.code == "changed" and a.why:find("Execute") and gos() == 0, J(a))
+  pool.macros[950].lines[1].Execute = "No"
+  pool.macros[950].note = ""
+  send({ t = "key", ev = 212, k = "Swap Prog", d = 1 }); tick()
+  a = ofType(drain(), "ack")[1]
+  check("a macro that lost its mark (e.g. another show's Macro 950) is refused not-owned and not run", a and a.ok == 0 and a.code == "not-owned" and gos() == 0, J(a))
+  pool.macros[950].note = "mtpnxk_surface encmacro v1"
+  pool.macros[950] = nil
+  send({ t = "key", ev = 213, k = "Swap Prog", d = 1 }); tick()
+  a = ofType(drain(), "ack")[1]
+  check("a deleted macro is refused missing", a and a.ok == 0 and a.code == "missing" and gos() == 0, J(a))
+
+  -- The console refuses the run; ClearCmd raises.
+  reset("input=keyboard encmacro=950")
+  pair30("3030303030303003")
+  pool.macroGoAnswer = "Object locked"
+  send({ t = "key", ev = 1, k = "Swap Prog", d = 1 }); tick()
+  a = ofType(drain(), "ack")[1]
+  pool.macroGoAnswer = nil
+  check("a refused Go+ Macro is acked refused and opens no gate", a and a.ok == 0 and a.code == "refused" and a.why:find("Object locked") and state.keyGate == nil, J(a))
+  console.cmdtext, console.clearRaise, pool.cmds = "Fixture 2", true, {}
+  send({ t = "key", ev = 2, k = "Swap Prog", d = 1 }); tick()
+  a = ofType(drain(), "ack")[1]
+  console.clearRaise, console.cmdtext = nil, ""
+  check("a ClearCmd that raises runs nothing", a and a.ok == 0 and a.code == "clear-failed" and gos() == 0, J(a))
+
+  -- input=fake and input=off leave the command line alone.
+  reset("input=fake encmacro=950")
+  pair30("3030303030303004")
+  pool.cmds = {}
+  send({ t = "key", ev = 1, k = "Swap Prog", d = 1 }); tick()
+  a = ofType(drain(), "ack")[1]
+  check("input=fake refuses Swap Prog input-disabled", a and a.ok == 0 and a.code == "input-disabled" and gos() == 0, J(a))
+
+  -- Adoption, a foreign macro, a failed creation.
+  pool.cmds = {}
+  reset("input=keyboard encmacro=950")
+  check("an own macro is adopted on the next start, nothing created", findLog("encmacro: Macro 950 adopted") and #cmdsFor(950) == 0 and state.encMacroActive, J(cmdsFor(950)))
+  pool.macros[951] = { name = "Operator's macro", note = "", lines = { { Command = "Go+ Sequence 1", Execute = "Yes", Enabled = "Yes" } } }
+  pool.cmds = {}
+  reset("input=keyboard encmacro=951")
+  check("a foreign macro is reported and left alone; Swap Prog stays unsupported",
+    findLog("encmacro: refused %[not%-owned%]: Macro 951 'Operator's macro'") and #cmdsFor(951) == 0 and pool.macros[951].lines[1].Command == "Go+ Sequence 1" and not state.encMacroActive and state.keyReasons["Swap Prog"] ~= nil,
+    J({ tostring(cmdsFor(951)), lastLog() }))
+  pool.macroLineFails = true
+  reset("input=keyboard encmacro=952")
+  pool.macroLineFails = nil
+  check("a creation that fails half-way removes the macro it created", pool.macros[952] == nil and findLog("encmacro: creating Macro 952 failed") and J(cmdsFor(952)) == J({ "Store Macro 952", "Store Macro 952.1", "Delete Macro 952 /NoConfirmation" }) and not state.encMacroActive, J(cmdsFor(952)))
+
+  -- status and teardown.
+  reset("input=keyboard encmacro=950")
+  state.running = true
+  Main(nil, "encmacro status")
+  check("encmacro status verifies the macro", findLog("encmacro: Macro 950 verified"), lastLog())
+  Main(nil, "encmacro teardown")
+  check("encmacro teardown deletes the owned macro and Swap Prog becomes unsupported", pool.macros[950] == nil and findLog("encmacro teardown: Macro 950 deleted") and not state.encMacroActive and state.encMacroNo == nil, lastLog())
+  state.encMacroNo = 951
+  Main(nil, "encmacro teardown")
+  check("teardown never deletes a macro that is not the plugin's", pool.macros[951] ~= nil and findLog("encmacro teardown refused: Macro 951"), lastLog())
+  state.encMacroNo, pool.macros[951] = nil, nil
+  state.ignoreNextCleanup = false; Cleanup()
+end
 
 print(string.format("%d passed, %d failed", passes, failures))
 print(failures == 0 and "ALL PASSED" or "FAILED")
