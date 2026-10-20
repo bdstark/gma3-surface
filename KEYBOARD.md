@@ -891,6 +891,8 @@ belongs to 'Shehds|Default'`), `bank=` was skipped because a bank was live, and 
 restarted. The plugin now reads the show identity (the module's `consoleDeps().showIdentity`) before adopting: a record
 of another show is set aside (one log line), a set-aside record of the current show is taken back and adopted, and
 `bank status` lists the set-aside records. Nothing forgets a record; it goes only through `bank teardown` in its own
-show. Tests: `surface_plugin_test.lua` 276 (new: a stale run in show A taken over in show B, B's own bank provisioned
+show, and `bank teardown` clears only the torn-down bank's record (a record left unadopted because the show identity
+was unreadable at that start stays kept). Tests: `surface_plugin_test.lua` 282 (new: a stale run in show A taken over in show B, B's own bank provisioned
 and pressed, `bank status` listing A's record, a second start in B not logging it again, back in A taking A's record
-back with nothing created, teardown per show), `e2e.sh` passed.
+back with nothing created, teardown per show, an unreadable show identity at adoption followed by provisioning and
+teardown of the current bank), `e2e.sh` passed.

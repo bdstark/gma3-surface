@@ -1976,11 +1976,15 @@ local function MainImpl(display_handle, argument)
       local ok, r, err = pcall(inst.verifyBank, inst, t)
       if not ok then logerr("bank verify raised: %s", tostring(r)) elseif not r then logerr("bank verify refused [%s]: %s", tostring(err and err.code), tostring(err and err.message)) else logBank("bank verify", r) end
     else
+      local live = inst:bankStatus(t)
       local ok, r, err = pcall(inst.teardownBank, inst, t, { authorized = true })
       if not ok then logerr("bank teardown raised: %s", tostring(r))
       elseif not r then logerr("bank teardown refused [%s]: %s", tostring(err and err.code), tostring(err and err.message))
       else
-        state.bankRecord = nil
+        -- A kept record this start did not adopt (the show identity was unreadable at adoption) is another
+        -- bank whose objects still exist: only the record of the bank just torn down is cleared.
+        if sameBank(state.bankRecord, { id = live.id, show = live.show }) then state.bankRecord = nil
+        elseif type(state.bankRecord) == "table" then log("bank teardown: the kept record %s (show '%s') is another bank and stays kept", tostring(state.bankRecord.id), tostring(state.bankRecord.show)) end
         log("bank teardown: %d Quickey(s) removed, %d executor(s) cleared, %d skipped; state %s", #(r.removed or {}), #(r.cleared or {}), #(r.skipped or {}), tostring(r.state))
         for _, sk in ipairs(r.skipped or {}) do logerr("bank teardown: skipped %s: %s", tostring(sk.index or sk.executor), tostring(sk.reason)) end
         if state.inputEnabled and (state.inputMode == "quickey" or state.inputMode == "mixed") then

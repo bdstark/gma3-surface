@@ -1393,7 +1393,7 @@ check("bank status lists the set-aside record next to the live bank",
   findLog("bank status: bank " .. esc(SHOW_BANK) .. " state=ready") and findLog("bank status: 1 record%(s%) of other shows set aside")
   and findLog("bank status: set aside " .. esc(SHOW_BANK) .. esc(" show='" .. showA .. "|Default' (23 code(s))")), J(logs))
 state.ignoreNextCleanup = false; Cleanup()
-check("stop in show B keeps show B's record; show A's stays set aside", state.bankRecord and state.bankRecord.show == "show-b|Default" and #state.bankAside == 1 and state.bankAside[1].show == showA .. "|Default", J({ state.bankRecord and state.bankRecord.show, state.bankAside }))
+check("stop in show B keeps show B's record; show A's stays set aside", state.bankRecord and state.bankRecord.show == "show-b|Default" and #state.bankAside == 1 and state.bankAside[1].show == showA .. "|Default", J({ tostring(state.bankRecord and state.bankRecord.show), state.bankAside }))
 reset("input=mixed")
 check("a second start in show B adopts B's record and does not log the set-aside record again",
   liveBank().show == "show-b|Default" and liveBank().state == "ready" and findLog("bank adopt: bank") and countLog("set aside, not adopted") == 0 and #state.bankAside == 1 and state.inputEnabled == true, J({ liveBank().show, logs }))
@@ -1418,10 +1418,39 @@ Main(nil, "bank status")
 check("bank status while not running lists the set-aside record", findLog("bank: not running, no bank record kept") and findLog("bank: set aside " .. esc(SHOW_BANK) .. " show='show%-b|Default'"), J(logs))
 loadShow("show-b")
 reset("input=mixed")
-check("in show B the set-aside record is taken back and adopted", liveBank().show == "show-b|Default" and liveBank().state == "ready" and #state.bankAside == 0, J({ liveBank().show, state.bankAside }))
+check("in show B the set-aside record is taken back and adopted", liveBank().show == "show-b|Default" and liveBank().state == "ready" and #state.bankAside == 0, J({ tostring(liveBank().show), #state.bankAside }))
 state.running = true; Main(nil, "bank teardown"); state.ignoreNextCleanup = false; Cleanup()
 check("teardown in show B leaves no record anywhere", state.bankRecord == nil and #state.bankAside == 0 and quickeyCount() == 0)
+-- PR #19 review: the show identity is unreadable at adoption (A's record stays kept, unadopted) but readable
+-- again when bank= provisions B; tearing B down must not forget A's record while A's objects exist.
 loadShow(showA)
+reset(BANK .. " input=mixed")
+state.running = true; state.ignoreNextCleanup = false; Cleanup()
+loadShow("show-b")
+local stubRoot, failShowReads = Root, 1
+Root = function()
+  local r = stubRoot()
+  if failShowReads > 0 then failShowReads = failShowReads - 1; r.MANetSocket = { Get = function() error("socket busy") end } end
+  return r
+end
+reset(BANK .. " input=mixed")
+Root = stubRoot
+check("an unreadable show identity at adoption keeps A's record unadopted; bank= still provisions B",
+  findLog("the show identity cannot be read %(show file name unreadable") and state.bankRecord and state.bankRecord.show == showA .. "|Default" and liveBank().show == "show-b|Default" and liveBank().state == "ready",
+  J({ tostring(state.bankRecord and state.bankRecord.show), liveBank().show, logs }))
+logs = {}
+state.running = true; Main(nil, "bank teardown")
+check("teardown of B keeps A's unadopted record", quickeyCount() == 0 and state.bankRecord and state.bankRecord.show == showA .. "|Default" and findLog("is another bank and stays kept"), J({ tostring(state.bankRecord and state.bankRecord.show), logs }))
+state.ignoreNextCleanup = false; Cleanup()
+check("stop after the teardown keeps A's record", state.bankRecord and state.bankRecord.show == showA .. "|Default", J(tostring(state.bankRecord and state.bankRecord.show)))
+reset("input=mixed")
+check("the next start in B sets A's record aside", state.bankRecord == nil and #state.bankAside == 1 and state.bankAside[1].show == showA .. "|Default", J(state.bankAside))
+state.running = true; state.ignoreNextCleanup = false; Cleanup()
+loadShow(showA)
+reset("input=mixed")
+check("in A the record is taken back and adopted", liveBank().show == showA .. "|Default" and liveBank().state == "ready" and #state.bankAside == 0, J({ tostring(liveBank().show), #state.bankAside }))
+state.running = true; Main(nil, "bank teardown"); state.ignoreNextCleanup = false; Cleanup()
+check("teardown in A leaves no record anywhere", state.bankRecord == nil and #state.bankAside == 0 and quickeyCount() == 0)
 
 -------------------------------------------------------------------------------
 -- KB-16 review: a shortcut-mode restoration dispose() hands back (KB-14) is kept across stop/start,
