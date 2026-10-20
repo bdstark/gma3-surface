@@ -832,7 +832,7 @@ unchanged (VENDOR.md hashes equal upstream `plugin/modules.lock.json` at `9535de
 **Request:** the shortcut-table route does not reach pop-ups and dialogs (an encoder's calculator, the Edit Command
 pop-up), so the digits and `+ - . /` typed nothing there. Move every key that can be a Quickey to the Quickey path.
 
-**Module half:** bdstark/gma3-mcp#74 (hardkeys 0.11.0, pinned at `134a05c`): a live probe qualified 24 more codes for
+**Module half:** bdstark/gma3-mcp#74 (hardkeys 0.11.0, pinned at `66b7190`): a live probe qualified 24 more codes for
 the executor-held Quickey path, with the record in `docs/probes/kb-28-quickey-codes-macos-2.5.1.md` there.
 
 **Surface (plugin 0.12.0):**
