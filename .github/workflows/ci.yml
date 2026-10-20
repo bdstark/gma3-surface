@@ -1,0 +1,26 @@
+name: CI
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install Lua and Rust
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Rust unit tests (fake plugin only)
+        working-directory: service
+        run: cargo test --locked
+      - name: Lua console mock tests
+        run: lua5.4 tools/ma3/test/surface_plugin_test.lua

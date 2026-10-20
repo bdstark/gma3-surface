@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+# An immutable shared service reviews this repository independently before accepting a PR.
+name: PR automation
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited, closed]
+  issue_comment:
+    types: [created, edited]
+  workflow_run:
+    workflows: [CI, PR review event]
+    types: [completed]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Optional PR number; a merged PR number requests cleanup again
+        required: false
+        type: string
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+  checks: read
+jobs:
+  surface-review:
+    uses: bdstark/gma3-mcp/.github/workflows/pr-review-service.yml@fe11d8848fc2cf0cb433417b2ff70f4502ec92a0
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
