@@ -832,7 +832,7 @@ unchanged (VENDOR.md hashes equal upstream `plugin/modules.lock.json` at `9535de
 **Request:** the shortcut-table route does not reach pop-ups and dialogs (an encoder's calculator, the Edit Command
 pop-up), so the digits and `+ - . /` typed nothing there. Move every key that can be a Quickey to the Quickey path.
 
-**Module half:** bdstark/gma3-mcp#74 (hardkeys 0.11.0, pinned at `74c115c`): a live probe qualified 24 more codes for
+**Module half:** bdstark/gma3-mcp#74 (hardkeys 0.11.0, pinned at `1e54bd9`): a live probe qualified 24 more codes for
 the executor-held Quickey path, with the record in `docs/probes/kb-28-quickey-codes-macos-2.5.1.md` there.
 
 **Surface (plugin 0.12.0):**
@@ -866,7 +866,7 @@ calculator opened, `6 2 . 5` (simultaneous downs) showed `62.5` and `Enter` stor
 **Request:** a key on the Quickey path cost an `Assign`, a `Press Page` and an `Unpress Page` (three command-history
 lines and the reads behind them); the operator asked for less noise and work, and for static executors.
 
-**Module half:** bdstark/gma3-mcp#75 (hardkeys 0.12.0, pinned at `c111507`): direct Quickey taps for every code with
+**Module half:** bdstark/gma3-mcp#75 (hardkeys 0.12.0, pinned at `f1bbaac`): direct Quickey taps for every code with
 evidence (all of the NX-K's Quickey keys) and `executors.static`.
 
 **Surface (plugin 0.13.0):**

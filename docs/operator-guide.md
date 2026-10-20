@@ -102,7 +102,11 @@ Quickey key of the NX-K, `Undo` included) goes down as one `Press Quickey N`: no
 executor is used, nothing is held, and the key-up is only acknowledged. The start
 log ends those lines with `, direct tap`, and the command history shows one line
 per key. `taps=off` holds every key instead (press/release through an executor,
-as in 0.12.0; `Undo` then goes back to the shortcut table).
+as in 0.12.0; `Undo` then goes back to the shortcut table). With held keys, a
+Quickey key that goes down while another held Quickey key is still down is refused
+when either is one of the KB-28 codes (digits, `+ - . /`, `@`, `Thru` and the
+keywords): the module qualified those pairs only inside a combo, so let the previous
+key come up first. Direct taps hold nothing, so the limit does not apply to them.
 
 Static executors (`static` next to `bank=...`, KB-29): every code of the bank gets
 its own executor, assigned once when the bank is created, so a held key needs no
