@@ -95,7 +95,11 @@ does not. At most one key goes down per plugin tick: Quickey keys pressed in one
 console frame reorder in a focused text field (KB-28), so a burst is spread over
 a few ticks (a fast burst can make the service retransmit an unacknowledged
 press; the duplicate is recognised and dropped). `@` inserts nothing in the Edit
-Command pop-up (a console behaviour, KB-28).
+Command pop-up (a console behaviour, KB-28). A Quickey key that goes down while another
+held Quickey key is still down is refused when either is one of the KB-28 codes
+(digits, `+ - . /`, `@`, `Thru` and the keywords): the module qualified those
+pairs only inside a combo, so let the previous key come up first. Plugin 0.13.0
+taps these keys instead of holding them, which removes the limit.
 `input=quickey` uses Quickeys only (the other keys are reported unsupported).
 Rules the module enforces, reported to the service as refusals and never
 worked around: a Quickey route without a bank or for a code without evidence is
