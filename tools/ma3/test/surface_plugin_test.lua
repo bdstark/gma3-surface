@@ -1391,7 +1391,7 @@ logs = {}
 state.running = true; Main(nil, "bank status")
 check("bank status lists the set-aside record next to the live bank",
   findLog("bank status: bank " .. esc(SHOW_BANK) .. " state=ready") and findLog("bank status: 1 record%(s%) set aside")
-  and findLog("bank status: set aside " .. esc(SHOW_BANK) .. esc(" show='" .. showA .. "|Default' (23 code(s))")), J(logs))
+  and findLog("bank status: set aside " .. esc(SHOW_BANK) .. esc(" show='" .. showA .. "|Default' (22 code(s))")), J(logs))
 state.ignoreNextCleanup = false; Cleanup()
 check("stop in show B keeps show B's record; show A's stays set aside", state.bankRecord and state.bankRecord.show == "show-b|Default" and #state.bankAside == 1 and state.bankAside[1].show == showA .. "|Default", J({ tostring(state.bankRecord and state.bankRecord.show), state.bankAside }))
 reset("input=mixed")
@@ -1466,7 +1466,7 @@ check("a set-aside record refused at adoption stays set aside with the refusal; 
   and not liveBank().provisioned and quickeyCount() == 23, J({ #state.bankAside, tostring(state.bankRecord), logs }))
 logs = {}
 state.running = true; Main(nil, "bank status")
-check("bank status lists the refused record with its refusal", findLog("bank status: set aside " .. esc(SHOW_BANK) .. esc(" show='" .. showA .. "|Default' (23 code(s)); adoption refused [bank-foreign-owner]")), J(logs))
+check("bank status lists the refused record with its refusal", findLog("bank status: set aside " .. esc(SHOW_BANK) .. esc(" show='" .. showA .. "|Default' (22 code(s)); adoption refused [bank-foreign-owner]")), J(logs))
 state.ignoreNextCleanup = false; Cleanup()
 check("a stop keeps the refused record set aside", #state.bankAside == 1 and state.bankAside[1].refused ~= nil)
 reset(BANK .. " input=mixed")

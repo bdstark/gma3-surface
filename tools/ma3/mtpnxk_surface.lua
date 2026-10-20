@@ -1249,7 +1249,11 @@ local function logAsideBanks(prefix)
   local aside = state.bankAside or {}
   if #aside == 0 then return end
   log("%s: %d record(s) set aside (each is adopted again at a start in its show, and torn down only from there)", prefix, #aside)
-  for _, r in ipairs(aside) do log("%s: set aside %s show='%s' (%d code(s))%s", prefix, tostring(r.id), tostring(r.show), #(r.codes or {}), r.refused and ("; adoption refused " .. tostring(r.refused)) or "") end
+  for _, r in ipairs(aside) do
+    local n = 0  -- counted like bankStatus().codeCount: the code-less placeholder is not a code
+    for _, c in ipairs(r.codes or {}) do if not c.placeholder then n = n + 1 end end
+    log("%s: set aside %s show='%s' (%d code(s))%s", prefix, tostring(r.id), tostring(r.show), n, r.refused and ("; adoption refused " .. tostring(r.refused)) or "")
+  end
 end
 
 -- A record handed back by dispose(). A different kept record (left unadopted at this start) is set aside, not overwritten.
