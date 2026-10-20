@@ -883,3 +883,17 @@ evidence (all of the NX-K's Quickey keys) and `executors.static`.
 1.301–333 held one code each; the start log reported every Quickey key as `direct tap`. Through `mtpnxk sim`, `1 0 1
 Enter` selected Fixture 101 and `3 7 . 5 Enter` (all key-downs at once) into the Dimmer calculator stored 37.5; the
 command history showed one `Press Quickey N` line per key, no Assign, Press Page or Unpress Page.
+
+**Show switch (plugin 0.13.1, 2026-10-20):** the bank record the plugin keeps across `stop`, show loads and plugin
+reloads was adopted at every start, whatever show was loaded. After a switch from `Shehds` to `test-fixture-disposable`
+the hardkeys show gate left Shehds' bank live but stale (`show/data pool is 'test-fixture-disposable|Default', the bank
+belongs to 'Shehds|Default'`), `bank=` was skipped because a bank was live, and `input=mixed` was refused until onPC
+restarted. The plugin now reads the show identity (the module's `consoleDeps().showIdentity`) before adopting: a record
+of another show is set aside (one log line), a set-aside record of the current show is taken back and adopted, and
+`bank status` lists the set-aside records. Nothing forgets a record; it goes only through `bank teardown` in its own
+show, and `bank teardown` clears only the torn-down bank's record (a record left unadopted because the show identity
+was unreadable at that start stays kept), and a record refused at adoption stays set aside with the refusal until a
+bank on the same objects supersedes it. Tests: `surface_plugin_test.lua` 287 (new: a stale run in show A taken over in show B, B's own bank provisioned
+and pressed, `bank status` listing A's record, a second start in B not logging it again, back in A taking A's record
+back with nothing created, teardown per show, an unreadable show identity at adoption followed by provisioning and
+teardown of the current bank, a set-aside record refused at adoption kept and then superseded), `e2e.sh` passed.
