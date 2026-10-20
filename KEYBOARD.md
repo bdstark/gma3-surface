@@ -856,4 +856,5 @@ service running and a second simulated surface, `mtpnxk sim --id sim-kb28`):** t
 showed `1 Thru 52 +3`, in order; the service retransmitted the presses whose acknowledgement came after their release
 and dropped those retransmissions (the originals were processed). Fixture 101 selected with `1 0 1 Enter`, the Dimmer
 calculator opened, `6 2 . 5` (simultaneous downs) showed `62.5` and `Enter` stored it (the encoder bar read 63).
-Physical NX-K keys were not pressed in this pass; the operator's check on the hardware is the remaining step.
+**Hardware (2026-10-20):** the operator typed a value into an encoder's calculator dialog on the physical NX-K
+(`mtpnxk run`, same plugin start) and it was entered as expected.
