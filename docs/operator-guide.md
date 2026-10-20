@@ -128,6 +128,26 @@ override the backend cannot serve, or that resolves to no usable route, refuses
 the start instead of being accepted inert. `bankcodes=hardkeys` provisions every
 command-area code (94 Quickeys) instead of the qualified 33.
 
+Several shows (plugin 0.13.1): a bank's Quickeys and executors live in the show
+file and data pool it was created in, and its kept record names that show
+(`show='<show file>|<data pool>'` in `bank status`). At a start in another show
+the record is set aside, not adopted, with one log line (`bank: record … belongs
+to show 'Shehds|Default', the current show is 'test-fixture-disposable|Default';
+set aside, not adopted`), and `bank=` provisions or reuses the current show's own
+bank as usual, so input is not blocked. Each show keeps its own bank at the same
+slots (for example 900–933 and 1.178–189 in both). Back in the first show, the next
+start takes its record back and adopts it (`taken back from the set-aside
+records`), and the other show's record is set aside in turn. `bank status` lists
+the set-aside records (`set aside <id> show='…'`), also while the plugin is not
+running. There is no command that forgets one: a set-aside record goes away only
+through `bank teardown` in its own show, which deletes its objects first. `bank teardown`
+removes only the live bank and its record; any other kept record stays. A record the
+module refuses to adopt back in its show (`bank adopt refused …`) stays set aside
+with the refusal, listed by `bank status`; it is tried again at each start there,
+and `bank=` on the same objects supersedes it. The
+records live in the plugin's Lua state, so an onPC restart clears them as it
+always did; the objects stay in the saved shows, and `bank=` reuses them there.
+
 Upgrading from plugin 0.11.0 (hardkeys 0.10.0): the bank kept from the older
 version has only the nine KB-10 codes. It is adopted and verified as before, the
 start log names the qualified codes it lacks, and their keys are refused until the
@@ -361,7 +381,8 @@ is refused with `conflict` until you act.
    asked for at start.
 
 After a show load the plugin is not running; start it again and the kept
-records (if any) are adopted as above.
+records (if any) are adopted as above. A kept bank record of another show is set
+aside instead (section 3a, "Several shows").
 
 ## Updating
 

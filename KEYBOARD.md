@@ -884,6 +884,20 @@ evidence (all of the NX-K's Quickey keys) and `executors.static`.
 Enter` selected Fixture 101 and `3 7 . 5 Enter` (all key-downs at once) into the Dimmer calculator stored 37.5; the
 command history showed one `Press Quickey N` line per key, no Assign, Press Page or Unpress Page.
 
+**Show switch (plugin 0.13.1, 2026-10-20):** the bank record the plugin keeps across `stop`, show loads and plugin
+reloads was adopted at every start, whatever show was loaded. After a switch from `Shehds` to `test-fixture-disposable`
+the hardkeys show gate left Shehds' bank live but stale (`show/data pool is 'test-fixture-disposable|Default', the bank
+belongs to 'Shehds|Default'`), `bank=` was skipped because a bank was live, and `input=mixed` was refused until onPC
+restarted. The plugin now reads the show identity (the module's `consoleDeps().showIdentity`) before adopting: a record
+of another show is set aside (one log line), a set-aside record of the current show is taken back and adopted, and
+`bank status` lists the set-aside records. Nothing forgets a record; it goes only through `bank teardown` in its own
+show, and `bank teardown` clears only the torn-down bank's record (a record left unadopted because the show identity
+was unreadable at that start stays kept), and a record refused at adoption stays set aside with the refusal until a
+bank on the same objects supersedes it. Tests: `surface_plugin_test.lua` 287 (new: a stale run in show A taken over in show B, B's own bank provisioned
+and pressed, `bank status` listing A's record, a second start in B not logging it again, back in A taking A's record
+back with nothing created, teardown per show, an unreadable show identity at adoption followed by provisioning and
+teardown of the current bank, a set-aside record refused at adoption kept and then superseded), `e2e.sh` passed.
+
 ## KB-30 — Changing the encoder feature group from the panel (surface only, 2026-10-20)
 
 **Request:** the four rotaries drive whatever feature group the console's encoder bar shows, and only a click on the
@@ -908,9 +922,9 @@ line, but a macro line with Execute No places its text there (appended, whatever
   most 400 ms), so `Swap Prog 4 Enter` typed fast arrives in order. Refusals: `unsupported`, `input-disabled`,
   `missing`, `not-owned`, `changed`, `unreadable`, `clear-failed`, `refused`.
 - The state carries `ebank` (1 while `Select EncoderBank` is pending), and the service lights Swap Prog from it.
-- Tests: `surface_plugin_test.lua` 298 (35 new), `cargo test` 111 (1 new), `e2e.sh` passed.
+- Tests: `surface_plugin_test.lua` 322 after merging #19 (35 new), `cargo test` 111 (1 new), `e2e.sh` passed.
 
 **Live (onPC 2.5.1.0, `test-fixture-disposable`, `input=keyboard control=console encmacro=950`):** from `mtpnxk sim`
 and from the physical NX-K, `Swap Prog 4 Enter` took the bar from Dimmer to Color with the selection kept, and a typed
 `1` was cleared first. With MegaHexes selected, `Swap Prog 2 Enter` was `Not allowed` and the bar stayed. Quickey
-dispatch in the same run waits for gma3-surface#19: a stale bank record from Shehds blocked `input=mixed`.
+dispatch was not run live: a stale bank record from Shehds blocked `input=mixed` (the show switch fix above, #19, merged since).

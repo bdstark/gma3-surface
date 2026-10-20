@@ -38,7 +38,9 @@
 --   Plugin "mtpnxk_surface" "bank status" | "bank verify" | "bank teardown"
 --                                                          (teardown: delete the verified owned Quickeys and
 --                                                          clear the reserved executors; refused while a
---                                                          Quickey record is live)
+--                                                          Quickey record is live). A bank record of another
+--                                                          show is set aside at start (bank status lists it)
+--                                                          and adopted again when that show is current
 --
 -- Rules this plugin keeps (KEYBOARD.md KB-07, docs/surface-protocol.md):
 --   * the listener is fixed to 127.0.0.1; remote sources are rejected before parsing. Like the MCP
@@ -1395,6 +1397,75 @@ local function keepModeRecord(mode, now, reason)
     reason, tostring(mode.id), tostring(mode.profile), tostring(mode.original), tostring(mode.target), tostring(mode.unresolved and mode.unresolved.reason))
 end
 
+-- Bank records per show (plugin 0.13.1). A bank's objects live in the show file and data pool it was
+-- provisioned in (record.show, the module's show identity), so a record from another show is set aside in
+-- state.bankAside instead of being adopted (adopting it left a degraded bank live that refused every Quickey
+-- route and blocked bank= for the current show). It is taken back when its show is current at a start, and
+-- removed only by "bank teardown" from that show: there is no command that forgets one while its objects exist.
+local function currentShow()
+  local rec = state.modules and state.modules.hardkeys
+  local m = rec and rec.module
+  if type(m) ~= "table" or type(m.consoleDeps) ~= "function" then return nil, "no hardkeys module" end
+  local ok, v = pcall(function() return m.consoleDeps(_G).showIdentity() end)
+  if not ok then return nil, tostring(v) end
+  if v == nil then return nil, "showIdentity() returned nil" end
+  return tostring(v)
+end
+
+local function sameBank(a, b) return type(a) == "table" and type(b) == "table" and a.id == b.id and a.show == b.show end
+
+local function insertAsideBank(record)
+  state.bankAside = state.bankAside or {}
+  local slot = #state.bankAside + 1
+  -- The same bank of the same show (same objects): the newer record replaces the older one.
+  for i, r in ipairs(state.bankAside) do if sameBank(r, record) then slot = i; break end end
+  state.bankAside[slot] = record
+end
+
+-- A newer record of the same bank (kept from a run, or a bank provisioned on the same objects) supersedes a set-aside one.
+local function supersedeAsideBank(record)
+  local aside = state.bankAside or {}
+  for i = #aside, 1, -1 do
+    if sameBank(aside[i], record) then
+      table.remove(aside, i)
+      log("bank: the set-aside record %s (show '%s') is superseded by the current record of the same bank", tostring(record.id), tostring(record.show))
+    end
+  end
+end
+
+local function setAsideBank(record, show)
+  insertAsideBank(record)
+  log("bank: record %s belongs to show '%s'%s; set aside, not adopted (it is adopted again at a start in that show; \"bank status\" lists it)",
+    tostring(record.id), tostring(record.show), show and (", the current show is '" .. show .. "'") or "")
+end
+
+-- Takes the first set-aside record of `show` out of the list (nil when there is none).
+local function takeAsideBank(show)
+  for i, r in ipairs(state.bankAside or {}) do
+    if r.show == show then table.remove(state.bankAside, i); return r end
+  end
+  return nil
+end
+
+local function logAsideBanks(prefix)
+  local aside = state.bankAside or {}
+  if #aside == 0 then return end
+  log("%s: %d record(s) set aside (each is adopted again at a start in its show, and torn down only from there)", prefix, #aside)
+  for _, r in ipairs(aside) do
+    local n = 0  -- counted like bankStatus().codeCount: the code-less placeholder is not a code
+    for _, c in ipairs(r.codes or {}) do if not c.placeholder then n = n + 1 end end
+    log("%s: set aside %s show='%s' (%d code(s))%s", prefix, tostring(r.id), tostring(r.show), n, r.refused and ("; adoption refused " .. tostring(r.refused)) or "")
+  end
+end
+
+-- A record handed back by dispose(). A different kept record (left unadopted at this start) is set aside, not overwritten.
+local function keepBankRecord(record)
+  local kept = state.bankRecord
+  if type(kept) == "table" and not sameBank(kept, record) then setAsideBank(kept, nil) end
+  supersedeAsideBank(record)
+  state.bankRecord = record
+end
+
 local function detachHardkeys(reason, now)
   local rec = state.modules.hardkeys
   local inst = rec and rec.instance
@@ -1419,7 +1490,7 @@ local function detachHardkeys(reason, now)
     -- KB-12: the Quickey bank record travels with the consumer like the unresolved records; the next
     -- start re-verifies every owned object (adoptBank) and nothing on the console is touched here.
     if type(r.bank) == "table" then
-      state.bankRecord = r.bank
+      keepBankRecord(r.bank)
       log("bank record %s kept for the next start (%d code(s)); nothing on the console was changed", tostring(r.bank.id), #(r.bank.codes or {}))
     end
     keepModeRecord(r.mode, now, reason)
@@ -1450,7 +1521,7 @@ local function exportQuarantine(t)
     record.keptAt, record.keptReason = t, "quarantine"
     state.unresolved[#state.unresolved + 1] = record
   end
-  if type(r.bank) == "table" then state.bankRecord = r.bank end
+  if type(r.bank) == "table" then keepBankRecord(r.bank) end
   keepModeRecord(r.mode, t, "quarantine")
   log("quarantined instance exported %d record(s)%s", #(r.records or {}), type(r.mode) == "table" and " and a mode restoration record" or "")
   state.quarantine = nil
@@ -1758,14 +1829,40 @@ local function logBank(prefix, b)
   if b.reprovision then logerr("%s: %s (Plugin \"mtpnxk_surface\" \"bank teardown\", then start again with bank=...)", prefix, tostring(b.reprovision)) end
 end
 
--- At start: a record kept from the previous run is adopted (every object re-verified, nothing created).
+-- At start: a record kept from the previous run is adopted (every object re-verified, nothing created)
+-- when it belongs to the current show; a record of another show is set aside, and a set-aside record of
+-- the current show is taken back. With the show identity unreadable nothing is adopted or set aside.
 local function adoptKeptBank(t)
-  local inst, record = hk(), state.bankRecord
-  if not inst or type(record) ~= "table" then return end
+  local inst = hk()
+  if not inst then return end
+  local record = state.bankRecord
+  if type(record) ~= "table" and #(state.bankAside or {}) == 0 then return end
+  local show, serr = currentShow()
+  if not show then logerr("bank: the show identity cannot be read (%s); kept bank records are not adopted", tostring(serr)); return end
+  -- A record without a show identity is left to adoptBank(), which refuses it.
+  if type(record) == "table" and type(record.show) == "string" and record.show ~= "" and record.show ~= show then
+    state.bankRecord = nil
+    setAsideBank(record, show)
+    record = nil
+  end
+  if type(record) ~= "table" then
+    record = takeAsideBank(show)
+    if not record then return end
+    log("bank: record %s of show '%s' taken back from the set-aside records", tostring(record.id), tostring(record.show))
+    state.bankRecord = record
+  end
   if type(inst.adoptBank) ~= "function" then logerr("bank: a record is kept but the loaded module has no adoptBank()"); return end
   local ok, r, err = pcall(inst.adoptBank, inst, record, t)
   if not ok then logerr("bank adopt raised: %s; the record is kept", tostring(r)); return end
-  if not r then logerr("bank adopt refused [%s]: %s; the record is dropped (provision again with bank=...)", tostring(err and err.code), tostring(err and err.message)); state.bankRecord = nil; return end
+  if not r then
+    -- The record may still be the only one naming objects that exist: it is set aside with the refusal, never
+    -- dropped. It is tried again at the next start in its show, and a bank provisioned on the same objects supersedes it.
+    record.refused = string.format("[%s] %s", tostring(err and err.code), tostring(err and err.message))
+    state.bankRecord = nil
+    insertAsideBank(record)
+    logerr("bank adopt refused %s; the record is set aside, not dropped (\"bank status\" lists it; bank=... provisions this show's bank, and one on the same objects supersedes the record)", record.refused)
+    return
+  end
   state.bankRecord = nil
   logBank("bank adopt", r)
 end
@@ -1791,6 +1888,7 @@ local function provisionBank(opts, t)
     return
   end
   log("bank provision: %d Quickey(s) created, %d reused", r.created or 0, r.reused or 0)
+  supersedeAsideBank({ id = r.id, show = r.show })
   logBank("bank provision", r)
 end
 
@@ -2105,20 +2203,25 @@ local function MainImpl(display_handle, argument)
   if opts.command and opts.command:match("^bank%-") then
     local inst = hk()
     if not inst then
-      if state.bankRecord then log("bank: not running; a bank record %s is kept and is adopted at the next start", tostring(state.bankRecord.id)) else log("bank: not running, no bank record kept") end
+      if state.bankRecord then log("bank: not running; a bank record %s (show '%s') is kept and is adopted at the next start in that show", tostring(state.bankRecord.id), tostring(state.bankRecord.show)) else log("bank: not running, no bank record kept") end
+      logAsideBanks("bank")
       return
     end
     local t = now()
-    if opts.command == "bank-status" then logBank("bank status", inst:bankStatus(t))
+    if opts.command == "bank-status" then logBank("bank status", inst:bankStatus(t)); logAsideBanks("bank status")
     elseif opts.command == "bank-verify" then
       local ok, r, err = pcall(inst.verifyBank, inst, t)
       if not ok then logerr("bank verify raised: %s", tostring(r)) elseif not r then logerr("bank verify refused [%s]: %s", tostring(err and err.code), tostring(err and err.message)) else logBank("bank verify", r) end
     else
+      local live = inst:bankStatus(t)
       local ok, r, err = pcall(inst.teardownBank, inst, t, { authorized = true })
       if not ok then logerr("bank teardown raised: %s", tostring(r))
       elseif not r then logerr("bank teardown refused [%s]: %s", tostring(err and err.code), tostring(err and err.message))
       else
-        state.bankRecord = nil
+        -- A kept record this start did not adopt (the show identity was unreadable at adoption) is another
+        -- bank whose objects still exist: only the record of the bank just torn down is cleared.
+        if sameBank(state.bankRecord, { id = live.id, show = live.show }) then state.bankRecord = nil
+        elseif type(state.bankRecord) == "table" then log("bank teardown: the kept record %s (show '%s') is another bank and stays kept", tostring(state.bankRecord.id), tostring(state.bankRecord.show)) end
         log("bank teardown: %d Quickey(s) removed, %d executor(s) cleared, %d skipped; state %s", #(r.removed or {}), #(r.cleared or {}), #(r.skipped or {}), tostring(r.state))
         for _, sk in ipairs(r.skipped or {}) do logerr("bank teardown: skipped %s: %s", tostring(sk.index or sk.executor), tostring(sk.reason)) end
         if state.inputEnabled and (state.inputMode == "quickey" or state.inputMode == "mixed") then
@@ -2141,6 +2244,7 @@ local function MainImpl(display_handle, argument)
         log("route %s: %s via %s%s%s", name, tostring(NXK_KEYS[name]), tostring(r.method), r.backend and (" (" .. tostring(r.backend) .. ")") or "", r.supported and "" or " UNSUPPORTED: " .. tostring(state.keyReasons and state.keyReasons[name]))
       end
     elseif state.bankRecord then log("bank record %s kept (not running)", tostring(state.bankRecord.id)) end
+    logAsideBanks("bank")
     if state.unresolved and #state.unresolved > 0 then log("%d unresolved record(s) kept from a previous run (not adopted yet)", #state.unresolved) end
     if type(state.modeRecord) == "table" then logerr("a keyboard-shortcut mode restoration record is kept from a previous run (profile '%s', shortcuts %s -> %s; not adopted yet): run  Plugin \"mtpnxk_surface\" \"recover\"", tostring(state.modeRecord.profile), tostring(state.modeRecord.original), tostring(state.modeRecord.target)) end
     if state.quarantine then logerr("a previous instance is quarantined (%s: %s); input is blocked until  recover  exports its records", tostring(state.quarantine.reason), tostring(state.quarantine.error)) end
