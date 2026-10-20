@@ -1343,6 +1343,87 @@ state.running = true; Main(nil, "bank teardown"); state.ignoreNextCleanup = fals
 state.bankRecord = nil
 
 -------------------------------------------------------------------------------
+-- Show switch (plugin 0.13.1): a kept bank record belongs to the show it was provisioned in. A record of
+-- another show is set aside (not adopted, logged once), bank= provisions the current show's bank, and the
+-- record is adopted again when its show is current. Each fake show has its own Quickey pool and executors.
+-------------------------------------------------------------------------------
+local shows = {}
+local function loadShow(name)
+  shows[console.showFile] = { quickeys = pool.quickeys, executors = pool.executors }
+  local d = shows[name] or { quickeys = {}, executors = {} }
+  pool.quickeys, pool.executors, console.showFile = d.quickeys, d.executors, name
+end
+local function countLog(pat) local n = 0; for _, l in ipairs(logs) do if l:find(pat) then n = n + 1 end end; return n end
+local function liveBank() return state.modules.hardkeys.instance:bankStatus(clock.t) end
+local function tapOne(gen, nonce)
+  push({ t = "hello", v = 2, id = "nxk-show", gen = gen, nonce = nonce }); tick()
+  welcome = ofType(drain(), "welcome")[1]; sid, seq = welcome.sid, 0
+  local mark = #pool.cmds
+  send({ t = "key", ev = 1, k = "1", d = 1 }); tick()
+  local a = ofType(drain(), "ack")[1]
+  send({ t = "key", ev = 2, k = "1", d = 0 }); tick(); drain()
+  return a, pool.cmds[mark + 1]
+end
+local function esc(text) return (text:gsub("%p", "%%%0")) end
+local SHOW_BANK = "mtpnxk_surface@q900.e1.180-191"
+local showA = console.showFile
+pageWithExecutors(1, 180, 12)
+reset(BANK .. " input=mixed")
+check("show A: bank= provisions show A's bank", liveBank().provisioned and liveBank().show == showA .. "|Default" and quickeyCount() == 23, J({ liveBank().show, quickeyCount() }))
+-- The onPC case: the show load kills the loop without its shutdown; the next start in show B takes the run over.
+push({ t = "hello", v = 2, id = "nxk-show", gen = 1, nonce = "abababababababa1" }); tick(); drain()
+clock.t = clock.t + 5
+loadShow("show-b")
+pageWithExecutors(1, 180, 12)
+logs = {}
+Main(nil, BANK .. " input=mixed")
+local aside = state.bankAside or {}
+check("show B: the taken-over run's show-A record is set aside, not adopted, and logged",
+  findLog("has not ticked") and #aside == 1 and aside[1].id == SHOW_BANK and aside[1].show == showA .. "|Default"
+  and findLog(esc("bank: record " .. SHOW_BANK .. " belongs to show '" .. showA .. "|Default', the current show is 'show-b|Default'; set aside, not adopted")) and not findLog("bank adopt"),
+  J({ aside, lastLog() }))
+check("show B: bank= provisions show B's own bank (not 'already live') and input=mixed is enabled",
+  liveBank().provisioned and liveBank().state == "ready" and liveBank().show == "show-b|Default" and findLog("bank provision: 23 Quickey%(s%) created, 0 reused") and not findLog("is already live")
+  and quickeyCount() == 23 and state.inputEnabled == true and state.inputMode == "mixed", J({ liveBank().state, liveBank().show, quickeyCount(), state.inputMode, lastLog() }))
+local sa, scmd = tapOne(2, "abababababababa2")
+check("show B: a key goes down through show B's bank", sa and sa.ok == 1 and scmd and scmd:find("^Press Quickey 9%d%d$"), J({ sa, scmd }))
+logs = {}
+state.running = true; Main(nil, "bank status")
+check("bank status lists the set-aside record next to the live bank",
+  findLog("bank status: bank " .. esc(SHOW_BANK) .. " state=ready") and findLog("bank status: 1 record%(s%) of other shows set aside")
+  and findLog("bank status: set aside " .. esc(SHOW_BANK) .. esc(" show='" .. showA .. "|Default' (23 code(s))")), J(logs))
+state.ignoreNextCleanup = false; Cleanup()
+check("stop in show B keeps show B's record; show A's stays set aside", state.bankRecord and state.bankRecord.show == "show-b|Default" and #state.bankAside == 1 and state.bankAside[1].show == showA .. "|Default", J({ state.bankRecord and state.bankRecord.show, state.bankAside }))
+reset("input=mixed")
+check("a second start in show B adopts B's record and does not log the set-aside record again",
+  liveBank().show == "show-b|Default" and liveBank().state == "ready" and findLog("bank adopt: bank") and countLog("set aside, not adopted") == 0 and #state.bankAside == 1 and state.inputEnabled == true, J({ liveBank().show, logs }))
+state.running = true; state.ignoreNextCleanup = false; Cleanup()
+-- Back to show A: show B's record is set aside and show A's is taken back and adopted (nothing created).
+loadShow(showA)
+local cmdMark = #pool.cmds
+reset("input=mixed")
+local creates = 0; for i = cmdMark + 1, #pool.cmds do if pool.cmds[i]:find("^Store Quickey") then creates = creates + 1 end end
+check("back in show A: B's record is set aside, A's is taken back and adopted, nothing created",
+  findLog("bank: record " .. esc(SHOW_BANK) .. " belongs to show 'show%-b|Default'") and findLog("taken back from the set%-aside records")
+  and liveBank().show == showA .. "|Default" and liveBank().state == "ready" and creates == 0 and #state.bankAside == 1 and state.bankAside[1].show == "show-b|Default" and state.inputEnabled == true,
+  J({ liveBank().show, liveBank().state, creates, state.bankAside or {}, logs }))
+sa, scmd = tapOne(3, "abababababababa3")
+check("back in show A: a key goes down through show A's bank", sa and sa.ok == 1 and scmd and scmd:find("^Press Quickey 9%d%d$"), J({ sa, scmd }))
+-- Teardown removes only the current show's bank; the set-aside record stays until its own show tears it down.
+state.running = true; Main(nil, "bank teardown")
+check("teardown in show A removes A's bank and keeps B's set-aside record", quickeyCount() == 0 and state.bankRecord == nil and #state.bankAside == 1 and state.bankAside[1].show == "show-b|Default", J({ quickeyCount(), state.bankAside }))
+state.ignoreNextCleanup = false; Cleanup()
+logs = {}
+Main(nil, "bank status")
+check("bank status while not running lists the set-aside record", findLog("bank: not running, no bank record kept") and findLog("bank: set aside " .. esc(SHOW_BANK) .. " show='show%-b|Default'"), J(logs))
+loadShow("show-b")
+reset("input=mixed")
+check("in show B the set-aside record is taken back and adopted", liveBank().show == "show-b|Default" and liveBank().state == "ready" and #state.bankAside == 0, J({ liveBank().show, state.bankAside }))
+state.running = true; Main(nil, "bank teardown"); state.ignoreNextCleanup = false; Cleanup()
+check("teardown in show B leaves no record anywhere", state.bankRecord == nil and #state.bankAside == 0 and quickeyCount() == 0)
+loadShow(showA)
+
+-------------------------------------------------------------------------------
 -- KB-16 review: a shortcut-mode restoration dispose() hands back (KB-14) is kept across stop/start,
 -- adopted as unresolved (presses refused), reported by status, and restored by recover.
 -------------------------------------------------------------------------------
