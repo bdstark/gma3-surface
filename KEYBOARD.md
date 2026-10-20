@@ -843,8 +843,10 @@ the executor-held Quickey path, with the record in `docs/probes/kb-28-quickey-co
   evidence), `Next`, `Last` and `Menu` (not probed) stay on the shortcut table. A module without the table export
   falls back to the KB-10 list.
 - At most one key goes down per plugin tick. Quickey presses issued in one console frame reorder in a focused text
-  field (digits land after keywords, KB-10/KB-28); presses one frame apart keep their order. The datagrams behind a
-  key-down wait in the socket for the next tick; releases do not count.
+  field (digits land after keywords, KB-10/KB-28); presses one frame apart keep their order. Every datagram is still
+  read and admitted each tick (rate limit, heartbeats, other surfaces); key events behind a key-down wait in a bounded
+  queue (64, then refused `overloaded`) in arrival order and are acknowledged when they run, their retransmissions
+  ignored meanwhile; releases do not count against the tick (PR #12 review).
 - The start log names the codes a kept bank lacks and the remedy (`bank teardown`, then `bank=...`) when the module
   reports them (`reprovision`), and the codes whose qualification the adoption refreshed.
 - Tests: `surface_plugin_test.lua` 249 (the mixed and quickey sections follow the 0.11.0 qualification; two key-downs

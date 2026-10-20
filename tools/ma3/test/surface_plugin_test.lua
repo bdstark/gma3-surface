@@ -1161,6 +1161,7 @@ ack = ofType(drain(), "ack")[1]
 send({ t = "key", ev = 8, k = "Record", d = 0 }); tick(); drain()
 check("Record (STORE) is a Quickey hold once the PC key is up", ack and ack.ok == 1 and lastCmd("^Unpress Page 1%.18%d$") and pressedCount() == 0, J(ack))
 -- KB-28: at most one key goes down per tick; the rest of the datagrams wait in the socket for the next tick.
+local dupBefore
 send({ t = "key", ev = 9, k = "1", d = 1 }); send({ t = "key", ev = 10, k = "Thru", d = 1 }); tick()
 local acks1 = ofType(drain(), "ack")
 check("two key-downs in one tick: only the first is dispatched this tick", #acks1 == 1 and acks1[1].ev == 9 and pressedCount() == 1, J(acks1))
@@ -1168,16 +1169,34 @@ tick()
 local acks2 = ofType(drain(), "ack")
 check("the second key-down is dispatched on the next tick, in order", #acks2 == 1 and acks2[1].ev == 10 and acks2[1].ok == 1 and pressedCount() == 2, J(acks2))
 send({ t = "key", ev = 11, k = "1", d = 0 }); send({ t = "key", ev = 12, k = "Thru", d = 0 }); tick()
+dupBefore = state.counters.dupEvents
 check("releases do not count against the tick: both come up in one tick", #ofType(drain(), "ack") == 2 and pressedCount() == 0)
+-- PR #12 review: packets are still read and admitted every tick; only key events wait, in a bounded queue.
+send({ t = "key", ev = 13, k = "1", d = 1 }); send({ t = "key", ev = 14, k = "Thru", d = 1 }); send({ t = "key", ev = 14, k = "Thru", d = 1 })
+send({ t = "hb", held = { "1", "Thru" } }); tick()
+local out = drain()
+check("a heartbeat behind a burst is answered in the same tick; one key-down ran, the next waits, its retransmission is ignored", #ofType(out, "hb") == 1 and #ofType(out, "ack") == 1 and ofType(out, "ack")[1].ev == 13 and #state.keyQueue == 1 and state.counters.dupEvents == dupBefore, J({ out, #state.keyQueue }))
+tick()
+out = ofType(drain(), "ack")
+check("the queued key-down runs on the next tick and is acknowledged once", #out == 1 and out[1].ev == 14 and out[1].ok == 1 and out[1].dup == nil and pressedCount() == 2, J(out))
+send({ t = "key", ev = 15, k = "1", d = 0 }); send({ t = "key", ev = 16, k = "Thru", d = 0 }); tick(); drain()
+state._DEFAULTS.maxKeyQueue = 1
+send({ t = "key", ev = 17, k = "2", d = 1 }); send({ t = "key", ev = 18, k = "3", d = 1 }); send({ t = "key", ev = 19, k = "4", d = 1 }); tick()
+out = ofType(drain(), "ack")
+check("a key event beyond the queue bound is refused overloaded, nothing dispatched for it", #out == 2 and out[1].ev == 17 and out[1].ok == 1 and out[2].ev == 19 and out[2].ok == 0 and out[2].code == "overloaded" and pressedCount() == 1, J(out))
+state._DEFAULTS.maxKeyQueue = 64
+tick(); drain()
+send({ t = "key", ev = 20, k = "2", d = 0 }); send({ t = "key", ev = 21, k = "3", d = 0 }); tick(); drain()
+check("the burst ends with nothing held and nothing queued", pressedCount() == 0 and #state.keyQueue == 0, J({ pressedCount(), #state.keyQueue }))
 state.running = true
 Main(nil, "bank status")
 check("bank status reports the live bank", findLog("bank status: bank mtpnxk_surface@q900%.e1%.180%-191 state=ready"), lastLog())
 state.ignoreNextCleanup = false
-send({ t = "key", ev = 13, k = "1", d = 1 }); tick(); drain()
+send({ t = "key", ev = 23, k = "1", d = 1 }); tick(); drain()
 Main(nil, "bank teardown")
 check("teardown is refused while a Quickey record is live", findLog("bank teardown refused %[bank%-in%-use%]") and quickeyCount() == 23, lastLog())
 state.ignoreNextCleanup = false
-send({ t = "key", ev = 14, k = "1", d = 0 }); tick(); drain()
+send({ t = "key", ev = 24, k = "1", d = 0 }); tick(); drain()
 Cleanup()
 check("cleanup keeps the bank record and touches no console object", state.bankRecord and state.bankRecord.id == "mtpnxk_surface@q900.e1.180-191" and quickeyCount() == 23 and findLog("bank record mtpnxk_surface@q900.e1.180%-191 kept"), lastLog())
 local creates = 0; for _, c in ipairs(pool.cmds) do if c:find("^Store Quickey") then creates = creates + 1 end end

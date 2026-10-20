@@ -17,7 +17,8 @@
 --                                                          key as an executor press of its Quickey (they reach
 --                                                          pop-ups and dialogs); the rest (Undo, Next, Last,
 --                                                          Menu) through Keyboard() (explicit per-key table).
---                                                          KB-28: at most one key goes down per tick
+--                                                          KB-28: at most one key goes down per tick (the
+--                                                          rest wait in a bounded key queue)
 --   Plugin "mtpnxk_surface" "bank=... input=quickey"  Quickeys only: unqualified keys are refused
 --   Plugin "mtpnxk_surface" "input=mixed route=Undo:quickkey,2:shortcut"
 --                                                          per-key override of the dispatch method; an
@@ -107,6 +108,8 @@ local DEFAULTS = {
   feedbackMinMs = 250,   -- KB-23: a changed value/level/activity/colour resends the context after at most this
   maxDatagram = 512,
   maxPacketsPerTick = 32,
+  maxKeyQueue = 64,        -- KB-28: key events waiting for their tick (one key-down per tick); beyond it a key is refused
+
   maxPacketsPerSecond = 400,  -- per session
   evWindow = 64,         -- event ids remembered per session for deduplication
   nonceMs = 60000,       -- hello nonces remembered this long
@@ -429,7 +432,7 @@ local function openSession(obj, ip, port, now)
   local sid = randomHex(8)
   while state.sessions[sid] do sid = randomHex(8) end
   local s = { sid = sid, id = obj.id, gen = obj.gen, ip = ip, port = port, openedAt = now, lastSeen = now, lastSeq = 0, outSeq = 0,
-              holds = {}, evSeen = {}, evOrder = {}, evAck = {}, lastEvByKey = {}, rate = { since = now, count = 0 }, state = "active",
+              holds = {}, evSeen = {}, evOrder = {}, evAck = {}, lastEvByKey = {}, keyQueued = {}, rate = { since = now, count = 0 }, state = "active",
               unsyncedHeld = held, lastFullAt = nil, lastState = nil, sessionOpen = false, surface = obj.surface, fw = obj.fw }
   local inst = hk()
   if inst and state.inputEnabled then
@@ -554,12 +557,30 @@ end
 -------------------------------------------------------------------------------
 -- Packet handlers
 -------------------------------------------------------------------------------
-local function handleKey(s, obj, now)
+local function handleKey(s, obj, now, fromQueue)
   local ev, name, down = obj.ev, obj.k, obj.d
   if type(ev) ~= "number" or ev ~= math.floor(ev) or ev < 0 then return "bad-ev" end
   if type(name) ~= "string" or (NXK_KEYS[name] == nil and not NXK_LOCAL[name]) then return "bad-key" end
   if down ~= 0 and down ~= 1 then return "bad-d" end
-  if seenEvent(s, ev) then replayAck(s, ev); return nil end
+  if s.evSeen[ev] then replayAck(s, ev); return nil end
+  -- KB-28: at most one key goes down per tick (Quickey presses in one console frame reorder in a focused text
+  -- field). Once a key went down this tick, or while earlier key events wait, a key event joins the queue in
+  -- arrival order and is acknowledged when it runs; its retransmissions are ignored meanwhile. Packets are still
+  -- read and admitted every tick, so heartbeats and other messages are never held behind a burst.
+  s.keyQueued = s.keyQueued or {}
+  if s.keyQueued[ev] then return nil end
+  if not fromQueue and (state.keyDownThisTick or #state.keyQueue > 0) then
+    if #state.keyQueue >= DEFAULTS.maxKeyQueue then
+      state.counters.keyQueueOverflow = (state.counters.keyQueueOverflow or 0) + 1
+      ackEvent(s, ev, false, { code = "overloaded", why = string.format("%d key events are already waiting for their tick; nothing dispatched", DEFAULTS.maxKeyQueue) })
+      return nil
+    end
+    s.keyQueued[ev] = true
+    state.keyQueue[#state.keyQueue + 1] = { s = s, obj = obj }
+    state.counters.keyQueued = (state.counters.keyQueued or 0) + 1
+    return nil
+  end
+  seenEvent(s, ev)
   if superseded(s, name, ev) then
     state.counters.superseded = state.counters.superseded + 1
     ackEvent(s, ev, false, { code = "superseded", why = "a newer event for this key was already processed; nothing dispatched" })
@@ -1304,7 +1325,17 @@ local function tick(now)
   -- their order. The datagrams behind a key-down stay in the socket for the next tick.
   local n = 0
   state.keyDownThisTick = false
-  while n < DEFAULTS.maxPacketsPerTick and not state.keyDownThisTick do
+  -- Key events queued by earlier ticks run first, in arrival order: every release, and at most one key-down.
+  state.keyQueue = state.keyQueue or {}
+  local q = state.keyQueue
+  while #q > 0 do
+    local item = q[1]
+    if item.obj.d == 1 and state.keyDownThisTick then break end
+    table.remove(q, 1)
+    item.s.keyQueued[item.obj.ev] = nil
+    if state.sessions[item.s.sid] == item.s then handleKey(item.s, item.obj, now, true) end
+  end
+  while n < DEFAULTS.maxPacketsPerTick do
     local ok, data, ip, port = pcall(function() return state.sock:receivefrom() end)
     if not ok or data == nil then break end
     n = n + 1
@@ -1370,10 +1401,11 @@ local function now()
 end
 
 local function resetCounters()
+  state.keyQueue = {}   -- KB-28: key events waiting for their tick (see handleKey)
   state.counters = { received = 0, sent = 0, sendErrors = 0, rejected = 0, oversized = 0, notAllowed = 0, noSession = 0,
                      oldSeq = 0, rateDropped = 0, dupEvents = 0, superseded = 0, refused = 0, presses = 0, releases = 0, wheels = 0, lostReleases = 0,
                      replayedHello = 0, fullStates = 0, deltaStates = 0, contexts = 0, ticks = 0,
-                     ctl = 0, ctlRefused = 0, ctlLost = 0, ctlCoalesced = 0, ctlApplied = 0, ctlStaleDropped = 0, ctlExpired = 0 }
+                     ctl = 0, ctlRefused = 0, ctlLost = 0, ctlCoalesced = 0, ctlApplied = 0, ctlStaleDropped = 0, ctlExpired = 0, keyQueued = 0, keyQueueOverflow = 0 }
 end
 
 local function loadModules()
