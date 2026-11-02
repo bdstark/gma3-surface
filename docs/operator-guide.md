@@ -59,12 +59,18 @@ Plugin "mtpnxk_surface"
 ```
 
 The listener is fixed to `127.0.0.1` (port 9810 by default); run the service on the same
-machine. No pairing key is needed. Defaults: input on
-the keyboard backend, display 1. The start log (System Monitor / command-line
+machine. No pairing key is needed. Since 0.15.0 a start without an argument is
+`bank=900/1.178-189 input=mixed control=console encmacro=950`: it provisions or
+adopts the Quickey bank (Quickey 900 on, executors 1.178-189), routes keys
+through Quickeys and the keyboard, drives the encoders through the console
+backend and creates or adopts Macro 950 for Swap Prog. Any explicit argument
+replaces that whole default (the parser's own defaults are then input on the
+keyboard backend, control off, display 1, no bank, no macro), so
+`Plugin "mtpnxk_surface" "input=fake"` provisions nothing. The start log (System Monitor / command-line
 history) lists every NX-K key with the method and backend that would press it
 (`key 1: NUM1 via shortcut (keyboard, shortcut-table)`), ending with
 `keys: 32 supported, 12 unsupported` on the default US profile, then
-`listening on 127.0.0.1:9810 (v0.14.1, protocol 2, gen …)`.
+`listening on 127.0.0.1:9810 (v0.15.0, protocol 2, gen …)`.
 
 ### 3a. Quickey dispatch (KB-15, the preferred path once set up)
 

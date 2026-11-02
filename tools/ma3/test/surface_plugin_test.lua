@@ -219,6 +219,17 @@ local function eventCount(kind) local n = 0; for _, e in ipairs(events()) do if 
 -------------------------------------------------------------------------------
 local o, e = state._parseArgument("port=9811 input=fake display=2 execs=201,202 force bench")
 check("argument parsing", o and o.port == 9811 and o.input == "fake" and o.display == 2 and o.execs[2] == 202 and o.force and o.bench, J(o))
+do
+  local d, de = state._parseArgument("")
+  local w = state._parseArgument("   ")
+  check("0.15.0: an empty argument is the default start (bank 900/1.178-189, input=mixed, control=console, encmacro=950)",
+    state._DEFAULT_ARGUMENT == "bank=900/1.178-189 input=mixed control=console encmacro=950" and d and d.bank.quickeyFirst == 900 and d.bank.page == 1 and d.bank.executorFirst == 178
+    and d.bank.executorCount == 12 and d.input == "mixed" and d.control == "console" and d.encMacro == 950 and d.command == nil
+    and w and w.input == "mixed" and w.encMacro == 950 and state._parseArgument(nil).encMacro == 950, J({ d, de }))
+  local x = state._parseArgument("input=fake")
+  check("0.15.0: an explicit argument replaces the default whole (no bank, no macro, control off)",
+    x and x.input == "fake" and x.bank == nil and x.encMacro == nil and x.control == "off" and state._parseArgument("status").bank == nil, J(x))
+end
 check("bad option refused", select(2, state._parseArgument("key=x bogus")) ~= nil and select(2, state._parseArgument("input=osc")) ~= nil and select(2, state._parseArgument("port=70000")) ~= nil)
 check("start without a key uses fixed loopback", reset("input=fake") == true and state.host == "127.0.0.1")
 check("legacy key and network overrides are refused", select(2, state._parseArgument("key=abcd")) ~= nil and select(2, state._parseArgument("bind=0.0.0.0")) ~= nil and select(2, state._parseArgument("allow=10.0.0.1")) ~= nil)

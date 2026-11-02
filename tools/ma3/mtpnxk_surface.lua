@@ -6,7 +6,9 @@
 -- sends it back for the surface's LEDs. Protocol, pairing and limits: docs/surface-protocol.md.
 --
 -- Command line:
---   Plugin "mtpnxk_surface"                 start on 127.0.0.1:9810 (input on the keyboard backend)
+--   Plugin "mtpnxk_surface"                 start with DEFAULT_ARGUMENT (0.15.0): on 127.0.0.1:9810,
+--                                                          "bank=900/1.178-189 input=mixed control=console
+--                                                          encmacro=950"; any explicit argument replaces it whole
 --   Plugin "mtpnxk_surface" "port=9811"
 --   Plugin "mtpnxk_surface" "input=off"            feedback only, no console key is ever pressed
 --   Plugin "mtpnxk_surface" "input=fake"           lifecycle testing: events recorded, no key pressed
@@ -105,7 +107,11 @@ local json   = require("json")
 -- encoder bar through the context as before. The state's `ebank` item lights Swap Prog while the keyword is pending.
 -- Probe: docs/probes/kb-30-encoder-bank-macos-2.5.1.md.
 -- 0.14.1 (PR #20 review round 2): encmacro status and teardown follow the number of the latest start, even a refused one.
-local VERSION   = "0.14.1"
+-- 0.15.0: a start without an argument uses DEFAULT_ARGUMENT, the rig's usual start (Quickey bank, mixed input, console
+-- control, encoder-bank macro). An empty argument is the operator's authorization for that bank and macro; any
+-- explicit argument is parsed alone, so "input=fake" or "input=off" provisions nothing.
+local VERSION   = "0.15.0"
+local DEFAULT_ARGUMENT = "bank=900/1.178-189 input=mixed control=console encmacro=950"
 -- KB-21: the executor-binding bounds (used by the argument parser, the bind handler and the feedback config).
 local MAX_BOUND_EXECUTORS = 96  -- the M-Touch (30) and the M-Play (60) windows together, on any bank
 -- Review (PR #6, round 2): the watch list budget covers every supported configuration at once: the ordinary state
@@ -266,7 +272,9 @@ end
 -------------------------------------------------------------------------------
 local function parseArgument(argument)
   local opts = { input = "keyboard", control = "off" }
-  for tok in tostring(argument or ""):gmatch("%S+") do
+  argument = tostring(argument or "")
+  if not argument:find("%S") then argument = DEFAULT_ARGUMENT end
+  for tok in argument:gmatch("%S+") do
     local l = tok:lower()
     local k, v = tok:match("^(%a+)=(.*)$")
     if opts.bankToken and (l == "status" or l == "verify" or l == "teardown") then opts.command = "bank-" .. l; opts.bankToken = nil
@@ -2328,7 +2336,7 @@ local function Cleanup()
 end
 
 -- Exposed for the harness (stock Lua, stubbed socket): the pure functions and the loop pieces.
-state._parseArgument, state._NXK_KEYS, state._DEFAULTS, state._VERSION = parseArgument, NXK_KEYS, DEFAULTS, VERSION
+state._parseArgument, state._NXK_KEYS, state._DEFAULTS, state._VERSION, state._DEFAULT_ARGUMENT = parseArgument, NXK_KEYS, DEFAULTS, VERSION, DEFAULT_ARGUMENT
 state._describe, state._enableInput, state._enableControl = describe, enableInput, enableControl
 
 return Main, Cleanup
