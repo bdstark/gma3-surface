@@ -929,3 +929,11 @@ line, but a macro line with Execute No places its text there (appended, whatever
 and from the physical NX-K, `Swap Prog 4 Enter` took the bar from Dimmer to Color with the selection kept, and a typed
 `1` was cleared first. With MegaHexes selected, `Swap Prog 2 Enter` was `Not allowed` and the bar stayed. Quickey
 dispatch was not run live: a stale bank record from Shehds blocked `input=mixed` (the show switch fix above, #19, merged since).
+
+## Default start argument (surface only, plugin 0.15.0, 2026-11-01)
+
+`Plugin "mtpnxk_surface"` with no argument now starts as
+`bank=900/1.178-189 input=mixed control=console encmacro=950`, the rig's usual start. The empty argument is the
+operator's authorization for the bank and the macro; any explicit argument is parsed alone, as before, so
+`input=fake`, `input=off`, `status` and the other commands provision nothing. Tests: `surface_plugin_test.lua` 329
+(2 new), `e2e.sh` passed. Not run on onPC.
